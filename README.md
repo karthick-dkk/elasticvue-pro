@@ -102,7 +102,6 @@ tools/build-windows-cross.sh          # mingw-w64, x86_64-pc-windows-gnu, std bu
 # dist/ElasticVue-Pro-<ver>-portable-win64.zip
 ```
 
-**CI** — `.github/workflows/build-windows.yml` runs the core tests on Linux and builds the portable zip + NSIS installer on Windows; tags `v*` become releases.
 
 **Run the UI in a browser** (development, tests):
 
