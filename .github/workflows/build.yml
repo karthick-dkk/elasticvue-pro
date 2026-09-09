@@ -16,19 +16,25 @@ jobs:
   bundle:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # Long enough for a cold Rust build, short enough that an unsatisfiable runner
+    # label surfaces as a failure instead of an indefinite queue.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, label: windows-x64,  args: '' }
-          - { os: macos-14,       label: macos-arm64,  args: '--target aarch64-apple-darwin' }
-          - { os: macos-13,       label: macos-x64,    args: '--target x86_64-apple-darwin' }
-          - { os: ubuntu-22.04,   label: linux-x64,    args: '' }
+          # macos-13 was retired as a runner label; a job asking for a label that does
+          # not exist queues forever instead of failing, which stalled every build run.
+          # macos-15-intel is the current Intel image.
+          - { os: windows-latest,  label: windows-x64, args: '' }
+          - { os: macos-14,        label: macos-arm64, args: '--target aarch64-apple-darwin' }
+          - { os: macos-15-intel,  label: macos-x64,   args: '--target x86_64-apple-darwin' }
+          - { os: ubuntu-22.04,    label: linux-x64,   args: '' }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || (matrix.os == 'macos-13' && 'x86_64-apple-darwin' || '') }}
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || (matrix.os == 'macos-15-intel' && 'x86_64-apple-darwin' || '') }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.label }}
