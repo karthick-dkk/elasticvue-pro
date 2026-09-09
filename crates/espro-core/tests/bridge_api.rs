@@ -19,6 +19,7 @@ async fn ping_describes_an_unprimed_core() {
     assert_eq!(res["ok"], json!(true));
     assert_eq!(res["primed"], json!(false), "nothing primed yet");
     assert_eq!(res["readOnly"], json!(true), "read-only is the default, not an opt-in");
+    assert_eq!(res["writesUnlocked"], json!(false), "a session always starts locked");
     assert_eq!(res["desktop"], json!(true));
     assert_eq!(res["version"], json!(espro_core::VERSION));
     assert_eq!(res["clusters"], json!([]));

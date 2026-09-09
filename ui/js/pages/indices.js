@@ -6,11 +6,24 @@ import { state, client, fetchIndices, activeClusters } from '../core/state.js';
 import { hbarList } from '../lib/charts.js';
 import { card, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
+import { syncWrites, writeToggle } from '../core/writes.js';
+import {
+  openIndices, closeIndices, deleteIndices, moveShardDialog, indexSettingsDialog,
+  maintenance, MAINTENANCE_KINDS,
+} from '../ui/index-actions.js';
 
 let host = null;
 const ui = { clientFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
+/** Index names ticked in the table, for the bulk actions. Cleared when the data reloads. */
+const selected = new Set();
 
-export function render(el) { host = el; draw(); load(); }
+export function render(el) {
+  host = el;
+  selected.clear();
+  syncWrites().then(draw).catch(() => {});
+  draw();
+  load();
+}
 export function onData() { if (host && host.isConnected) draw(); }
 
 function cluster() { return activeClusters()[0] || null; }
@@ -20,7 +33,7 @@ async function load(force) {
   if (!c) return;
   if (!force && state.indices.get(c.id)) { draw(); return; }
   ui.loading = true; ui.error = null; draw();
-  try { await fetchIndices(c.id, '*'); }
+  try { await fetchIndices(c.id, '*'); selected.clear(); }
   catch (e) { ui.error = e.message; }
   ui.loading = false; draw();
 }
@@ -104,8 +117,9 @@ function clientBar(c, clientList, total) {
         h('option', { value: 'open' }, 'open'), h('option', { value: 'close' }, 'closed'));
       s.value = ui.status; return s;
     })()),
-    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'flex-end' } },
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'flex-end' } },
       ui.loading ? h('span.muted', h('span.spin'), ' loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
+      writeToggle(draw),
       h('button.btn.sm', { onclick: () => { ui.clientFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; draw(); } }, 'Clear'),
       h('button.btn.sm', { onclick: () => load(true) }, '↻ Reload')));
 }
@@ -134,11 +148,59 @@ function redrawTable() {
   mount(holder, buildTable(c, rows));
 }
 
+/** Reload after an action changed the cluster, keeping the operator's filters. */
+async function afterChange(c) {
+  selected.clear();
+  await load(true);
+}
+
+/** The bar that appears once indices are ticked. Everything on it is an operator action. */
+function bulkBar(c, rows) {
+  const names = [...selected];
+  const chosen = rows.filter((r) => selected.has(r.index));
+  const size = chosen.reduce((s, r) => s + (r.size || 0), 0);
+  const anyClosed = chosen.some((r) => r.status !== 'open');
+  const anyOpen = chosen.some((r) => r.status === 'open');
+  const refresh = { onChanged: () => afterChange(c) };
+
+  if (!names.length) {
+    return h('div.muted', { style: { fontSize: '11.5px' } },
+      'Tick indices to open, close, delete or reconfigure them.');
+  }
+
+  const maintSel = h('select', { style: { maxWidth: '150px' },
+    onchange: async (e) => { const k = e.target.value; e.target.value = ''; if (k) await maintenance(c, names, k, refresh); } },
+    h('option', { value: '' }, 'Maintenance…'),
+    ...MAINTENANCE_KINDS.map(([k, label]) => h('option', { value: k }, label)));
+
+  return h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+    h('span', { style: { fontWeight: 640, fontSize: '12px' } },
+      `${num(names.length)} selected`, size ? h('span.muted', { style: { fontWeight: 400 } }, ` · ${bytes(size)}`) : null),
+    h('button.btn.sm', { disabled: !anyClosed, title: anyClosed ? 'Open the selected indices' : 'All selected indices are already open',
+      onclick: () => openIndices(c, chosen.filter((r) => r.status !== 'open').map((r) => r.index), refresh) }, 'Open'),
+    h('button.btn.sm', { disabled: !anyOpen, title: anyOpen ? 'Close the selected indices' : 'All selected indices are already closed',
+      onclick: () => closeIndices(c, chosen.filter((r) => r.status === 'open').map((r) => r.index), refresh) }, 'Close'),
+    h('button.btn.sm', { onclick: () => indexSettingsDialog(c, names, refresh) }, 'Settings…'),
+    maintSel,
+    h('button.btn.sm.danger', { onclick: () => deleteIndices(c, names, refresh) }, 'Delete…'),
+    h('button.btn.sm.ghost', { onclick: () => { selected.clear(); redrawTable(); } }, 'Clear selection'));
+}
+
 function buildTable(c, rows) {
   const shown = rows.slice(0, ui.limit);
+  const refresh = { onChanged: () => afterChange(c) };
+  const allShownTicked = shown.length > 0 && shown.every((r) => selected.has(r.index));
+
+  const tick = (r) => h('input', {
+    type: 'checkbox', checked: selected.has(r.index), style: { cursor: 'pointer' },
+    onclick: (e) => e.stopPropagation(),
+    onchange: (e) => { if (e.target.checked) selected.add(r.index); else selected.delete(r.index); redrawBulk(c); },
+  });
+
   const trs = shown.map((r) => h('tr',
+    h('td', tick(r)),
     h('td', pill(r.health || '?', r.health)),
-    h('td.mono', { style: { maxWidth: '380px', overflow: 'hidden', textOverflow: 'ellipsis' }, title: r.index }, r.index),
+    h('td.mono', { style: { maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis' }, title: r.index }, r.index),
     h('td', r.client ? h('button.btn.sm.ghost', { onclick: () => { ui.clientFilter = r.client; draw(); } }, r.client) : h('span.muted', '–')),
     h('td.mono', r.day || '–'),
     h('td', r.status === 'open' ? h('span.pill.green', h('i.dot'), 'open') : h('span.pill.grey', h('i.dot'), r.status || '?')),
@@ -148,20 +210,46 @@ function buildTable(c, rows) {
     h('td.num', bytes(r.size)),
     h('td.num.muted', bytes(r.priSize)),
     h('td.muted', { style: { fontSize: '11.5px' } }, r.created ? dt(r.created).slice(0, 12) : '–'),
-    h('td', h('button.btn.sm.ghost', { title: 'Open in REST console',
-      onclick: () => navigateTo('console', { method: 'GET', path: `/${r.index}/_settings`, body: '' }) }, '↗'))));
+    h('td', h('div', { style: { display: 'flex', gap: '3px', justifyContent: 'flex-end' } },
+      r.status === 'open'
+        ? h('button.btn.sm', { title: 'Close this index — data stays on disk', onclick: () => closeIndices(c, [r.index], refresh) }, 'Close')
+        : h('button.btn.sm', { title: 'Open this index again', onclick: () => openIndices(c, [r.index], refresh) }, 'Open'),
+      h('button.btn.sm', { disabled: r.status !== 'open', title: r.status === 'open' ? 'Relocate a shard to another node' : 'The index must be open to move a shard',
+        onclick: () => moveShardDialog(c, r.index, refresh) }, 'Move'),
+      h('button.btn.sm', { title: 'Replicas, refresh interval, allocation', onclick: () => indexSettingsDialog(c, [r.index], refresh) }, '⚙'),
+      h('button.btn.sm.danger', { title: 'Delete this index', onclick: () => deleteIndices(c, [r.index], refresh) }, 'Delete'),
+      h('button.btn.sm.ghost', { title: 'Open in REST console',
+        onclick: () => navigateTo('console', { method: 'GET', path: `/${r.index}/_settings`, body: '' }) }, '↗')))));
+
+  const selectAll = h('input', {
+    type: 'checkbox', checked: allShownTicked, style: { cursor: 'pointer' },
+    title: 'Select every index shown',
+    onchange: (e) => {
+      shown.forEach((r) => { if (e.target.checked) selected.add(r.index); else selected.delete(r.index); });
+      redrawTable();
+    },
+  });
 
   const t = h('div.tbl-wrap', h('table.tbl',
     h('thead', h('tr',
+      h('th', { style: { width: '28px' } }, selectAll),
       th('H', 'health'), th('Index', 'index'), th('Client', 'client'), th('Day', 'day'), th('State', 'status'),
       th('P/R', 'pri', true), th('Docs', 'docs', true), th('Deleted', 'deleted', true),
       th('Size', 'size', true), th('Primary', 'priSize', true), th('Created', 'created'), h('th', ''))),
-    h('tbody', ...(trs.length ? trs : [h('tr', h('td', { colspan: 12 }, empty('No indices match the filter')))]))));
+    h('tbody', ...(trs.length ? trs : [h('tr', h('td', { colspan: 13 }, empty('No indices match the filter')))]))));
 
-  return h('div', t, rows.length > ui.limit
-    ? h('div', { style: { padding: '10px', textAlign: 'center' } },
-        h('button.btn.sm', { onclick: () => { ui.limit += 500; redrawTable(); } }, `Show more (${num(rows.length - ui.limit)} hidden)`))
-    : null);
+  return h('div',
+    h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, rows)),
+    t,
+    rows.length > ui.limit
+      ? h('div', { style: { padding: '10px', textAlign: 'center' } },
+          h('button.btn.sm', { onclick: () => { ui.limit += 500; redrawTable(); } }, `Show more (${num(rows.length - ui.limit)} hidden)`))
+      : null);
+}
+
+function redrawBulk(c) {
+  const el = $('#idx-bulk');
+  if (el) mount(el, bulkBar(c, rowsFor(c)));
 }
 
 function tableCard(c, rows, all) {

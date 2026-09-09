@@ -47,8 +47,9 @@ pub struct EsRequest {
     /// absent = use the primed credential.
     #[serde(default)]
     pub auth_header: Option<String>,
-    /// Set only by the REST console, for a request a person typed. On its own it grants
-    /// nothing — the session must also be unlocked (`WRITE_UNLOCK`). See `guard`.
+    /// Set only for a request a person asked for in the UI (a console request, a snapshot
+    /// action). On its own it grants nothing — the session must also be unlocked
+    /// (`WRITE_UNLOCK`). See `guard`.
     #[serde(default)]
     pub allow_writes: bool,
 }

@@ -9,11 +9,12 @@
 //! a page deciding on its own:
 //!
 //! * `readOnly: false` in the config — a decision on disk, applying to everything.
-//! * The REST console, where a human types the request: the operator unlocks writes for
-//!   the session (`WRITE_UNLOCK`, never persisted) *and* the request carries
-//!   `allowWrites`. Both are required, so an automatic refresh, a page load or a future
-//!   code path cannot write even while the console is unlocked — only the request a
-//!   person typed and sent can.
+//! * An action a person took in the UI — a request typed in the REST console, a snapshot
+//!   created or deleted from the Snapshots page. Two things must both be true: the
+//!   operator unlocked writes for the session (`WRITE_UNLOCK`, never persisted) *and*
+//!   that one request carries `allowWrites`. So an automatic refresh, a page load or a
+//!   future code path cannot write even while the session is unlocked — only the request
+//!   a person actually asked for.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -30,22 +31,22 @@ static READONLY_POST: LazyLock<Regex> = LazyLock::new(|| {
 pub enum Writes {
     /// Read-only: GET/HEAD and search-family POSTs only.
     Blocked,
-    /// A human typed this one in the REST console, and unlocked writes for the session.
-    Console,
+    /// A person asked for this one in the UI, having unlocked writes for the session.
+    Operator,
     /// `readOnly: false` in the config — everything is permitted.
     Config,
 }
 
 impl Writes {
-    /// The two gates the console needs, resolved into one answer.
+    /// The two gates an operator-initiated write needs, resolved into one answer.
     ///
     /// `read_only` is the config's setting; `unlocked` is the session switch the
-    /// operator flipped; `requested` is the flag the console puts on its own request.
+    /// operator flipped; `requested` is the flag the acting page puts on that request.
     pub fn decide(read_only: bool, unlocked: bool, requested: bool) -> Writes {
         if !read_only {
             Writes::Config
         } else if unlocked && requested {
-            Writes::Console
+            Writes::Operator
         } else {
             Writes::Blocked
         }
@@ -67,8 +68,8 @@ pub fn write_guard(writes: Writes, method: &str, path: &str) -> Option<String> {
     }
     Some(format!(
         "Blocked by read-only mode: {m} {bare}. This build only sends GET/HEAD plus search-family POSTs. \
-         Turn on \"Allow writes\" in the REST console to send this request by hand, or set \
-         `readOnly: false` in the config to allow writes everywhere."
+         Turn on \"Allow writes\" (REST console or Snapshots page) to send a request you asked \
+         for by hand, or set `readOnly: false` in the config to allow writes everywhere."
     ))
 }
 
@@ -106,21 +107,21 @@ mod tests {
     }
 
     #[test]
-    fn the_console_needs_both_gates() {
+    fn an_operator_write_needs_both_gates() {
         use Writes::*;
         // read_only, unlocked, requested
         assert_eq!(Writes::decide(true, false, false), Blocked);
         assert_eq!(Writes::decide(true, true, false), Blocked, "unlocked alone must not let a poll write");
         assert_eq!(Writes::decide(true, false, true), Blocked, "a page asking alone must not be enough");
-        assert_eq!(Writes::decide(true, true, true), Console);
+        assert_eq!(Writes::decide(true, true, true), Operator);
         assert_eq!(Writes::decide(false, false, false), Config, "the config switch still applies to everything");
     }
 
     #[test]
-    fn an_unlocked_console_may_write_but_a_background_request_may_not() {
-        let console = Writes::decide(true, true, true);
+    fn an_unlocked_session_may_write_but_a_background_request_may_not() {
+        let asked_for = Writes::decide(true, true, true);
         let background = Writes::decide(true, true, false);
-        assert!(write_guard(console, "DELETE", "/logstash-2026.01.01").is_none());
+        assert!(write_guard(asked_for, "DELETE", "/logstash-2026.01.01").is_none());
         assert!(write_guard(background, "DELETE", "/logstash-2026.01.01").is_some());
         // reads are unaffected either way
         assert!(write_guard(background, "GET", "/_cluster/health").is_none());

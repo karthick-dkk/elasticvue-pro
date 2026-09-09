@@ -28,17 +28,37 @@ jobs:
         run: cargo clippy -p espro-core --features bridge --all-targets
 
   ui:
-    name: ui — syntax
+    name: ui — syntax & render
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bridge
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
       # The UI ships unbundled ES modules straight to the WebView — nothing else would
       # catch a syntax error or a mistyped import before an operator hits a blank page.
       - name: parse modules and resolve imports
         run: node tools/check-ui.mjs
+
+      # Static checks cannot see a call to something that was never imported at all.
+      # Rendering every page against the real core does.
+      - name: build the dev bridge
+        run: cargo build -p espro-core --features bridge --bin espro-bridge
+      - name: render every page
+        run: |
+          npm install --no-save --no-fund --no-audit jsdom
+          ./target/debug/espro-bridge ui 8765 &
+          for _ in $(seq 1 30); do
+            curl -sf -X POST http://127.0.0.1:8765/bridge -H 'content-type: application/json' \
+              -d '{"type":"PING"}' >/dev/null && break
+            sleep 1
+          done
+          node tools/render-check.mjs
 
   audit:
     name: dependency advisories

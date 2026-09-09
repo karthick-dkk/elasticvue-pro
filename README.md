@@ -28,14 +28,15 @@ Browser tools cannot do three things an operator behind a jump host needs:
 
 ## Features
 
-- **Clusters** — health, nodes, disk usage, ILM/SLM status, repositories, last snapshot, alerts; fleet tiles and per-cluster charts
-- **Indices** — daily `logstash-<client>-YYYY.MM.DD` indices with a client / date picker, sizes, health
-- **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites (click to load, re-run). Writes are off until you tick *Allow writes*, which unlocks the console for that session only — the rest of the app stays read-only
+- **Clusters** — health, nodes, disk usage, ILM/SLM status, repositories, last snapshot; search by name, URL, tag, jump host, version or repository, and sort by health, disk, shards, version, last snapshot or open alerts
+- **Alerts** — every problem across the fleet on one page, filtered by level and cluster, each row linking to the page that answers it; the count sits on the nav tab
+- **Indices** — daily `logstash-<client>-YYYY.MM.DD` indices with a client / date picker, sizes, health; open, close, delete, move a shard between nodes, change replicas and run maintenance, one index or a ticked selection at a time
+- **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites, and ~60 grouped ready-made requests (ILM policies, disk watermarks, replica and shard counts, snapshots, diagnostics)
 - **Live logs** — tail a day's index with a time histogram
-- **Snapshots & SLM** — per repository: snapshots, from/to availability of logstash days, policies and last run
+- **Snapshots & SLM** — the latest 5 snapshots per repository (widened on demand), availability of logstash days, policies and last run; create and delete snapshots, restore with index selection and renaming, free the live indices a snapshot already holds, and add, verify, clean up or remove repositories
 - **Nodes & shards** — heap, CPU, disk per node; unassigned / initializing shards
 - **Config in the UI** — add clusters, jump hosts, the shared credential and defaults; saved as `config_cluster.json`
-- **Security** — read-only guard in the core (writes only from a request you typed, in an unlocked console); secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
+- **Security** — read-only guard in the core: a write needs both a session unlock *and* a request the operator asked for by hand, so nothing that refreshes on a timer can write; secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
 - **Portable** — one folder, no installer, no admin rights; runs on the analyst PC and on the jump server itself
 - **Snapshot mode** — render everything from a JSON file collected elsewhere (esfleet / PowerShell collector) with no network access
 
@@ -77,7 +78,7 @@ Created and edited in the app (Config page), or hand-written. JSON is what the a
 | `jump_hosts.<id>` | SSH host, port, user, `keyFile` (OpenSSH format; passphrase is asked in the app, never stored) |
 | `clusters[].via` | route through that jump host; the hostname is resolved **on the jump host** |
 | `clusters[].tls` / `defaults.tls` | `auto` (OS store, else ask & pin — default), `system` (strict), `insecure` (lab only) |
-| `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you unlock the REST console for the session *and* it is a request you typed there; `false` allows writes from anywhere |
+| `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you tick *Allow writes* for the session *and* it is an action you took by hand; `false` allows writes from anywhere |
 
 Command line: `elasticvue-pro.exe --config C:\path\config_cluster.json` (or `ELASTICVUE_CONFIG`) pre-provisions the file, handy on a jump server.
 
@@ -111,6 +112,7 @@ cargo run -p espro-core --features bridge --bin espro-bridge -- ui 8765   # http
 cargo test -p espro-core --features bridge     # unit + integration (real sockets, real TLS)
 cargo clippy -p espro-core --features bridge --all-targets
 node tools/check-ui.mjs                        # the UI has no bundler: parse + resolve imports
+npm i jsdom && node tools/render-check.mjs     # render every page against a running bridge
 ```
 
 This works on macOS and Linux as well as Windows — the core, its tests and the whole UI run
@@ -125,6 +127,7 @@ to exercise the jump-host path end to end.
 crates/espro-core/   Rust core — everything with a security consequence
   guard.rs           read-only guard: GET/HEAD + search-family POST, checked before any socket;
                      writes need both the session unlock and a per-request flag
+ui/js/core/writes.js the UI's single copy of that unlock, shared by every acting page
   tls.rs             OS trust store → trust-on-first-use pin (SHA-256 per host:port); SSH host-key pins
   ssh.rs             SSH client (russh): key/passphrase/password auth, TOFU host keys, reconnect with back-off
   socks.rs           in-process SOCKS5 on 127.0.0.1 → direct-tcpip channels on the jump host
@@ -140,10 +143,10 @@ docs/                HANDBOOK.md (full operator manual), screenshots
 
 The UI never talks to the network. Every request goes through the core, which owns the
 read-only guard, the TLS decisions and the tunnels — so no page, console or future code path
-can route around them. The console's write unlock is no exception: it lives in the core, is
-never written to disk, and grants nothing on its own — a request must *also* be marked as
-hand-typed, which only the console does. An automatic refresh cannot write even while the
-console is unlocked.
+can route around them. The write unlock is no exception: it lives in the core, is never
+written to disk, and grants nothing on its own — a request must *also* be marked as one the
+operator asked for, which only a click does. An automatic refresh cannot write even while
+the session is unlocked.
 
 ## Security
 
@@ -168,6 +171,10 @@ cargo test -p espro-core --features bridge
 cargo clippy -p espro-core --features bridge --all-targets
 node tools/check-ui.mjs
 ```
+
+`tools/render-check.mjs` (needs `npm i jsdom` and a running `espro-bridge`) draws every page
+and fails on the first exception — the static check cannot see a call to something that was
+never imported, and a blank page is the usual symptom.
 
 ## License
 

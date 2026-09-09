@@ -170,4 +170,136 @@ export class EsClient {
     return this.json('POST', `/${encodeURIComponent(index)}/_search${qs}`, body, opts);
   }
   resolveIndex(pattern) { return this.json('GET', `/_resolve/index/${encodeURIComponent(pattern)}?expand_wildcards=open,closed`); }
+
+  /* --------------------------- snapshot management ---------------------------
+   * Everything below changes the cluster, so each call carries `allowWrites`. That
+   * flag alone grants nothing: the core refuses it unless the operator has unlocked
+   * writes for the session. See core/writes.js and the Rust guard.
+   */
+
+  /** Full detail for one snapshot — the index list, shard counts and any failures. */
+  snapshotDetail(repo, snapshot) {
+    return this.json('GET', `/_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(snapshot)}?ignore_unavailable=true`,
+      null, { timeoutMs: 60000 });
+  }
+
+  /**
+   * Start a snapshot. `wait_for_completion=false` returns as soon as it is accepted —
+   * a large snapshot can run for hours, and the page polls for the result instead.
+   */
+  createSnapshot(repo, name, body) {
+    return this.json('PUT', `/_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}?wait_for_completion=false`,
+      body, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  deleteSnapshot(repo, name) {
+    return this.json('DELETE', `/_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}`,
+      null, { allowWrites: true, timeoutMs: 120000 });
+  }
+
+  restoreSnapshot(repo, name, body) {
+    return this.json('POST', `/_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}/_restore?wait_for_completion=false`,
+      body, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  /* ------------------------------- repositories ------------------------------- */
+
+  createRepository(name, body) {
+    return this.json('PUT', `/_snapshot/${encodeURIComponent(name)}?verify=true`, body,
+      { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  deleteRepository(name) {
+    return this.json('DELETE', `/_snapshot/${encodeURIComponent(name)}`, null, { allowWrites: true });
+  }
+
+  verifyRepository(name) {
+    return this.json('POST', `/_snapshot/${encodeURIComponent(name)}/_verify`, null,
+      { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  /** Remove data in the repository no snapshot references any more. */
+  cleanupRepository(name) {
+    return this.json('POST', `/_snapshot/${encodeURIComponent(name)}/_cleanup`, null,
+      { allowWrites: true, timeoutMs: 120000 });
+  }
+
+  /* ----------------------------------- SLM ----------------------------------- */
+
+  executeSlmPolicy(id) {
+    return this.json('POST', `/_slm/policy/${encodeURIComponent(id)}/_execute`, null, { allowWrites: true });
+  }
+
+  /* ---------------------------- index management -----------------------------
+   * Operator actions from the Indices page. Same rule as the snapshot calls: the
+   * `allowWrites` flag is necessary but not sufficient — the core refuses it unless
+   * the session has been unlocked.
+   */
+
+  /**
+   * Delete an index from the CLUSTER. The usual reason is that it is safely in a
+   * snapshot and the disk is wanted back — the snapshot copy is not affected.
+   */
+  deleteIndex(name) {
+    return this.json('DELETE', `/${encodeURIComponent(name)}`, null, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  /** A closed index keeps its data but uses almost no heap and cannot be searched. */
+  openIndex(name) {
+    return this.json('POST', `/${encodeURIComponent(name)}/_open?wait_for_active_shards=0`, null,
+      { allowWrites: true, timeoutMs: 120000 });
+  }
+
+  closeIndex(name) {
+    return this.json('POST', `/${encodeURIComponent(name)}/_close`, null, { allowWrites: true, timeoutMs: 120000 });
+  }
+
+  refreshIndex(name) {
+    return this.json('POST', `/${encodeURIComponent(name)}/_refresh`, null, { allowWrites: true });
+  }
+
+  flushIndex(name) {
+    return this.json('POST', `/${encodeURIComponent(name)}/_flush`, null, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  clearIndexCache(name) {
+    return this.json('POST', `/${encodeURIComponent(name)}/_cache/clear`, null, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  /** Merges segments. Expensive, so it runs detached and the page does not wait. */
+  forceMergeIndex(name, maxSegments = 1) {
+    return this.json('POST',
+      `/${encodeURIComponent(name)}/_forcemerge?max_num_segments=${Number(maxSegments) || 1}&wait_for_completion=false`,
+      null, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  updateIndexSettings(name, settings) {
+    return this.json('PUT', `/${encodeURIComponent(name)}/_settings`, settings, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  indexSettings(name) {
+    return this.json('GET', `/${encodeURIComponent(name)}/_settings?flat_settings=true`);
+  }
+
+  /** Where each shard of an index currently sits — the input to a move. */
+  shardsOf(name) {
+    return this.json('GET',
+      `/_cat/shards/${encodeURIComponent(name)}?format=json&bytes=b&h=index,shard,prirep,state,node,store,unassigned.reason`);
+  }
+
+  /** Move one shard between nodes, or retry allocations that gave up. */
+  reroute(commands) {
+    return this.json('POST', '/_cluster/reroute?metric=none', { commands }, { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  retryFailedAllocation() {
+    return this.json('POST', '/_cluster/reroute?retry_failed=true&metric=none', null,
+      { allowWrites: true, timeoutMs: 60000 });
+  }
+
+  /** Indices, for choosing what a snapshot should contain. */
+  indexNames(pattern = '*') {
+    return this.json('GET',
+      `/_cat/indices/${encodeURIComponent(pattern)}?format=json&bytes=b&expand_wildcards=open,closed&h=index,health,status,store.size,docs.count`);
+  }
 }

@@ -13,11 +13,13 @@ import { workerStatus } from './core/es.js';
 import { saveTextAs } from './core/platform.js';
 import { tryVaultCredential } from './ui/credential-dialog.js';
 import { createNewConfig, editCluster, unlockSealed } from './ui/config-editor.js';
+import { applyLoadedConfig } from './ui/load-config.js';
 
 let coreInfo = { version: '?' };
 const saveExample = () => saveTextAs('clusters.yaml', EXAMPLE_YAML);
 
 import * as pOverview from './pages/overview.js';
+import * as pAlerts from './pages/alerts.js';
 import * as pIndices from './pages/indices.js';
 import * as pLogs from './pages/logs.js';
 import * as pSnapshots from './pages/snapshots.js';
@@ -27,12 +29,13 @@ import * as pSettings from './pages/settings.js';
 
 const PAGES = [
   { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  key: '1' },
-  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, key: '2' },
-  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, key: '3' },
-  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, key: '4' },
-  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  key: '5' },
-  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  key: '6' },
-  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  key: '7' },
+  { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  key: '2' },
+  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, key: '3' },
+  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, key: '4' },
+  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, key: '5' },
+  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  key: '6' },
+  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  key: '7' },
+  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  key: '8' },
 ];
 
 const root = document.getElementById('root');
@@ -195,12 +198,18 @@ function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
   clear(nav);
-  PAGES.forEach((p, i) => {
+  const a = alerts();
+  const crit = a.filter((x) => x.level === 'critical').length;
+  PAGES.forEach((p) => {
     if (p.id === 'settings') nav.append(h('div.nav-sep'));
+    // The alert count belongs on the tab: it is the reason to go there.
+    const badge = p.id === 'alerts' && a.length
+      ? h('span.pill', { class: crit ? 'red' : 'yellow', style: { marginLeft: 'auto', fontSize: '10px', padding: '0 5px' } }, String(a.length))
+      : h('span.kbd', p.key);
     nav.append(h('button', {
       'aria-current': currentPage === p.id ? 'page' : null,
       onclick: () => go(p.id),
-    }, h('span.ico', p.icon), h('span', p.label), h('span.kbd', p.key)));
+    }, h('span.ico', p.icon), h('span', p.label), badge));
   });
 }
 
@@ -373,7 +382,7 @@ setInterval(async () => {
 }, 10000);
 
 bus.on('refreshing', () => { tickStatus(); });
-bus.on('refreshed', () => { maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });
+bus.on('refreshed', () => { maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); renderNav(); const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });
 bus.on('tick', tickStatus);
 
 let offeredAuthRecovery = false;
@@ -384,7 +393,7 @@ function maybeOfferAuthRecovery() {
   offeredAuthRecovery = true;
   showCredentialDialog('auth_error');
 }
-bus.on('data', () => { const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });
+bus.on('data', () => { renderNav(); const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });
 
 window.addEventListener('evp:navigate', (e) => {
   const id = e.detail && e.detail.page;
@@ -413,11 +422,13 @@ window.addEventListener('focus', async () => {
   try {
     const next = await cfg.readPath(state.handle);
     if (next.fileMeta.lastModified && next.fileMeta.lastModified !== state.config.fileMeta.lastModified) {
-      await setConfig(next, state.handle);
+      // Same path as Reload from disk. `prompt: false` because this fires on window
+      // focus — a dialog nobody asked for would be a surprise; the cached master
+      // password still reopens sealed secrets silently.
+      await applyLoadedConfig(next, state.handle, { prompt: false });
       renderSideFoot();
       renderTopbar();
       go(currentPage);
-      await refreshAll({ force: true });
     }
   } catch (_) { /* file gone or unreadable right now; the user will see it on next action */ }
 });

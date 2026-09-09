@@ -14,45 +14,10 @@ import * as cfg from '../core/config.js';
 import { bridge } from '../core/transport.js';
 import { rememberConfigPath, pickFilePath } from '../core/platform.js';
 import { bus } from '../core/state.js';
+import { modal, field, text, select, val, checked } from './modal.js';
 
 let masterInMemory = null;      // master password for this session only (needed to seal new secrets)
 
-/* ------------------------------------------------------------------ modal plumbing */
-function modal(title, sub, bodyNodes, actions, { width = '640px' } = {}) {
-  return new Promise((resolve) => {
-    const overlay = h('div.modal-overlay', { onclick: (e) => { if (e.target === overlay) done(null); } });
-    const dialog = h('div.modal', { role: 'dialog', 'aria-modal': 'true', style: { maxWidth: width, width: '96vw' } });
-    const msg = h('div#ce-msg');
-    function done(v) { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(v); }
-    function onKey(e) { if (e.key === 'Escape') done(null); }
-    document.addEventListener('keydown', onKey);
-    const ctx = { done, msg: (text, cls = 'banner err') => mount(msg, text ? h(`div.${cls.replace(/ /g, '.')}`, { style: { margin: 0 } }, text) : null) };
-    mount(dialog,
-      h('div.modal-head', h('div', h('h2', title), sub ? h('p.sub', sub) : null),
-        h('button.btn.ghost.sm', { onclick: () => done(null), 'aria-label': 'Close' }, '×')),
-      h('div.modal-body', ...bodyNodes, msg),
-      h('div.modal-foot', ...actions(ctx)));
-    overlay.append(dialog);
-    document.body.append(overlay);
-    const first = dialog.querySelector('input,select,textarea');
-    if (first) setTimeout(() => first.focus(), 0);
-  });
-}
-
-function field(label, input, hint) {
-  return h('label.field', label, input, hint ? h('span.muted', { style: { fontSize: '11px' } }, hint) : null);
-}
-function text(id, value, opts = {}) {
-  return h('input', { id, type: opts.type || 'text', value: value == null ? '' : String(value), spellcheck: false, autocomplete: 'off',
-    placeholder: opts.placeholder || '', style: { fontFamily: opts.mono ? 'var(--mono)' : '', ...(opts.style || {}) } });
-}
-function select(id, value, options) {
-  const s = h('select', { id }, ...options.map(([v, l]) => h('option', { value: v }, l)));
-  s.value = value;
-  return s;
-}
-function val(id) { const el = $(`#${id}`); return el ? el.value : ''; }
-function checked(id) { const el = $(`#${id}`); return !!(el && el.checked); }
 
 /* ------------------------------------------------------------------ raw config access */
 function raw() {

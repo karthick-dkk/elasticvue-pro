@@ -6,39 +6,145 @@ import { state, bus, clusters, activeClusters, client, fetchOverview, refreshAll
 import { hbarList, usageMeter } from '../lib/charts.js';
 import { card, pill, statTile, table, connectionBanner, diskCell, lastSnapshotOf, snapshotPill, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
+import { navigateTo } from '../core/intent.js';
 
 let host = null;
 const expanded = new Set();
 
+/** Sort keys, each pulling one comparable value out of a {c, d, cl} row. */
+const SORTS = {
+  name:     { label: 'Name',          get: (r) => r.c.name.toLowerCase() },
+  health:   { label: 'Health',        get: (r) => healthRank(r) },
+  disk:     { label: 'Disk used %',   get: (r) => (r.d.disk && isFinite(r.d.disk.percent) ? r.d.disk.percent : -1) },
+  diskFree: { label: 'Disk free',     get: (r) => (r.d.disk ? (r.d.disk.total || 0) - (r.d.disk.used || 0) : -1) },
+  nodes:    { label: 'Nodes',         get: (r) => (r.d.health && r.d.health.number_of_nodes) || -1 },
+  shards:   { label: 'Shards',        get: (r) => (r.d.health && r.d.health.active_shards) || -1 },
+  unassign: { label: 'Unassigned',    get: (r) => (r.d.health && r.d.health.unassigned_shards) || 0 },
+  version:  { label: 'Version',       get: (r) => versionKey(r) },
+  snapshot: { label: 'Last snapshot', get: (r) => { const s = lastSnapshotOf(r.d); return s ? s.start : 0; } },
+  alerts:   { label: 'Alerts',        get: (r) => alertsByCluster().get(r.c.id) || 0 },
+};
+
+const ui = { text: '', sort: 'name', dir: 1, only: 'all' };
+
+/** offline worst, then red > yellow > green — so "sort by health" surfaces trouble. */
+function healthRank(r) {
+  if (!r.d.updatedAt) return 1;
+  if (!r.d.reachable) return 4;
+  return { red: 3, yellow: 2, green: 0 }[(r.d.health && r.d.health.status)] ?? 1;
+}
+
+/** "8.13.4" -> 8.000013.000004, so 8.9 sorts below 8.13. */
+function versionKey(r) {
+  const v = (r.d.info && r.d.info.version && r.d.info.version.number) || '';
+  const p = v.split('.').map((x) => parseInt(x, 10) || 0);
+  return (p[0] || 0) * 1e12 + (p[1] || 0) * 1e6 + (p[2] || 0);
+}
+
+function alertsByCluster() {
+  const m = new Map();
+  alerts().forEach((a) => { if (a.cluster) m.set(a.cluster.id, (m.get(a.cluster.id) || 0) + 1); });
+  return m;
+}
+
 export function render(el) { host = el; draw(); }
 export function onData() { if (host && host.isConnected) draw(); }
 
+/** Search and sort are applied to the table and charts alike, so they stay in step. */
+function visibleRows(all) {
+  let rows = all;
+
+  const t = ui.text.trim().toLowerCase();
+  if (t) {
+    rows = rows.filter(({ c, d }) => {
+      const version = (d.info && d.info.version && d.info.version.number) || '';
+      const repos = (d.repos || []).map((r) => r.name).join(' ');
+      const hay = `${c.name} ${c.url} ${(c.tags || []).join(' ')} ${c.via || ''} ${version} ${repos}`;
+      return hay.toLowerCase().includes(t);
+    });
+  }
+
+  if (ui.only === 'problems') rows = rows.filter((r) => !r.d.reachable || (r.d.health && r.d.health.status !== 'green'));
+  else if (ui.only === 'offline') rows = rows.filter((r) => r.d.updatedAt && !r.d.reachable);
+  else if (ui.only === 'online') rows = rows.filter((r) => r.d.reachable);
+
+  const get = (SORTS[ui.sort] || SORTS.name).get;
+  return [...rows].sort((a, b) => {
+    const av = get(a), bv = get(b);
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * ui.dir;
+    return String(av).localeCompare(String(bv)) * ui.dir;
+  });
+}
+
+function toolbar(all, shown) {
+  const sortSel = h('select', { onchange: (e) => { ui.sort = e.target.value; draw(); } },
+    ...Object.entries(SORTS).map(([k, v]) => h('option', { value: k }, v.label)));
+  sortSel.value = ui.sort;
+
+  const onlySel = h('select', { onchange: (e) => { ui.only = e.target.value; draw(); } },
+    h('option', { value: 'all' }, `All (${all.length})`),
+    h('option', { value: 'problems' }, 'Needs attention'),
+    h('option', { value: 'online' }, 'Reachable'),
+    h('option', { value: 'offline' }, 'Unreachable'));
+  onlySel.value = ui.only;
+
+  return h('div.toolbar', { style: { marginBottom: '14px' } },
+    h('label.field', 'Search clusters',
+      h('input', { type: 'search', value: ui.text, style: { minWidth: '260px' },
+        placeholder: 'name, URL, tag, jump host, version, repository…',
+        oninput: (e) => { ui.text = e.target.value; draw(); } })),
+    h('label.field', 'Sort by', sortSel),
+    h('label.field', 'Direction',
+      h('button.btn.sm', { style: { minWidth: '104px' },
+        title: ui.dir === 1 ? 'Ascending — click for descending' : 'Descending — click for ascending',
+        onclick: () => { ui.dir = -ui.dir; draw(); } }, ui.dir === 1 ? '▲ ascending' : '▼ descending')),
+    h('label.field', 'Show', onlySel),
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'flex-end' } },
+      h('span.muted', { style: { fontSize: '11.5px' } },
+        shown.length === all.length ? `${all.length} cluster${all.length === 1 ? '' : 's'}` : `${shown.length} of ${all.length} shown`),
+      (ui.text || ui.only !== 'all' || ui.sort !== 'name' || ui.dir !== 1)
+        ? h('button.btn.sm', { onclick: () => { ui.text = ''; ui.only = 'all'; ui.sort = 'name'; ui.dir = 1; draw(); } }, 'Clear')
+        : null));
+}
+
 function draw() {
   const list = activeClusters();
-  const rows = list.map((c) => ({ c, d: state.data.get(c.id) || {}, cl: client(c.id) }));
+  const all = list.map((c) => ({ c, d: state.data.get(c.id) || {}, cl: client(c.id) }));
+  const rows = visibleRows(all);
 
   mount(host,
-    alertsCard(),
-    tiles(rows),
-    h('div', { style: { marginTop: '14px' } }, summaryCard(rows)),
+    alertsSummary(),
+    tiles(all),
+    toolbar(all, rows),
+    summaryCard(rows, all),
     h('div.grid.c2', { style: { marginTop: '14px' } }, diskCard(rows), repoCard(rows)),
     h('div', { style: { marginTop: '14px' } }, ...rows.filter((r) => !r.d.reachable && r.d.updatedAt)
       .map((r) => connectionBanner(r.c, () => fetchOverview(r.c.id))))
   );
 }
 
-function alertsCard() {
+/**
+ * A headline only — the full list, with its own filters and export, is the Alerts page.
+ * The three most serious ones are shown so this page still says what is wrong.
+ */
+function alertsSummary() {
   const a = alerts();
   if (!a.length) return null;
   const crit = a.filter((x) => x.level === 'critical');
   const warn = a.filter((x) => x.level !== 'critical');
-  const row = (x) => h('div', { style: { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '4px 0' } },
-    pill(x.level === 'critical' ? 'critical' : 'warning', x.level === 'critical' ? 'red' : 'yellow'),
-    h('span', { style: { fontWeight: 600 } }, x.title),
-    h('span.muted', { style: { fontSize: '12px' } }, x.detail || ''));
-  return h('div', { style: { marginBottom: '14px' } },
-    card(`Alerts (${a.length})`, `${crit.length} critical · ${warn.length} warning`,
-      h('div', ...crit.map(row), ...warn.map(row))));
+  const top = [...crit, ...warn].slice(0, 3);
+
+  return h(`div.banner.${crit.length ? 'err' : 'warn'}`, { style: { marginBottom: '14px' } },
+    h('div', { style: { minWidth: 0 } },
+      h('div.ttl', `${a.length} open alert${a.length === 1 ? '' : 's'} — ${crit.length} critical, ${warn.length} warning`),
+      h('div', { style: { display: 'grid', gap: '2px', marginTop: '3px' } },
+        ...top.map((x) => h('div', { style: { fontSize: '12px' } },
+          h('b', x.cluster ? `${x.cluster.name}: ` : ''), x.title,
+          x.detail ? h('span.muted', ` — ${x.detail}`) : null)),
+        a.length > top.length
+          ? h('div.muted', { style: { fontSize: '11.5px' } }, `…and ${a.length - top.length} more`)
+          : null)),
+    h('div.acts', h('button.btn.sm.primary', { onclick: () => navigateTo('alerts') }, 'Open Alerts')));
 }
 
 function tiles(rows) {
@@ -59,8 +165,9 @@ function tiles(rows) {
     statTile('Snapshot repos', String(repos), `${rows.reduce((s, r) => s + (r.d.slm || []).length, 0)} SLM policies`));
 }
 
-function summaryCard(rows) {
-  const headers = ['Cluster', 'Version', 'Health', 'Nodes', 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', ''];
+function summaryCard(rows, all) {
+  const headers = ['Cluster', 'Version', 'Health', 'Nodes', 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', ''];
+  const byCluster = alertsByCluster();
   const trs = [];
   rows.forEach((r) => {
     const { c, d, cl } = r;
@@ -88,6 +195,10 @@ function summaryCard(rows) {
             repoNames.length > 3 ? h('span.muted', { style: { fontSize: '11px' } }, `+${repoNames.length - 3} more`) : null)
         : h('span.muted', 'none')),
       h('td', snapshotPill(snap)),
+      h('td', byCluster.get(c.id)
+        ? h('button.btn.sm.ghost', { title: 'Show these on the Alerts page', onclick: () => navigateTo('alerts') },
+            pill(String(byCluster.get(c.id)), 'yellow'))
+        : h('span.muted', '–')),
       h('td', h('button.btn.sm.ghost', {
         onclick: () => { expanded.has(c.id) ? expanded.delete(c.id) : expanded.add(c.id); draw(); },
       }, expanded.has(c.id) ? 'Hide' : 'Details'))));
@@ -95,11 +206,14 @@ function summaryCard(rows) {
     if (expanded.has(c.id)) trs.push(h('tr', h('td', { colspan: headers.length, style: { background: 'var(--surface-2)' } }, detail(c, d))));
   });
 
-  const sub = isSnapshotMode()
-    ? `${rows.length} cluster${rows.length === 1 ? '' : 's'} · collected ${ago(state.lastRefresh)}`
-    : `${rows.length} cluster${rows.length === 1 ? '' : 's'} · updated ${ago(state.lastRefresh)}`;
+  const total = (all || rows).length;
+  const scope = rows.length === total
+    ? `${total} cluster${total === 1 ? '' : 's'}`
+    : `${rows.length} of ${total} clusters`;
+  const sub = `${scope} · sorted by ${(SORTS[ui.sort] || SORTS.name).label.toLowerCase()} · ` +
+    (isSnapshotMode() ? `collected ${ago(state.lastRefresh)}` : `updated ${ago(state.lastRefresh)}`);
   return card('Cluster summary', sub,
-    table(headers, trs, { emptyText: 'No clusters configured' }),
+    table(headers, trs, { emptyText: total ? 'No cluster matches the search' : 'No clusters configured' }),
     [h('button.btn.sm', { onclick: () => exportSummary(rows) }, 'Export CSV'),
      isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Refresh')]);
 }

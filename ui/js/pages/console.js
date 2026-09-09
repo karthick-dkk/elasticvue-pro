@@ -2,42 +2,139 @@
 
 import { h, mount, $, clear } from '../lib/dom.js';
 import { bytes, num, dur, ago, dt, download } from '../lib/fmt.js';
-import { state, client, activeClusters, isReadOnly } from '../core/state.js';
+import { state, client, activeClusters } from '../core/state.js';
 import { idb } from '../lib/idb.js';
 import { jsonView } from '../lib/jsonview.js';
 import { card, empty, pill } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { intent, navigateTo } from '../core/intent.js';
-import { writeUnlock, workerStatus } from '../core/es.js';
+import { writesUnlocked, writesAllowed, syncWrites, setWritesUnlocked, writeToggle } from '../core/writes.js';
 
+/**
+ * Common requests, grouped. `w: true` marks one that changes the cluster — it needs the
+ * write unlock, and the picker marks it so nobody runs one by accident.
+ */
 const SNIPPETS = [
-  ['GET',  '/_cluster/health?pretty', ''],
-  ['GET',  '/_cat/indices?v&s=store.size:desc&bytes=gb', ''],
-  ['GET',  '/_cat/nodes?v&h=name,node.role,heap.percent,cpu,load_1m,disk.used_percent', ''],
-  ['GET',  '/_cat/allocation?v&bytes=gb', ''],
-  ['GET',  '/_cat/shards?v&s=state,index', ''],
-  ['GET',  '/_cluster/allocation/explain', '{\n  "index": "my-index",\n  "shard": 0,\n  "primary": true\n}'],
-  ['GET',  '/_cat/thread_pool/write?v&h=node_name,name,active,queue,rejected', ''],
-  ['GET',  '/_snapshot', ''],
-  ['GET',  '/_cat/snapshots/my-repo?v&s=start_epoch:desc', ''],
-  ['GET',  '/_slm/policy?human', ''],
-  ['POST', '/_slm/policy/daily-snapshots/_execute', ''],   // write
-  ['GET',  '/_slm/stats?human', ''],
-  ['GET',  '/_ilm/status', ''],
-  ['GET',  '/*/_ilm/explain?only_errors=true&only_managed=true', ''],
-  ['POST', '/my-index/_ilm/retry', ''],                     // write
-  ['GET',  '/_cluster/settings?include_defaults=false&flat_settings=true', ''],
-  ['PUT',  '/_cluster/settings', '{\n  "persistent": {\n    "cluster.routing.allocation.disk.watermark.low": "85%"\n  }\n}'],  // write
-  ['POST', '/logstash-*/_search', '{\n  "size": 5,\n  "sort": [{ "@timestamp": "desc" }],\n  "query": { "match_all": {} }\n}'],
-  ['GET',  '/_tasks?actions=*search&detailed', ''],
-  ['GET',  '/_nodes/stats/jvm,fs?human', ''],
+  // ---------------------------------------------------------------- diagnostics
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cluster/health?pretty' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cluster/health?level=indices&pretty' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cat/nodes?v&h=name,node.role,master,heap.percent,ram.percent,cpu,load_1m,disk.used_percent' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cat/allocation?v&bytes=gb' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cat/shards?v&s=state,index&h=index,shard,prirep,state,unassigned.reason,node,store' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cluster/allocation/explain?pretty',
+    b: '{\n  "index": "my-index",\n  "shard": 0,\n  "primary": true\n}' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cat/thread_pool/write,search?v&h=node_name,name,active,queue,rejected' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_cat/pending_tasks?v' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_tasks?actions=*search&detailed' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_nodes/stats/jvm,fs,os?human' },
+  { g: 'Health & diagnostics', m: 'GET', p: '/_nodes/hot_threads' },
+
+  // ---------------------------------------------------------------- indices
+  { g: 'Indices', m: 'GET', p: '/_cat/indices?v&s=store.size:desc&bytes=gb' },
+  { g: 'Indices', m: 'GET', p: '/_cat/indices/logstash-*?v&s=index:desc&h=health,status,index,pri,rep,docs.count,store.size' },
+  { g: 'Indices', m: 'GET', p: '/my-index/_settings?flat_settings=true&pretty' },
+  { g: 'Indices', m: 'GET', p: '/my-index/_mapping?pretty' },
+  { g: 'Indices', m: 'GET', p: '/_cat/aliases?v' },
+  { g: 'Indices', m: 'POST', p: '/my-index/_open', w: true },
+  { g: 'Indices', m: 'POST', p: '/my-index/_close', w: true },
+  { g: 'Indices', m: 'DELETE', p: '/my-index', w: true },
+  { g: 'Indices', m: 'POST', p: '/my-index/_refresh', w: true },
+  { g: 'Indices', m: 'POST', p: '/my-index/_flush', w: true },
+  { g: 'Indices', m: 'POST', p: '/my-index/_forcemerge?max_num_segments=1&wait_for_completion=false', w: true },
+  { g: 'Indices', m: 'POST', p: '/my-index/_cache/clear', w: true },
+  { g: 'Indices', m: 'POST', p: '/_aliases', w: true,
+    b: '{\n  "actions": [\n    { "add":    { "index": "my-index-000002", "alias": "my-alias" } },\n' +
+       '    { "remove": { "index": "my-index-000001", "alias": "my-alias" } }\n  ]\n}' },
+
+  // ---------------------------------------------------------------- shards & replicas
+  { g: 'Shards & replicas', m: 'PUT', p: '/my-index/_settings', w: true,
+    b: '{\n  "index": {\n    "number_of_replicas": 1\n  }\n}' },
+  { g: 'Shards & replicas', m: 'PUT', p: '/logstash-*/_settings', w: true,
+    b: '{\n  "index": {\n    "number_of_replicas": 1\n  }\n}' },
+  { g: 'Shards & replicas', m: 'PUT', p: '/_cluster/settings', w: true,
+    b: '{\n  "persistent": {\n    "cluster.max_shards_per_node": 2000\n  }\n}' },
+  { g: 'Shards & replicas', m: 'PUT', p: '/my-index/_settings', w: true,
+    b: '{\n  "index": {\n    "routing.allocation.total_shards_per_node": 3\n  }\n}' },
+  // The shard count of an existing index cannot be changed in place — split or shrink it.
+  { g: 'Shards & replicas', m: 'POST', p: '/my-index/_split/my-index-split', w: true,
+    b: '{\n  "settings": {\n    "index.number_of_shards": 6\n  }\n}' },
+  { g: 'Shards & replicas', m: 'POST', p: '/my-index/_shrink/my-index-shrunk', w: true,
+    b: '{\n  "settings": {\n    "index.number_of_shards": 1,\n    "index.number_of_replicas": 1\n  }\n}' },
+  { g: 'Shards & replicas', m: 'POST', p: '/_cluster/reroute?retry_failed=true', w: true },
+  { g: 'Shards & replicas', m: 'POST', p: '/_cluster/reroute', w: true,
+    b: '{\n  "commands": [\n    {\n      "move": {\n        "index": "my-index",\n        "shard": 0,\n' +
+       '        "from_node": "node-1",\n        "to_node": "node-2"\n      }\n    }\n  ]\n}' },
+
+  // ---------------------------------------------------------------- disk watermarks
+  { g: 'Disk watermarks', m: 'GET', p: '/_cluster/settings?include_defaults=true&flat_settings=true&filter_path=**.disk.watermark**' },
+  { g: 'Disk watermarks', m: 'PUT', p: '/_cluster/settings', w: true,
+    b: '{\n  "persistent": {\n    "cluster.routing.allocation.disk.watermark.low": "85%",\n' +
+       '    "cluster.routing.allocation.disk.watermark.high": "90%",\n' +
+       '    "cluster.routing.allocation.disk.watermark.flood_stage": "95%"\n  }\n}' },
+  // After a flood-stage lock the indices stay read-only until this is cleared.
+  { g: 'Disk watermarks', m: 'PUT', p: '/_all/_settings', w: true,
+    b: '{\n  "index.blocks.read_only_allow_delete": null\n}' },
+  { g: 'Disk watermarks', m: 'PUT', p: '/_cluster/settings', w: true,
+    b: '{\n  "persistent": {\n    "cluster.routing.allocation.disk.watermark.low": null,\n' +
+       '    "cluster.routing.allocation.disk.watermark.high": null,\n' +
+       '    "cluster.routing.allocation.disk.watermark.flood_stage": null\n  }\n}' },
+
+  // ---------------------------------------------------------------- ILM
+  { g: 'ILM', m: 'GET', p: '/_ilm/status' },
+  { g: 'ILM', m: 'GET', p: '/_ilm/policy?pretty' },
+  { g: 'ILM', m: 'GET', p: '/*/_ilm/explain?only_errors=true&only_managed=true' },
+  { g: 'ILM', m: 'PUT', p: '/_ilm/policy/logs-retention', w: true,
+    b: '{\n  "policy": {\n    "phases": {\n      "hot": {\n        "actions": {\n' +
+       '          "rollover": { "max_primary_shard_size": "50gb", "max_age": "1d" },\n' +
+       '          "set_priority": { "priority": 100 }\n        }\n      },\n' +
+       '      "warm": {\n        "min_age": "7d",\n        "actions": {\n' +
+       '          "forcemerge": { "max_num_segments": 1 },\n          "shrink": { "number_of_shards": 1 },\n' +
+       '          "set_priority": { "priority": 50 }\n        }\n      },\n' +
+       '      "delete": {\n        "min_age": "30d",\n        "actions": { "delete": {} }\n      }\n    }\n  }\n}' },
+  { g: 'ILM', m: 'PUT', p: '/_index_template/logs-template', w: true,
+    b: '{\n  "index_patterns": ["logstash-*"],\n  "template": {\n    "settings": {\n' +
+       '      "index.lifecycle.name": "logs-retention",\n      "index.number_of_shards": 1,\n' +
+       '      "index.number_of_replicas": 1\n    }\n  }\n}' },
+  { g: 'ILM', m: 'POST', p: '/my-index/_ilm/retry', w: true },
+  { g: 'ILM', m: 'POST', p: '/_ilm/start', w: true },
+  { g: 'ILM', m: 'POST', p: '/_ilm/stop', w: true },
+  { g: 'ILM', m: 'DELETE', p: '/_ilm/policy/logs-retention', w: true },
+
+  // ---------------------------------------------------------------- snapshots & SLM
+  { g: 'Snapshots & SLM', m: 'GET', p: '/_snapshot?pretty' },
+  { g: 'Snapshots & SLM', m: 'GET', p: '/_cat/snapshots/my-repo?v&s=start_epoch:desc' },
+  { g: 'Snapshots & SLM', m: 'GET', p: '/_slm/policy?human' },
+  { g: 'Snapshots & SLM', m: 'GET', p: '/_slm/stats?human' },
+  { g: 'Snapshots & SLM', m: 'PUT', p: '/_snapshot/my-repo', w: true,
+    b: '{\n  "type": "fs",\n  "settings": {\n    "location": "/mnt/es-backups",\n    "compress": true\n  }\n}' },
+  { g: 'Snapshots & SLM', m: 'PUT', p: '/_snapshot/my-repo/manual-snapshot?wait_for_completion=false', w: true,
+    b: '{\n  "indices": "logstash-*",\n  "ignore_unavailable": true,\n  "include_global_state": false\n}' },
+  { g: 'Snapshots & SLM', m: 'DELETE', p: '/_snapshot/my-repo/manual-snapshot', w: true },
+  { g: 'Snapshots & SLM', m: 'PUT', p: '/_slm/policy/daily-snapshots', w: true,
+    b: '{\n  "schedule": "0 30 1 * * ?",\n  "name": "<daily-{now/d}>",\n  "repository": "my-repo",\n' +
+       '  "config": {\n    "indices": ["logstash-*"],\n    "ignore_unavailable": true,\n' +
+       '    "include_global_state": false\n  },\n' +
+       '  "retention": {\n    "expire_after": "30d",\n    "min_count": 7,\n    "max_count": 60\n  }\n}' },
+  { g: 'Snapshots & SLM', m: 'POST', p: '/_slm/policy/daily-snapshots/_execute', w: true },
+
+  // ---------------------------------------------------------------- search
+  { g: 'Search', m: 'POST', p: '/logstash-*/_search',
+    b: '{\n  "size": 5,\n  "sort": [{ "@timestamp": "desc" }],\n  "query": { "match_all": {} }\n}' },
+  { g: 'Search', m: 'POST', p: '/logstash-*/_count', b: '{\n  "query": { "match_all": {} }\n}' },
+
+  // ---------------------------------------------------------------- cluster settings
+  { g: 'Cluster settings', m: 'GET', p: '/_cluster/settings?include_defaults=false&flat_settings=true' },
+  { g: 'Cluster settings', m: 'PUT', p: '/_cluster/settings', w: true,
+    b: '{\n  "transient": {\n    "cluster.routing.allocation.enable": "all"\n  }\n}' },
+  { g: 'Cluster settings', m: 'PUT', p: '/_cluster/settings', w: true,
+    b: '{\n  "persistent": {\n    "indices.recovery.max_bytes_per_sec": "80mb"\n  }\n}' },
 ];
 
 let host = null;
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 const ui = { method: 'GET', path: '/_cluster/health', body: '', running: false, res: null, raw: false,
-             filter: '', showFav: false, allowWrites: false };
+             filter: '', showFav: false };
 let history = [];
 
 export function render(el) {
@@ -45,10 +142,7 @@ export function render(el) {
   if (intent.console) { Object.assign(ui, intent.console); intent.console = null; ui.res = null; }
   idb.allQueries().then((q) => { history = (q || []).sort((a, b) => b.ts - a.ts); drawHistory(); });
   // The core owns the unlock, not this page — re-read it rather than trusting our copy.
-  workerStatus().then((st) => {
-    const on = !!(st && st.consoleWrites);
-    if (on !== ui.allowWrites) { ui.allowWrites = on; draw(); }
-  }).catch(() => {});
+  syncWrites().then(draw).catch(() => {});
   draw();
 }
 export function onData() {}
@@ -60,12 +154,11 @@ function draw() {
   if (isSnapshotMode()) return mount(host, snapshotNotice('The REST console'));
   if (!c) return mount(host, empty('No cluster selected'));
 
-  const dl = h('datalist#ep-list', ...SNIPPETS.map((s) => h('option', { value: s[1] })));
+  const dl = h('datalist#ep-list', ...[...new Set(SNIPPETS.map((s) => s.p))].map((v) => h('option', { value: v })));
 
   // The console offers every method: this is the one page where a person types the
   // request. Whether the core accepts a write is decided by the toggle below (a session
   // unlock) or by readOnly:false in the config — never by which options are listed here.
-  const ro = isReadOnly();
   const methods = METHODS;
   if (!methods.includes(ui.method)) ui.method = 'GET';
   const methodSel = h('select#c-method', { style: { width: '96px', fontWeight: 700 },
@@ -78,10 +171,20 @@ function draw() {
     oninput: (e) => { ui.path = e.target.value; },
     onkeydown: (e) => { if (e.key === 'Enter') run(); } });
 
-  const snippetSel = h('select', { style: { maxWidth: '260px' }, onchange: (e) => { const s = SNIPPETS[e.target.value]; if (!s) return;
-      ui.method = s[0]; ui.path = s[1]; ui.body = s[2]; e.target.value = ''; draw(); } },
+  // Grouped, so the list stays usable now that it covers ILM, watermarks and shards.
+  const groups = [...new Set(SNIPPETS.map((s) => s.g))];
+  const snippetSel = h('select', { style: { maxWidth: '300px' },
+      onchange: (e) => {
+        const s = SNIPPETS[e.target.value];
+        e.target.value = '';
+        if (!s) return;
+        ui.method = s.m; ui.path = s.p; ui.body = s.b || '';
+        draw();
+      } },
     h('option', { value: '' }, 'Common requests…'),
-    ...SNIPPETS.map((s, i) => h('option', { value: String(i) }, `${isWrite(s[0], s[1]) ? '✎ ' : ''}${s[0]} ${s[1]}`)));
+    ...groups.map((g) => h('optgroup', { label: g },
+      ...SNIPPETS.map((s, i) => [s, i]).filter(([s]) => s.g === g)
+        .map(([s, i]) => h('option', { value: String(i) }, `${s.w ? '✎ ' : ''}${s.m} ${s.p}`)))));
 
   // ---- request line: method · path · run
   const requestBar = h('section.card',
@@ -93,7 +196,7 @@ function draw() {
       h('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', fontSize: '11px', flexWrap: 'wrap' } },
         h('span.muted', h('b', c.name), ' · ', h('span.mono', c.url), c.via ? ` · via ${c.via}` : ''),
         h('span.muted', { style: { marginLeft: 'auto' } }, 'Ctrl/⌘+Enter runs · Enter in the path runs'),
-        writeToggle(ro))));
+        writeToggle(draw))));
 
   // ---- Query | Results
   const bodyArea = h('textarea#c-body', { spellcheck: false,
@@ -127,36 +230,6 @@ function draw() {
  *    for requests sent from this page. It is held in the core's memory, never written to
  *    disk, and gone on restart.
  */
-async function setWriteUnlock(want) {
-  if (want && !confirm(
-    'Allow writes from the REST console?\n\n' +
-    'Requests you type here — PUT, PATCH, DELETE, non-search POSTs — will be sent to the cluster.\n' +
-    'Everything else in the app stays read-only, and this is forgotten when the app closes.')) {
-    return false;
-  }
-  const res = await writeUnlock(want);
-  ui.allowWrites = res && res.ok ? !!res.consoleWrites : false;
-  draw();
-  return ui.allowWrites === want;
-}
-
-function writeToggle(readOnly) {
-  if (!readOnly) {
-    return h('span.pill.yellow', { title: 'readOnly: false in the config — every page may write.' },
-      h('i.dot'), 'writes enabled (config)');
-  }
-  const on = ui.allowWrites;
-  return h('label', {
-      title: on
-        ? 'PUT, PATCH, DELETE and non-search POSTs typed here will be sent. Background refreshes stay read-only.'
-        : 'The core refuses anything but GET/HEAD and search POSTs. Tick to send writes you type on this page.',
-      style: { display: 'inline-flex', alignItems: 'center', gap: '5px', cursor: 'pointer',
-               fontSize: '11px', fontWeight: 600, color: on ? 'var(--warning)' : 'var(--text-muted)' } },
-    h('input', { type: 'checkbox', checked: on, style: { cursor: 'pointer' },
-      onchange: async (e) => { if (!(await setWriteUnlock(e.target.checked))) e.target.checked = ui.allowWrites; } }),
-    on ? '✎ writes allowed' : '🔒 read-only');
-}
-
 /** The search-family POSTs the core allows even in read-only mode. */
 const SEARCH_POST = /(^|\/)_(search|msearch|count|field_caps|mget|explain|validate\/query|render\/template|terms_enum|search_shards|async_search|eql\/search|sql|analyze|rank_eval|resolve\/index|knn_search)(\/|\?|$)/;
 
@@ -187,7 +260,7 @@ async function run() {
   const c = cluster();
   if (!c) return;
   // Confirm only when the request is a write AND something will actually let it through.
-  if (isWrite(ui.method, ui.path) && (ui.allowWrites || !isReadOnly()) && !confirmWrite(c)) return;
+  if (isWrite(ui.method, ui.path) && writesAllowed() && !confirmWrite(c)) return;
   const cl = client(c.id);
   ui.running = true;
   const btn = $('#c-run'); if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
@@ -196,7 +269,7 @@ async function run() {
   // allowWrites is set here and nowhere else in the app; the core still refuses it
   // unless the session has been unlocked above.
   const res = await cl.request(ui.method, ui.path.trim() || '/', ui.body.trim() || null,
-                               { allowWrites: ui.allowWrites });
+                               { allowWrites: writesUnlocked() });
   ui.res = res;
   ui.running = false;
   if (btn) { btn.disabled = false; btn.textContent = 'Run ▸'; }
@@ -245,7 +318,7 @@ function responseCard() {
     ? h('div.banner.warn', { style: { margin: 0 } },
         h('div', h('div.ttl', 'Blocked by read-only mode'), h('div', r.message),
           h('div', { style: { marginTop: '8px' } },
-            h('button.btn.sm.primary', { onclick: () => setWriteUnlock(true) }, 'Allow writes on this page'))))
+            h('button.btn.sm.primary', { onclick: async () => { await setWritesUnlocked(true); draw(); } }, 'Allow writes'))))
     : !r.status && r.message
     ? h('div',
         h('div.banner.err', { style: { margin: 0 } }, h('div', h('div.ttl', r.kind === 'tunnel_error' ? 'Jump host' : /^tls/.test(r.kind || '') ? 'Certificate' : 'Request failed'),

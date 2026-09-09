@@ -138,6 +138,12 @@ export async function setConfig(config, handle) {
   for (const c of config.clusters) {
     state.clients.set(c.id, new EsClient(c, state.defaults, reprime));
   }
+  // Drop what we cached for clusters the file no longer names — otherwise a reload
+  // that removed or renamed a cluster keeps rendering it from stale data.
+  const live = new Set(config.clusters.map((c) => c.id));
+  for (const m of [state.data, state.indices]) {
+    for (const id of [...m.keys()]) if (!live.has(id)) m.delete(id);
+  }
   await reprime();
   bus.emit('config', config);
 }

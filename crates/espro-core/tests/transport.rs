@@ -343,10 +343,10 @@ async fn re_priming_a_cluster_at_a_new_address_does_not_reuse_the_old_client() {
     assert_eq!(b.hits().len(), 1, "the second request must go to the new address");
 }
 
-/* ---------------------- the REST console's write unlock ---------------------- */
+/* ------------------------- the operator write unlock ------------------------- */
 
 #[tokio::test]
-async fn the_console_can_write_only_when_the_operator_has_unlocked_the_session() {
+async fn a_ui_action_can_write_only_when_the_operator_has_unlocked_the_session() {
     let dir = TempDir::new("unlock");
     let srv = TestServer::start().await;
     let c = primed(&dir, &srv.url(), true).await;
@@ -360,7 +360,7 @@ async fn the_console_can_write_only_when_the_operator_has_unlocked_the_session()
 
     let u = c.handle(json!({ "type": "WRITE_UNLOCK", "on": true })).await;
     assert_eq!(u["ok"], json!(true));
-    assert_eq!(u["consoleWrites"], json!(true));
+    assert_eq!(u["writesUnlocked"], json!(true));
 
     let res = c.handle(del.clone()).await;
     assert_eq!(res["ok"], json!(true), "{res}");
@@ -372,7 +372,7 @@ async fn the_console_can_write_only_when_the_operator_has_unlocked_the_session()
 }
 
 #[tokio::test]
-async fn an_unlocked_console_does_not_let_the_rest_of_the_app_write() {
+async fn an_unlocked_session_does_not_let_the_rest_of_the_app_write() {
     let dir = TempDir::new("unlock2");
     let srv = TestServer::start().await;
     let c = primed(&dir, &srv.url(), true).await;
@@ -383,7 +383,7 @@ async fn an_unlocked_console_does_not_let_the_rest_of_the_app_write() {
         .handle(json!({ "type": "ES", "clusterId": "es", "method": "DELETE", "path": "/logstash-2026.01.01" }))
         .await;
 
-    assert_eq!(res["kind"], json!("blocked_readonly"), "only a hand-typed request may write");
+    assert_eq!(res["kind"], json!("blocked_readonly"), "only a request the operator asked for may write");
     assert_eq!(srv.connections(), 0);
 }
 
@@ -415,14 +415,14 @@ async fn every_method_an_operator_may_type_reaches_the_cluster_once_unlocked() {
 async fn the_unlock_is_reported_by_ping_and_dropped_by_forget() {
     let dir = TempDir::new("unlockstate");
     let c = core(&dir);
-    assert_eq!(c.handle(json!({ "type": "PING" })).await["consoleWrites"], json!(false),
+    assert_eq!(c.handle(json!({ "type": "PING" })).await["writesUnlocked"], json!(false),
                "a session must always start locked");
 
     c.handle(json!({ "type": "WRITE_UNLOCK", "on": true })).await;
-    assert_eq!(c.handle(json!({ "type": "PING" })).await["consoleWrites"], json!(true));
+    assert_eq!(c.handle(json!({ "type": "PING" })).await["writesUnlocked"], json!(true));
 
     c.handle(json!({ "type": "FORGET" })).await;
-    assert_eq!(c.handle(json!({ "type": "PING" })).await["consoleWrites"], json!(false),
+    assert_eq!(c.handle(json!({ "type": "PING" })).await["writesUnlocked"], json!(false),
                "FORGET means forget this too");
 }
 
@@ -435,8 +435,65 @@ async fn the_unlock_is_never_written_to_disk() {
 
     // a fresh Core over the same data dir starts locked again
     let c2 = core(&dir);
-    assert_eq!(c2.handle(json!({ "type": "PING" })).await["consoleWrites"], json!(false));
+    assert_eq!(c2.handle(json!({ "type": "PING" })).await["writesUnlocked"], json!(false));
 
     let text = std::fs::read_to_string(dir.join("pins.json")).expect("pins.json");
-    assert!(!text.contains("consoleWrites"), "the unlock must not be persisted anywhere:\n{text}");
+    assert!(!text.contains("writesUnlocked"), "the unlock must not be persisted anywhere:\n{text}");
+}
+
+#[tokio::test]
+async fn snapshot_management_is_refused_until_the_operator_unlocks() {
+    // Exactly the requests the Snapshots page makes.
+    let dir = TempDir::new("snapmgmt");
+    let srv = TestServer::start().await;
+    let c = primed(&dir, &srv.url(), true).await;
+    let actions = [
+        ("PUT", "/_snapshot/daily/manual-2026.09.09-120000?wait_for_completion=false"),
+        ("DELETE", "/_snapshot/daily/manual-2026.09.09-120000"),
+        ("POST", "/_snapshot/daily/manual-2026.09.09-120000/_restore?wait_for_completion=false"),
+        ("PUT", "/_snapshot/daily?verify=true"),
+        ("DELETE", "/_snapshot/daily"),
+        ("POST", "/_snapshot/daily/_verify"),
+        ("POST", "/_snapshot/daily/_cleanup"),
+        ("POST", "/_slm/policy/nightly/_execute"),
+        ("DELETE", "/logstash-2026.01.01"),
+    ];
+
+    for (method, path) in actions {
+        let res = c
+            .handle(json!({ "type": "ES", "clusterId": "es", "method": method, "path": path, "allowWrites": true }))
+            .await;
+        assert_eq!(res["kind"], json!("blocked_readonly"), "{method} {path} must need the unlock");
+    }
+    assert_eq!(srv.connections(), 0, "not one of them reached a socket");
+
+    c.handle(json!({ "type": "WRITE_UNLOCK", "on": true })).await;
+    for (method, path) in actions {
+        let res = c
+            .handle(json!({ "type": "ES", "clusterId": "es", "method": method, "path": path, "allowWrites": true }))
+            .await;
+        assert_eq!(res["ok"], json!(true), "{method} {path} -> {res}");
+    }
+    assert_eq!(srv.hits().len(), actions.len());
+}
+
+#[tokio::test]
+async fn reading_snapshots_never_needs_the_unlock() {
+    // The page must render fully while the session is locked; only acting needs writes.
+    let dir = TempDir::new("snapread");
+    let srv = TestServer::start().await;
+    let c = primed(&dir, &srv.url(), true).await;
+
+    for path in [
+        "/_snapshot",
+        "/_snapshot/daily/_all?ignore_unavailable=true&verbose=true",
+        "/_snapshot/daily/manual-2026.09.09-120000?ignore_unavailable=true",
+        "/_cat/snapshots/daily?format=json",
+        "/_slm/policy",
+        "/_slm/stats",
+        "/_cat/indices/*?format=json",
+    ] {
+        let res = c.handle(json!({ "type": "ES", "clusterId": "es", "path": path })).await;
+        assert_eq!(res["ok"], json!(true), "{path} -> {res}");
+    }
 }

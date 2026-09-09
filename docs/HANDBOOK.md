@@ -163,7 +163,7 @@ On the jump server itself: same exe, `clusters.yaml` without `via:`, optionally 
 
 | | |
 |---|---|
-| Elasticsearch writes | while `readOnly: true` (default) the core refuses anything but GET/HEAD and `_search`-family POSTs, before opening a socket. Two deliberate acts lift it: `readOnly: false` in the config (everywhere), or ticking *Allow writes* in the REST console — a session-only unlock, held in memory, that applies **only** to requests typed on that page. Background refreshes stay read-only either way |
+| Elasticsearch writes | while `readOnly: true` (default) the core refuses anything but GET/HEAD and `_search`-family POSTs, before opening a socket. Two deliberate acts lift it: `readOnly: false` in the config (everywhere), or ticking *Allow writes* — a session-only unlock, held in memory, that applies **only** to actions the operator takes by hand (a console request, a snapshot, an index action). Background refreshes stay read-only either way |
 | Credential | in the app process; optionally in the OS vault (opt-in). Never in `pins.json`, never in logs. The YAML is the only file that may hold it |
 | Jump host | your SSH key (OpenSSH format, optional passphrase — asked in the app) or a session password; host key TOFU + pin; `permitopen`-restricted keys (esfleet DEPLOY.md §2/§3) are enough — the app only forwards to the cluster ports |
 | TLS | rustls; OS trust store + Mozilla roots; per-address SHA-256 pin on explicit consent; pin mismatch → credential not sent |
@@ -185,9 +185,12 @@ Against a local restricted `sshd` (`restrict,port-forwarding,permitopen="*:9470"
   credential not sent; untrust + trust new → OK; `tls: system` strict fails, `insecure` passes
 - read-only guard: DELETE/PUT/other POST blocked, `_search` POST allowed; 20 concurrent
   requests through one tunnel in 0.36 s
-- the console write unlock: a write is refused with the unlock off, accepted with it on, and
-  still refused for a request that did not come from the console — checked against a server
-  that counts TCP accepts, so "refused before a socket is opened" is measured, not asserted
+- the write unlock: a write is refused with the unlock off, accepted with it on, and still
+  refused for a request the operator did not ask for — checked against a server that counts
+  TCP accepts, so "refused before a socket is opened" is measured, not asserted. The same
+  test covers every snapshot, repository, SLM and index-management call the UI makes
+- every page rendered against the real core in jsdom (`tools/render-check.mjs`), and the
+  config reload path driven end to end with a sealed credential
 - the full UI (all 7 pages) in a browser through the dev bridge, and the real Tauri app on
   Linux under Xvfb: config → tunnel → trust prompts → 3/3 clusters online
 - the Windows (mingw) build of the core under Wine: same tunnel / pin / guard flow, plus
@@ -200,10 +203,10 @@ Against a local restricted `sshd` (`restrict,port-forwarding,permitopen="*:9470"
 - One `jump_hosts:` entry per jump host, not per cluster — the SSH session is shared.
 - Keep the jump-host key restricted (`restrict,port-forwarding,permitopen`) exactly as for
   esfleet; the app needs nothing more.
-- Leave `readOnly: true`. When you do need to send a write, tick *Allow writes* in the REST
-  console rather than flipping the file: the unlock covers only requests you type there, is
-  forgotten when the app closes, and leaves every automatic refresh read-only. Reserve
-  `readOnly: false` for a machine whose whole purpose is administration.
+- Leave `readOnly: true`. When you do need to write, tick *Allow writes* on the page you are
+  working from rather than flipping the file: the unlock covers only the actions you take by
+  hand, is forgotten when the app closes, and leaves every automatic refresh read-only.
+  Reserve `readOnly: false` for a machine whose whole purpose is administration.
 
 ## Reference links and other docs
 

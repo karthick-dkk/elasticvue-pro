@@ -13,6 +13,7 @@ import { editCluster, editJumpHost, editCredentials, editDefaults, unlockSealed 
 import { card, pill, table, empty } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { isSnapshotMode } from '../core/snapshot.js';
+import { applyLoadedConfig } from '../ui/load-config.js';
 
 let host = null;
 
@@ -224,9 +225,11 @@ function msg(text, cls = 'banner') {
 async function reload() {
   try {
     if (!state.handle) return msg('This config was loaded once; pick it again to reload.', 'banner warn');
+    msg('Reading the file…', 'banner');
     const next = await cfg.readPath(state.handle);
-    await setConfig(next, state.handle);
-    await refreshAll({ force: true });
+    // applyLoadedConfig also reopens sealed secrets and re-applies a remembered
+    // credential — without it a reload leaves every cluster without one.
+    await applyLoadedConfig(next, state.handle);
     draw(); loadTrust();
     msg(`Reloaded ${next.fileMeta.name} — ${next.clusters.length} cluster(s).`);
   } catch (e) { msg(`Reload failed: ${e.message}`, 'banner err'); }
@@ -237,8 +240,7 @@ async function repick() {
     const path = await cfg.pickConfigFile();
     if (!path) return;
     const next = await cfg.readPath(path);
-    await setConfig(next, path);
-    await refreshAll({ force: true });
+    await applyLoadedConfig(next, path);
     draw(); loadTrust();
     msg(`Loaded ${next.fileMeta.name}.`);
   } catch (e) {
