@@ -47,10 +47,27 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf
 
+      # On a v* tag this creates the release (first job to finish) and uploads its
+      # bundles to it; the other platforms then upload to the same release. On a
+      # branch push tagName is empty, so it only builds — no release is made.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ElasticVue Pro __VERSION__
+          releaseBody: |
+            Multi-cluster Elasticsearch dashboard — direct or through an SSH jump host.
+
+            See [CHANGELOG.md](https://github.com/karthick-dkk/elasticvue-pro/blob/main/CHANGELOG.md)
+            for what changed, and the [README](https://github.com/karthick-dkk/elasticvue-pro#downloads)
+            for which package to take.
+
+            **The binaries are not code-signed.** Windows SmartScreen: *More info → Run anyway*.
+            macOS Gatekeeper: right-click → *Open*, or
+            `xattr -dr com.apple.quarantine "/Applications/ElasticVue Pro.app"`.
+          releaseDraft: false
+          prerelease: false
           args: ${{ matrix.args }}
 
       - uses: actions/upload-artifact@v4
