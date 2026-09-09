@@ -42,7 +42,7 @@ parking_lot = "0.12"
 dirs = "6"
 hex = "0.4"
 rand = "0.8"
-keyring = { version = "3", optional = true, features = ["apple-native", "windows-native"] }
+keyring = { version = "3", optional = true }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", optional = true, features = ["fs", "cors"] }
 
@@ -51,3 +51,16 @@ tower-http = { version = "0.6", optional = true, features = ["fs", "cors"] }
 # exercised through an actual handshake rather than a mocked verifier.
 rcgen = "0.13"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+# One credential-store backend per platform. Without a target-specific feature keyring
+# compiles but has no store to talk to, which is how Linux behaved before.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", optional = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", optional = true, features = ["apple-native"] }
+
+# Secret Service (GNOME Keyring / KWallet) over D-Bus, so the credential survives a
+# reboot; linux-keyutils alone would lose it at the end of the session.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", optional = true, features = ["sync-secret-service", "crypto-rust"] }

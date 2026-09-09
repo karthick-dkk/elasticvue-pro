@@ -47,6 +47,15 @@ Writes are still off by default. Ticking **Allow writes** unlocks the session in
   last snapshot or open alerts, ascending or descending, and narrowed to what needs attention.
 
 ### Builds
+- **macOS and Linux packages.** Releases now carry a package per platform, each built by CI
+  on that platform: the Windows portable zip and NSIS installer as before, plus `.dmg` for
+  Apple Silicon and Intel, and `.AppImage`, `.deb` and `.rpm` for Linux x64. The core, the
+  read-only guard, the pinning and the UI are identical everywhere; the web view differs
+  (WebView2 / WKWebView / WebKitGTK), and portable mode remains Windows-only. None of the
+  binaries are code-signed, so macOS Gatekeeper needs right-click → *Open* on first run.
+- The OS credential store now has a backend on every platform. `keyring` was built with only
+  the Windows and macOS backends, so on Linux the optional vault compiled but had nothing to
+  talk to; Secret Service (GNOME Keyring / KWallet) is wired up there now.
 - **The exe carries its version**: `elasticvue-pro-2.2.0.exe`, so which build a machine is
   running is answerable by looking at it rather than by starting it. The build it replaces
   moves to [`previous-releases/`](previous-releases/) with its checksum and a note on rolling

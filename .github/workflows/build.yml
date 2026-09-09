@@ -11,6 +11,52 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Installers and app bundles, one runner per platform. fail-fast is off so a platform
+  # that breaks does not hide the state of the other three.
+  bundle:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, label: windows-x64,  args: '' }
+          - { os: macos-14,       label: macos-arm64,  args: '--target aarch64-apple-darwin' }
+          - { os: macos-13,       label: macos-x64,    args: '--target x86_64-apple-darwin' }
+          - { os: ubuntu-22.04,   label: linux-x64,    args: '' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || (matrix.os == 'macos-13' && 'x86_64-apple-darwin' || '') }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.label }}
+
+      # Tauri renders through WebKitGTK on Linux; nothing is needed on Windows or macOS.
+      - name: linux webkit dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ElasticVue-Pro-${{ matrix.label }}
+          path: |
+            target/release/bundle/**/*
+            target/*/release/bundle/**/*
+          if-no-files-found: warn
+
+  # The portable Windows folder — one exe beside its loader, no installer and no admin
+  # rights. tauri-action does not produce this, and it is what the handbook deploys.
   portable:
     name: windows portable
     runs-on: windows-latest
@@ -21,7 +67,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: win
+          key: win-portable
 
       - name: clippy (whole workspace, incl. the Tauri shell)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -33,9 +79,9 @@ jobs:
         shell: pwsh
         run: |
           $ver = (Select-String -Path Cargo.toml -Pattern '^version' | Select-Object -First 1) -replace '.*"(.*)".*','$1'
+          $exe = "elasticvue-pro-$ver.exe"
           $d = "dist/ElasticVue-Pro-portable-win64"
           New-Item -ItemType Directory -Force -Path "$d/data","$d/WebView2Runtime" | Out-Null
-          $exe = "elasticvue-pro-$ver.exe"
           Copy-Item target/release/elasticvue-pro.exe "$d/$exe"
           # WebView2Loader.dll ships with the webview2-com-sys crate source
           $loader = Get-ChildItem -Recurse -Filter WebView2Loader.dll `
@@ -44,7 +90,10 @@ jobs:
           if (-not $loader) { $loader = Get-Item WebView2Loader.dll }
           Copy-Item $loader.FullName $d/
           Copy-Item ui/clusters.example.yaml $d/
-          Copy-Item tools/PORTABLE-README.txt $d/README.txt
+          (Get-Content tools/PORTABLE-README.txt) `
+            -replace 'elasticvue-pro-<ver>\.exe', $exe -replace 'elasticvue-pro\.exe', $exe `
+            -replace '^ElasticVue Pro [0-9][0-9.]* -', "ElasticVue Pro $ver -" |
+            Set-Content "$d/README.txt"
           New-Item -ItemType File -Force -Path "$d/portable" | Out-Null
           Set-Content "$d/WebView2Runtime/PUT-RUNTIME-HERE.txt" `
             'Unpack Microsoft WebView2 Fixed Version Runtime (x64) here - see ..\README.txt. Not needed on Windows 10/11 or Server 2019+.'
@@ -53,8 +102,6 @@ jobs:
             ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
             Set-Content "$d/SHA256SUMS.txt"
           Compress-Archive -Path $d -DestinationPath "dist/ElasticVue-Pro-$ver-portable-win64.zip" -Force
-          "version=$ver" >> $env:GITHUB_OUTPUT
-        id: pack
 
       - uses: actions/upload-artifact@v4
         with:
@@ -62,25 +109,8 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-      - name: attach to the release
+      - name: attach the portable zip to the release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
-          generate_release_notes: true
-
-  installer:
-    name: windows nsis installer
-    runs-on: windows-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: win-nsis
-      - run: cargo install tauri-cli --version "^2" --locked
-      - run: cargo tauri build
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: src-tauri/target/release/bundle/nsis/*-setup.exe

@@ -2,11 +2,13 @@
 
 **Multi-cluster Elasticsearch dashboard for Windows — reaches clusters behind an SSH jump host, decides certificate trust itself, and never writes to a cluster.**
 
-[![build](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build-windows.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build-windows.yml)
+[![build](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build.yml)
 [![ci](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/ci.yml)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust)
-![Windows x64](https://img.shields.io/badge/Windows-x64%20portable-0078D4?logo=windows)
+![Windows](https://img.shields.io/badge/Windows-x64-0078D4?logo=windows)
+![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x64-000000?logo=apple)
+![Linux](https://img.shields.io/badge/Linux-x64-FCC624?logo=linux&logoColor=black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 A portable desktop app (Tauri 2 + a small Rust core, vanilla-JS UI, no Node.js) that shows
@@ -161,14 +163,44 @@ See [SECURITY.md](SECURITY.md). Short version: read-only towards Elasticsearch, 
 never in plain text on disk, TLS and SSH host keys pinned on explicit consent, loopback-only
 listeners, unsigned binaries (verify `SHA256SUMS.txt` or build from source).
 
-## Builds in this repository
+## Downloads
 
-The current portable build is committed at the root — `elasticvue-pro-<version>.exe` next to
-`WebView2Loader.dll`, with `SHA256SUMS.txt` covering the pair. Copy both to a Windows machine
-and run it; nothing else is needed on Windows 10/11 or Server 2019+.
+Every [release](../../releases) carries a package per platform, built by CI on that platform.
 
-Superseded builds move to [previous-releases/](previous-releases/) with their checksums, so a
-machine can be rolled back to a binary that is known to have worked.
+| Platform | Package | Notes |
+|---|---|---|
+| **Windows** x64 | `ElasticVue-Pro-<ver>-portable-win64.zip` | **Recommended.** One folder, no installer, no admin rights. Unzip and run. |
+| **Windows** x64 | `ElasticVue Pro_<ver>_x64-setup.exe` | NSIS installer, per-user; embeds the WebView2 bootstrapper. |
+| **macOS** Apple Silicon | `ElasticVue Pro_<ver>_aarch64.dmg` | macOS 10.15+. Unsigned — see below. |
+| **macOS** Intel | `ElasticVue Pro_<ver>_x64.dmg` | macOS 10.15+. Unsigned — see below. |
+| **Linux** x64 | `elasticvue-pro_<ver>_amd64.AppImage` | Self-contained; `chmod +x` and run. |
+| **Linux** x64 | `elasticvue-pro_<ver>_amd64.deb` | Debian/Ubuntu. Needs `libwebkit2gtk-4.1-0`, `libgtk-3-0`. |
+| **Linux** x64 | `elasticvue-pro-<ver>-1.x86_64.rpm` | Fedora/RHEL. |
+
+The current Windows portable build is also committed at the repo root —
+`elasticvue-pro-<version>.exe` next to `WebView2Loader.dll`, with `SHA256SUMS.txt` covering
+the pair — so it can be used straight from a clone. Superseded builds move to
+[previous-releases/](previous-releases/) with their checksums, so a machine can be rolled back
+to a binary that is known to have worked.
+
+**None of the binaries are code-signed.** Windows SmartScreen: *More info → Run anyway*.
+macOS Gatekeeper refuses an unsigned, un-notarised app outright — right-click → *Open*, or
+`xattr -dr com.apple.quarantine "/Applications/ElasticVue Pro.app"`. Verify checksums or build
+from source if that matters to you.
+
+### What differs by platform
+
+The Rust core, the read-only guard, the TLS and SSH host-key pinning and the whole UI are the
+same everywhere. Three things are not:
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Web view | WebView2 (Edge) | WKWebView | WebKitGTK |
+| Portable mode (`portable` marker, `data\` beside the exe) | yes | no — use the app bundle | no — use the AppImage |
+| Optional OS credential store | Credential Manager | Keychain | Secret Service (GNOME Keyring / KWallet) |
+
+Windows is the platform the app is deployed and documented for; macOS and Linux builds exist
+so the app can be run and developed anywhere, and are less exercised in the field.
 
 ## Documentation
 
