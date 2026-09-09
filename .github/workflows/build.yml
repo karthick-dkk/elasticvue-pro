@@ -10,6 +10,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Creating a release and uploading assets needs write access to contents. When a
+# repository's default GITHUB_TOKEN is read-only — which it is here — every release
+# call comes back 403 and the build looks like it failed after succeeding.
+permissions:
+  contents: write
+
+# Three tag pushes left five build runs competing for the same runners. Supersede
+# rather than pile up.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Installers and app bundles, one runner per platform. fail-fast is off so a platform
   # that breaks does not hide the state of the other three.
