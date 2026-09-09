@@ -46,25 +46,30 @@ jobs:
         run: node tools/check-ui.mjs
 
       # Static checks cannot see a call to something that was never imported at all.
-      # Rendering every page against the real core does.
+      # Rendering every page against the real core does — and it has to render pages with
+      # data in them, or every page just draws "No cluster selected" and proves nothing.
       - name: build the dev bridge
         run: cargo build -p espro-core --features bridge --bin espro-bridge
-      - name: render every page
+      - name: render every page against a mock cluster
         run: |
           npm install --no-save --no-fund --no-audit jsdom
+
+          node tools/mock-es.mjs 9299 &
+          until curl -sf http://127.0.0.1:9299/_cluster/health >/dev/null; do sleep 1; done
+
           ./target/debug/espro-bridge ui 8765 &
-          for _ in $(seq 1 30); do
-            curl -sf -X POST http://127.0.0.1:8765/bridge -H 'content-type: application/json' \
-              -d '{"type":"PING"}' >/dev/null && break
-            sleep 1
-          done
-          node tools/render-check.mjs
+          until curl -sf -X POST http://127.0.0.1:8765/bridge \
+            -H 'content-type: application/json' -d '{"type":"PING"}' >/dev/null; do sleep 1; done
+
+          node tools/render-check.mjs --config tools/render-fixture.json
 
   audit:
     name: dependency advisories
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      # Pinned to the exact tag: the action publishes v2.0.0 but no moving `v2`, so
+      # `@v2` never resolved and this job failed before it ran anything.
+      - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -131,6 +131,7 @@ console.error = (...a) => { errors.push('console.error: ' + a.map(String).join('
 
 const load = (p) => import(path.join(UI, 'js', p));
 const state = await load('core/state.js');
+let configured = false;
 
 if (configPath) {
   const cfgMod = await load('core/config.js');
@@ -140,6 +141,9 @@ if (configPath) {
   await state.setConfig(config, configPath);
   await state.refreshAll({ force: true });
   for (const c of config.clusters) await state.fetchIndices(c.id, '*').catch(() => {});
+  configured = config.clusters.length > 0;
+} else {
+  console.log('render-check: no --config given — pages will draw their "no cluster" state only');
 }
 
 const PAGES = ['overview', 'alerts', 'indices', 'console', 'logs', 'snapshots', 'nodes', 'settings'];
@@ -157,7 +161,11 @@ for (const name of PAGES) {
     await new Promise((r) => setTimeout(r, 150));
     const nodes = view.querySelectorAll('*').length;
     const failed = errors.length > before;
-    if (!failed && nodes < 3) errors.push(`${name}: rendered only ${nodes} node(s) — the page is effectively blank`);
+    // Without a config the pages correctly draw a single "No cluster selected" node, so
+    // the blank-page check only means anything once there is something to render.
+    if (!failed && configured && nodes < 3) {
+      errors.push(`${name}: rendered only ${nodes} node(s) — the page is effectively blank`);
+    }
     console.log(`${errors.length > before ? '✗' : '✓'} ${name.padEnd(10)} ${String(nodes).padStart(5)} nodes`);
   } catch (e) {
     console.log(`✗ ${name.padEnd(10)} THREW: ${e.message}`);
