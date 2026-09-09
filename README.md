@@ -2,7 +2,8 @@
 
 **Multi-cluster Elasticsearch dashboard for Windows — reaches clusters behind an SSH jump host, decides certificate trust itself, and never writes to a cluster.**
 
-[![build](https://github.com/karthick-dkk/elasticvue-pro-desktop/actions/workflows/build-windows.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro-desktop/actions)
+[![build](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build-windows.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/build-windows.yml)
+[![ci](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/karthick-dkk/elasticvue-pro/actions/workflows/ci.yml)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust)
 ![Windows x64](https://img.shields.io/badge/Windows-x64%20portable-0078D4?logo=windows)
@@ -29,12 +30,12 @@ Browser tools cannot do three things an operator behind a jump host needs:
 
 - **Clusters** — health, nodes, disk usage, ILM/SLM status, repositories, last snapshot, alerts; fleet tiles and per-cluster charts
 - **Indices** — daily `logstash-<client>-YYYY.MM.DD` indices with a client / date picker, sizes, health
-- **REST console** — request bar, **Query | Results** side by side, history with favourites (click to load, re-run)
+- **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites (click to load, re-run). Writes are off until you tick *Allow writes*, which unlocks the console for that session only — the rest of the app stays read-only
 - **Live logs** — tail a day's index with a time histogram
 - **Snapshots & SLM** — per repository: snapshots, from/to availability of logstash days, policies and last run
 - **Nodes & shards** — heap, CPU, disk per node; unassigned / initializing shards
 - **Config in the UI** — add clusters, jump hosts, the shared credential and defaults; saved as `config_cluster.json`
-- **Security** — read-only guard in the core; secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
+- **Security** — read-only guard in the core (writes only from a request you typed, in an unlocked console); secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
 - **Portable** — one folder, no installer, no admin rights; runs on the analyst PC and on the jump server itself
 - **Snapshot mode** — render everything from a JSON file collected elsewhere (esfleet / PowerShell collector) with no network access
 
@@ -76,7 +77,7 @@ Created and edited in the app (Config page), or hand-written. JSON is what the a
 | `jump_hosts.<id>` | SSH host, port, user, `keyFile` (OpenSSH format; passphrase is asked in the app, never stored) |
 | `clusters[].via` | route through that jump host; the hostname is resolved **on the jump host** |
 | `clusters[].tls` / `defaults.tls` | `auto` (OS store, else ask & pin — default), `system` (strict), `insecure` (lab only) |
-| `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs |
+| `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you unlock the REST console for the session *and* it is a request you typed there; `false` allows writes from anywhere |
 
 Command line: `elasticvue-pro.exe --config C:\path\config_cluster.json` (or `ELASTICVUE_CONFIG`) pre-provisions the file, handy on a jump server.
 
@@ -107,8 +108,13 @@ tools/build-windows-cross.sh          # mingw-w64, x86_64-pc-windows-gnu, std bu
 
 ```bash
 cargo run -p espro-core --features bridge --bin espro-bridge -- ui 8765   # http://127.0.0.1:8765/
-cargo test -p espro-core --features bridge
+cargo test -p espro-core --features bridge     # unit + integration (real sockets, real TLS)
+cargo clippy -p espro-core --features bridge --all-targets
+node tools/check-ui.mjs                        # the UI has no bundler: parse + resolve imports
 ```
+
+This works on macOS and Linux as well as Windows — the core, its tests and the whole UI run
+anywhere; only the Tauri shell and the packaging are Windows-specific.
 
 `lab/README.md` shows how to stand up a mock 80-cluster fleet and a restricted local `sshd`
 to exercise the jump-host path end to end.
@@ -117,7 +123,8 @@ to exercise the jump-host path end to end.
 
 ```
 crates/espro-core/   Rust core — everything with a security consequence
-  guard.rs           read-only guard: GET/HEAD + search-family POST, checked before any socket
+  guard.rs           read-only guard: GET/HEAD + search-family POST, checked before any socket;
+                     writes need both the session unlock and a per-request flag
   tls.rs             OS trust store → trust-on-first-use pin (SHA-256 per host:port); SSH host-key pins
   ssh.rs             SSH client (russh): key/passphrase/password auth, TOFU host keys, reconnect with back-off
   socks.rs           in-process SOCKS5 on 127.0.0.1 → direct-tcpip channels on the jump host
@@ -133,7 +140,10 @@ docs/                HANDBOOK.md (full operator manual), screenshots
 
 The UI never talks to the network. Every request goes through the core, which owns the
 read-only guard, the TLS decisions and the tunnels — so no page, console or future code path
-can route around them.
+can route around them. The console's write unlock is no exception: it lives in the core, is
+never written to disk, and grants nothing on its own — a request must *also* be marked as
+hand-typed, which only the console does. An automatic refresh cannot write even while the
+console is unlocked.
 
 ## Security
 
@@ -150,8 +160,14 @@ listeners, unsigned binaries (verify `SHA256SUMS.txt` or build from source).
 ## Contributing
 
 Issues and pull requests are welcome. Keep the invariants: no network access from `ui/`, no
-new HTTP call site outside `http.rs`, no secret written to disk unencrypted, scripts idempotent.
-Run `cargo test -p espro-core --features bridge` and `cargo clippy` before opening a PR.
+new HTTP call site outside `http.rs`, no write that skips `guard.rs`, no secret written to disk
+unencrypted, scripts idempotent. Before opening a PR run what CI runs:
+
+```bash
+cargo test -p espro-core --features bridge
+cargo clippy -p espro-core --features bridge --all-targets
+node tools/check-ui.mjs
+```
 
 ## License
 

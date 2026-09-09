@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Cross-build output (tools/build-windows-cross.sh)
+/dist/
+
+# Tauri
+/src-tauri/target/
+/src-tauri/gen/
+
+# Runtime data written beside the exe in portable mode
+/data/*
+!/data/README.txt
+/WebView2Runtime/*
+!/WebView2Runtime/PUT-RUNTIME-HERE.txt
+
+# Operator config — may hold credentials. Never commit.
+config_cluster.json
+clusters.yaml
+!/lab/clusters.yaml
+!/lab/clusters-nocred.yaml
+!/ui/clusters.example.yaml
+pins.json
+
+# Editors / tooling
+/.serena/
+.DS_Store
+.idea/
+.vscode/

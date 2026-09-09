@@ -8,6 +8,7 @@ import { jsonView } from '../lib/jsonview.js';
 import { card, empty, pill } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { intent, navigateTo } from '../core/intent.js';
+import { writeUnlock, workerStatus } from '../core/es.js';
 
 const SNIPPETS = [
   ['GET',  '/_cluster/health?pretty', ''],
@@ -20,11 +21,11 @@ const SNIPPETS = [
   ['GET',  '/_snapshot', ''],
   ['GET',  '/_cat/snapshots/my-repo?v&s=start_epoch:desc', ''],
   ['GET',  '/_slm/policy?human', ''],
-  ['POST', '/_slm/policy/daily-snapshots/_execute', ''],   // write — blocked in read-only mode
+  ['POST', '/_slm/policy/daily-snapshots/_execute', ''],   // write
   ['GET',  '/_slm/stats?human', ''],
   ['GET',  '/_ilm/status', ''],
   ['GET',  '/*/_ilm/explain?only_errors=true&only_managed=true', ''],
-  ['POST', '/my-index/_ilm/retry', ''],                     // write — blocked in read-only mode
+  ['POST', '/my-index/_ilm/retry', ''],                     // write
   ['GET',  '/_cluster/settings?include_defaults=false&flat_settings=true', ''],
   ['PUT',  '/_cluster/settings', '{\n  "persistent": {\n    "cluster.routing.allocation.disk.watermark.low": "85%"\n  }\n}'],  // write
   ['POST', '/logstash-*/_search', '{\n  "size": 5,\n  "sort": [{ "@timestamp": "desc" }],\n  "query": { "match_all": {} }\n}'],
@@ -33,13 +34,21 @@ const SNIPPETS = [
 ];
 
 let host = null;
-const ui = { method: 'GET', path: '/_cluster/health', body: '', running: false, res: null, raw: false, filter: '', showFav: false };
+const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
+const ui = { method: 'GET', path: '/_cluster/health', body: '', running: false, res: null, raw: false,
+             filter: '', showFav: false, allowWrites: false };
 let history = [];
 
 export function render(el) {
   host = el;
   if (intent.console) { Object.assign(ui, intent.console); intent.console = null; ui.res = null; }
   idb.allQueries().then((q) => { history = (q || []).sort((a, b) => b.ts - a.ts); drawHistory(); });
+  // The core owns the unlock, not this page — re-read it rather than trusting our copy.
+  workerStatus().then((st) => {
+    const on = !!(st && st.consoleWrites);
+    if (on !== ui.allowWrites) { ui.allowWrites = on; draw(); }
+  }).catch(() => {});
   draw();
 }
 export function onData() {}
@@ -53,10 +62,14 @@ function draw() {
 
   const dl = h('datalist#ep-list', ...SNIPPETS.map((s) => h('option', { value: s[1] })));
 
+  // The console offers every method: this is the one page where a person types the
+  // request. Whether the core accepts a write is decided by the toggle below (a session
+  // unlock) or by readOnly:false in the config — never by which options are listed here.
   const ro = isReadOnly();
-  const methods = ro ? ['GET', 'HEAD', 'POST'] : ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
+  const methods = METHODS;
   if (!methods.includes(ui.method)) ui.method = 'GET';
-  const methodSel = h('select#c-method', { style: { width: '96px', fontWeight: 700 }, onchange: (e) => { ui.method = e.target.value; } },
+  const methodSel = h('select#c-method', { style: { width: '96px', fontWeight: 700 },
+    onchange: (e) => { ui.method = e.target.value; draw(); } },
     ...methods.map((m) => h('option', m)));
   methodSel.value = ui.method;
 
@@ -68,7 +81,7 @@ function draw() {
   const snippetSel = h('select', { style: { maxWidth: '260px' }, onchange: (e) => { const s = SNIPPETS[e.target.value]; if (!s) return;
       ui.method = s[0]; ui.path = s[1]; ui.body = s[2]; e.target.value = ''; draw(); } },
     h('option', { value: '' }, 'Common requests…'),
-    ...SNIPPETS.map((s, i) => h('option', { value: String(i) }, `${methods.includes(s[0]) ? '' : '⛔ '}${s[0]} ${s[1]}`)));
+    ...SNIPPETS.map((s, i) => h('option', { value: String(i) }, `${isWrite(s[0], s[1]) ? '✎ ' : ''}${s[0]} ${s[1]}`)));
 
   // ---- request line: method · path · run
   const requestBar = h('section.card',
@@ -80,7 +93,7 @@ function draw() {
       h('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', fontSize: '11px', flexWrap: 'wrap' } },
         h('span.muted', h('b', c.name), ' · ', h('span.mono', c.url), c.via ? ` · via ${c.via}` : ''),
         h('span.muted', { style: { marginLeft: 'auto' } }, 'Ctrl/⌘+Enter runs · Enter in the path runs'),
-        ro ? h('span.pill.grey', { title: 'PUT/DELETE and non-search POSTs are refused by the core before a socket opens. Set readOnly: false in the config to lift it.' }, h('i.dot'), 'read-only') : h('span.pill.yellow', h('i.dot'), 'writes enabled'))));
+        writeToggle(ro))));
 
   // ---- Query | Results
   const bodyArea = h('textarea#c-body', { spellcheck: false,
@@ -107,6 +120,59 @@ function draw() {
   mount(host, dl, h('div', { style: { display: 'grid', gap: '14px' } }, requestBar, columns, hist));
 }
 
+/**
+ * The write unlock. Two states matter here:
+ *  - readOnly:false in the config — writes are on everywhere, nothing to toggle.
+ *  - readOnly:true (the default) — this switch unlocks writes for THIS session and only
+ *    for requests sent from this page. It is held in the core's memory, never written to
+ *    disk, and gone on restart.
+ */
+async function setWriteUnlock(want) {
+  if (want && !confirm(
+    'Allow writes from the REST console?\n\n' +
+    'Requests you type here — PUT, PATCH, DELETE, non-search POSTs — will be sent to the cluster.\n' +
+    'Everything else in the app stays read-only, and this is forgotten when the app closes.')) {
+    return false;
+  }
+  const res = await writeUnlock(want);
+  ui.allowWrites = res && res.ok ? !!res.consoleWrites : false;
+  draw();
+  return ui.allowWrites === want;
+}
+
+function writeToggle(readOnly) {
+  if (!readOnly) {
+    return h('span.pill.yellow', { title: 'readOnly: false in the config — every page may write.' },
+      h('i.dot'), 'writes enabled (config)');
+  }
+  const on = ui.allowWrites;
+  return h('label', {
+      title: on
+        ? 'PUT, PATCH, DELETE and non-search POSTs typed here will be sent. Background refreshes stay read-only.'
+        : 'The core refuses anything but GET/HEAD and search POSTs. Tick to send writes you type on this page.',
+      style: { display: 'inline-flex', alignItems: 'center', gap: '5px', cursor: 'pointer',
+               fontSize: '11px', fontWeight: 600, color: on ? 'var(--warning)' : 'var(--text-muted)' } },
+    h('input', { type: 'checkbox', checked: on, style: { cursor: 'pointer' },
+      onchange: async (e) => { if (!(await setWriteUnlock(e.target.checked))) e.target.checked = ui.allowWrites; } }),
+    on ? '✎ writes allowed' : '🔒 read-only');
+}
+
+/** The search-family POSTs the core allows even in read-only mode. */
+const SEARCH_POST = /(^|\/)_(search|msearch|count|field_caps|mget|explain|validate\/query|render\/template|terms_enum|search_shards|async_search|eql\/search|sql|analyze|rank_eval|resolve\/index|knn_search)(\/|\?|$)/;
+
+/** Would this request change the cluster? */
+function isWrite(method, path) {
+  if (method === 'GET' || method === 'HEAD') return false;
+  if (method === 'POST') return !SEARCH_POST.test((path || '').split('?')[0]);
+  return true;
+}
+
+/** Named in full, so pressing Run is never a surprise. */
+function confirmWrite(c) {
+  const path = ui.path.trim() || '/';
+  return confirm(`Send this to ${c.name}?\n\n${ui.method} ${path}\n\nThis can change the cluster.`);
+}
+
 function format() {
   try { ui.body = JSON.stringify(JSON.parse(ui.body || '{}'), null, 2); $('#c-body').value = ui.body; }
   catch (e) { flash(`Not valid JSON: ${e.message}`); }
@@ -120,12 +186,17 @@ function flash(msg) {
 async function run() {
   const c = cluster();
   if (!c) return;
+  // Confirm only when the request is a write AND something will actually let it through.
+  if (isWrite(ui.method, ui.path) && (ui.allowWrites || !isReadOnly()) && !confirmWrite(c)) return;
   const cl = client(c.id);
   ui.running = true;
   const btn = $('#c-run'); if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
 
   const started = Date.now();
-  const res = await cl.request(ui.method, ui.path.trim() || '/', ui.body.trim() || null);
+  // allowWrites is set here and nowhere else in the app; the core still refuses it
+  // unless the session has been unlocked above.
+  const res = await cl.request(ui.method, ui.path.trim() || '/', ui.body.trim() || null,
+                               { allowWrites: ui.allowWrites });
   ui.res = res;
   ui.running = false;
   if (btn) { btn.disabled = false; btn.textContent = 'Run ▸'; }
@@ -171,7 +242,10 @@ function responseCard() {
     h('span.muted', { style: { fontSize: '11.5px' } }, `${dur(r.tookMs)} · ${bytes(size)}`));
 
   const body = r.kind === 'blocked_readonly'
-    ? h('div.banner.warn', { style: { margin: 0 } }, h('div', h('div.ttl', 'Blocked by read-only mode'), h('div', r.message)))
+    ? h('div.banner.warn', { style: { margin: 0 } },
+        h('div', h('div.ttl', 'Blocked by read-only mode'), h('div', r.message),
+          h('div', { style: { marginTop: '8px' } },
+            h('button.btn.sm.primary', { onclick: () => setWriteUnlock(true) }, 'Allow writes on this page'))))
     : !r.status && r.message
     ? h('div',
         h('div.banner.err', { style: { margin: 0 } }, h('div', h('div.ttl', r.kind === 'tunnel_error' ? 'Jump host' : /^tls/.test(r.kind || '') ? 'Certificate' : 'Request failed'),

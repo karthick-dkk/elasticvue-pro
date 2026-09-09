@@ -2,6 +2,7 @@
 //! worker (PING / PRIME / FORGET / ES …) plus the desktop-only ones (tunnels, trust
 //! decisions, config file, vault).
 
+use crate::guard::Writes;
 use crate::http::{ClusterSpec, EsRequest, Route, Transport};
 use crate::socks::{self, SocksServer};
 use crate::ssh::{JumpSpec, Tunnel};
@@ -31,6 +32,9 @@ pub struct Core {
     data_dir: Option<PathBuf>,
     /// `--config <path>` or ELASTICVUE_CONFIG: a config file to offer when none is remembered.
     config_hint: Option<String>,
+    /// The REST console's write unlock. Session-only on purpose: it is never written to
+    /// disk and never survives a restart, so the app always starts read-only.
+    console_writes: std::sync::atomic::AtomicBool,
     started: std::time::Instant,
 }
 
@@ -72,6 +76,7 @@ impl Core {
             tunnels: tokio::sync::RwLock::new(HashMap::new()),
             data_dir,
             config_hint: config_hint_from_env(),
+            console_writes: std::sync::atomic::AtomicBool::new(false),
             started: std::time::Instant::now(),
         })
     }
@@ -86,6 +91,7 @@ impl Core {
                     let mut p = self.primed.write();
                     p.clusters.clear();
                 }
+                self.set_console_writes(false);
                 self.transport.forget_clients();
                 self.close_tunnels().await;
                 json!({ "ok": true })
@@ -173,6 +179,14 @@ impl Core {
                     Err(e) => json!({ "ok": false, "message": e }),
                 }
             }
+            // The REST console's write unlock. Held in memory for this session only; a
+            // request must still ask for it per-request (`allowWrites`), so nothing that
+            // polls in the background can write while it is on.
+            "WRITE_UNLOCK" => {
+                let on = msg.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+                self.set_console_writes(on);
+                json!({ "ok": true, "consoleWrites": on })
+            }
             "PINS" => json!({ "ok": true, "pins": self.pins.list() }),
             "CONFIG_READ" => {
                 let path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -238,6 +252,14 @@ impl Core {
         }
     }
 
+    pub fn console_writes(&self) -> bool {
+        self.console_writes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn set_console_writes(&self, on: bool) {
+        self.console_writes.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     async fn ping(self: &Arc<Self>) -> Value {
         let (primed, read_only, ids) = {
             let p = self.primed.read();
@@ -245,6 +267,7 @@ impl Core {
         };
         json!({
             "ok": true, "primed": primed, "readOnly": read_only, "version": crate::VERSION,
+            "consoleWrites": self.console_writes(),
             "desktop": true, "netErrors": true, "clusters": ids,
             "vault": cfg!(feature = "vault"),
             "dataDir": self.data_dir, "configHint": self.config_hint, "uptimeSec": self.started.elapsed().as_secs(),
@@ -357,6 +380,7 @@ impl Core {
             None => None,
         };
         let route = Route { tunnel, tls: TlsMode::parse(tls.as_deref()) };
-        self.transport.request(&req, &url, auth.as_deref(), read_only, route).await
+        let writes = Writes::decide(read_only, self.console_writes(), req.allow_writes);
+        self.transport.request(&req, &url, auth.as_deref(), writes, route).await
     }
 }

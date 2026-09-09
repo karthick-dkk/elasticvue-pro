@@ -3,9 +3,9 @@
 //! Three modes per cluster:
 //! * `system`   — the OS trust store (plus the Mozilla bundle). Strict.
 //! * `auto`     — the default: `system`, and when that fails, trust-on-first-use with an
-//!                explicit "Trust this certificate" decision in the UI. The decision is
-//!                the certificate's SHA-256, pinned in pins.json; a later change is
-//!                refused and reported, exactly like the esfleet collector.
+//!   explicit "Trust this certificate" decision in the UI. The decision is the
+//!   certificate's SHA-256, pinned in pins.json; a later change is refused and
+//!   reported, exactly like the esfleet collector.
 //! * `insecure` — accept anything. For a lab, never for production.
 //!
 //! The same store keeps SSH host-key fingerprints of the jump hosts.

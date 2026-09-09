@@ -23,6 +23,8 @@ export const untrustHostKey = (jumpId) => send({ type: 'UNTRUST_HOSTKEY', jumpId
 export const tunnelSecret = (jumpId, secret) => send({ type: 'TUNNEL_SECRET', jumpId, ...secret });
 export const tunnelReconnect = (jumpId) => send({ type: 'TUNNEL_RECONNECT', jumpId });
 export const listPins = () => send({ type: 'PINS' });
+/** REST console write unlock. Session-only in the core: never persisted, gone on restart. */
+export const writeUnlock = (on) => send({ type: 'WRITE_UNLOCK', on: !!on });
 export const vaultGet = (scope) => send({ type: 'VAULT_GET', scope });
 export const vaultSet = (scope, value) => send({ type: 'VAULT_SET', scope, value });
 export const vaultDel = (scope) => send({ type: 'VAULT_DEL', scope });
@@ -65,6 +67,11 @@ export class EsClient {
 
   get canTryNow() { return Date.now() >= this.nextRetryAt; }
 
+  /**
+   * `opts.allowWrites` is set by the REST console alone, for a request a person typed.
+   * The core still refuses it unless the session has been unlocked, so leaving it off
+   * everywhere else is what keeps polling and page loads read-only.
+   */
   async request(method, path, body = null, opts = {}) {
     const msg = {
       type: 'ES',
@@ -74,6 +81,7 @@ export class EsClient {
       path,
       body: body == null ? null : typeof body === 'string' ? body : JSON.stringify(body),
       timeoutMs: opts.timeoutMs || this.defaults.requestTimeoutMs,
+      allowWrites: opts.allowWrites === true,
     };
     let res = await send(msg);
     if (res.kind === 'no_creds' && this.onPrimeNeeded) {

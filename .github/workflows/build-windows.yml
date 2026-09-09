@@ -1,0 +1,85 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  portable:
+    name: windows portable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: win
+
+      - name: clippy (whole workspace, incl. the Tauri shell)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: build
+        run: cargo build --release -p elasticvue-pro
+
+      - name: package portable folder
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version' | Select-Object -First 1) -replace '.*"(.*)".*','$1'
+          $d = "dist/ElasticVue-Pro-portable-win64"
+          New-Item -ItemType Directory -Force -Path "$d/data","$d/WebView2Runtime" | Out-Null
+          Copy-Item target/release/elasticvue-pro.exe $d/
+          # WebView2Loader.dll ships with the webview2-com-sys crate source
+          $loader = Get-ChildItem -Recurse -Filter WebView2Loader.dll `
+                      -Path "$env:USERPROFILE/.cargo/registry/src" |
+                    Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          if (-not $loader) { $loader = Get-Item WebView2Loader.dll }
+          Copy-Item $loader.FullName $d/
+          Copy-Item ui/clusters.example.yaml $d/
+          Copy-Item tools/PORTABLE-README.txt $d/README.txt
+          New-Item -ItemType File -Force -Path "$d/portable" | Out-Null
+          Set-Content "$d/WebView2Runtime/PUT-RUNTIME-HERE.txt" `
+            'Unpack Microsoft WebView2 Fixed Version Runtime (x64) here - see ..\README.txt. Not needed on Windows 10/11 or Server 2019+.'
+          Set-Content "$d/data/README.txt" 'created on first run'
+          Get-FileHash "$d/elasticvue-pro.exe","$d/WebView2Loader.dll" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content "$d/SHA256SUMS.txt"
+          Compress-Archive -Path $d -DestinationPath "dist/ElasticVue-Pro-$ver-portable-win64.zip" -Force
+          "version=$ver" >> $env:GITHUB_OUTPUT
+        id: pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ElasticVue-Pro-portable-win64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+
+  installer:
+    name: windows nsis installer
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: win-nsis
+      - run: cargo install tauri-cli --version "^2" --locked
+      - run: cargo tauri build
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/nsis/*-setup.exe

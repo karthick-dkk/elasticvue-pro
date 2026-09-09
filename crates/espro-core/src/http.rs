@@ -5,7 +5,7 @@
 //! at), pin mismatch, tunnel down (with the tunnel's own reason) — and the response
 //! carries a `kind` the UI can act on, plus a one-line `help`.
 
-use crate::guard::write_guard;
+use crate::guard::{write_guard, Writes};
 use crate::ssh::{Tunnel, TunnelState};
 use crate::tls::{PinStore, PinningVerifier, TlsMode, MARK_PIN_MISMATCH, MARK_UNTRUSTED};
 use parking_lot::Mutex;
@@ -47,6 +47,10 @@ pub struct EsRequest {
     /// absent = use the primed credential.
     #[serde(default)]
     pub auth_header: Option<String>,
+    /// Set only by the REST console, for a request a person typed. On its own it grants
+    /// nothing — the session must also be unlocked (`WRITE_UNLOCK`). See `guard`.
+    #[serde(default)]
+    pub allow_writes: bool,
 }
 fn default_method() -> String {
     "GET".into()
@@ -121,7 +125,7 @@ impl Transport {
         req: &EsRequest,
         base_url: &str,
         auth: Option<&str>,
-        read_only: bool,
+        writes: Writes,
         route: Route<'_>,
     ) -> Value {
         let method = req.method.to_ascii_uppercase();
@@ -129,7 +133,7 @@ impl Transport {
         let base = base_url.trim_end_matches('/');
         let full = format!("{base}{path}");
 
-        if let Some(msg) = write_guard(read_only, &method, &path) {
+        if let Some(msg) = write_guard(writes, &method, &path) {
             return json!({ "ok": false, "status": 0, "kind": "blocked_readonly", "message": msg, "url": full, "tookMs": 0 });
         }
         if let Some((t, _)) = route.tunnel {
@@ -157,12 +161,7 @@ impl Transport {
             rb = rb.header("Authorization", a);
         }
         if let Some(body) = req.body.as_ref().filter(|_| m != reqwest::Method::GET && m != reqwest::Method::HEAD) {
-            let ct = if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
-                "application/json"
-            } else {
-                "application/x-ndjson"
-            };
-            rb = rb.header("Content-Type", ct).body(body.clone());
+            rb = rb.header("Content-Type", content_type(&path, body)).body(body.clone());
         }
         let started = Instant::now();
         match rb.send().await {
@@ -193,6 +192,28 @@ impl Transport {
                 out
             }
         }
+    }
+}
+
+/// The ndjson endpoints are decided by the endpoint, not by what the body looks like:
+/// every `_msearch` / `_bulk` body begins with a `{` header line, so sniffing the first
+/// character labels them `application/json` and Elasticsearch refuses them.
+fn content_type(path: &str, body: &str) -> &'static str {
+    let bare = path.split('?').next().unwrap_or("");
+    let ndjson_endpoint = bare
+        .rsplit('/')
+        .find(|seg| !seg.is_empty())
+        .map(|last| matches!(last, "_bulk" | "_msearch"))
+        .unwrap_or(false)
+        || bare.ends_with("_msearch/template")
+        || bare.ends_with("_bulk/stream");
+    if ndjson_endpoint {
+        return "application/x-ndjson";
+    }
+    if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
+        "application/json"
+    } else {
+        "application/x-ndjson"
     }
 }
 

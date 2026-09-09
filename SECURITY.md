@@ -7,6 +7,13 @@ not file public issues for vulnerabilities.
 
 - Sends only `GET`/`HEAD` and search-family `POST` requests to Elasticsearch while `readOnly`
   is true (the default). The check is in the Rust core, before a socket is opened.
+- Lets a write out in exactly two cases, both requiring a deliberate act:
+  - `readOnly: false` in the config file — writes are allowed everywhere.
+  - The REST console, where the operator ticks *Allow writes*. That unlock lives in the
+    core's memory for the session (never on disk, gone on restart), and it is not
+    sufficient by itself: the request must also be marked as typed in the console. So a
+    background refresh, a page load or any future code path still cannot write while the
+    console is unlocked — only the request a person typed and sent.
 - Never writes a credential in plain text. Credentials typed in the UI are held in memory;
   when saved to `config_cluster.json` they are encrypted with AES-256-GCM under a key derived
   from a master password (PBKDF2-HMAC-SHA512, 600 000 rounds, random salt and nonce).
@@ -16,7 +23,8 @@ not file public issues for vulnerabilities.
 - Opens SSH connections with the operator's key file; host keys are confirmed once and pinned.
   Passphrases are asked for and kept in memory only.
 - Listens only on 127.0.0.1 (the in-process SOCKS5 proxy for tunnelled clusters).
-- Writes: `pins.json` (fingerprints), `config_cluster.json`, the WebView profile.
+- Writes: `pins.json` (fingerprints), `config_cluster.json`, the WebView profile. The console's
+  write unlock is never among them.
 
 **Not covered.** The Windows binaries are not code-signed. Verify `SHA256SUMS.txt` from the
 release, or build from source.

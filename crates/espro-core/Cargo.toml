@@ -45,3 +45,9 @@ rand = "0.8"
 keyring = { version = "3", optional = true, features = ["apple-native", "windows-native"] }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", optional = true, features = ["fs", "cors"] }
+
+[dev-dependencies]
+# A real TLS server on loopback, so the trust-on-first-use and pin-mismatch paths are
+# exercised through an actual handshake rather than a mocked verifier.
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

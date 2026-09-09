@@ -60,7 +60,7 @@ pub fn open(value: &str, master: &str) -> Result<String, OpenError> {
     let salt = B64.decode(parts[1]).map_err(|_| OpenError::Malformed)?;
     let nonce = B64.decode(parts[2]).map_err(|_| OpenError::Malformed)?;
     let ct = B64.decode(parts[3]).map_err(|_| OpenError::Malformed)?;
-    if nonce.len() != 12 || rounds < 1000 || rounds > 10_000_000 {
+    if nonce.len() != 12 || !(1000..=10_000_000).contains(&rounds) {
         return Err(OpenError::Malformed);
     }
     let key = derive(master, &salt, rounds);
