@@ -46,18 +46,40 @@ Writes are still off by default. Ticking **Allow writes** unlocks the session in
   repository; sorted by name, health, disk used or free, nodes, shards, unassigned, version,
   last snapshot or open alerts, ascending or descending, and narrowed to what needs attention.
 
-### Infrastructure
-- Continuous integration: `ci.yml` (core tests, clippy, UI checks, dependency advisories) and
-  `build-windows.yml` (portable zip on every push, NSIS installer and release assets on a tag).
-  The README's build badge pointed at a repository that does not exist.
-- Test suite grown from 6 unit tests to 61, including the bridge message API, the transport's
-  error classification, the certificate trust flow — trust-on-first-use, pin mismatch and
-  rotation recovery — against real sockets and a real TLS handshake, and every snapshot,
-  repository, SLM and index-management call the UI makes.
-- `tools/check-ui.mjs`: parses every UI module and resolves each named import. The UI has no
-  bundler, so a mistyped import used to surface as a blank page.
-- `tools/render-check.mjs`: renders every page against a running core in jsdom. A static
-  check cannot see a call to something that was never imported at all; this does.
+### Builds
+- **The exe carries its version**: `elasticvue-pro-2.2.0.exe`, so which build a machine is
+  running is answerable by looking at it rather than by starting it. The build it replaces
+  moves to [`previous-releases/`](previous-releases/) with its checksum and a note on rolling
+  back, instead of being overwritten.
+- The copy committed at the repo root was rebuilt from this source. It had been the 2.1.0
+  binary from the initial commit, so "run the exe from the repo" gave you none of the above.
+- `tools/build-windows-cross.sh` runs on macOS as well as Ubuntu — it picks the `-posix` mingw
+  drivers on Debian and the plain ones from Homebrew, and falls back to `shasum` where
+  `sha256sum` is absent. `--install` refreshes the root build and archives the old one.
+  The packaged `README.txt` now takes its version and exe name from the build rather than
+  being edited by hand, which is how it had drifted to 2.1.0.
+
+### Continuous integration
+- `ci.yml` — core tests, clippy, UI checks and dependency advisories; `build-windows.yml` —
+  the portable zip on every push, plus the NSIS installer and release assets on a `v*` tag.
+  The README's build badge had pointed at a repository that does not exist.
+- Test suite grown from 6 unit tests to **61**: the bridge message API, the transport's error
+  classification, the certificate trust flow (trust-on-first-use, pin mismatch, rotation
+  recovery) against real sockets and a real TLS handshake, and every snapshot, repository,
+  SLM and index-management call the UI makes. The read-only guard's "refused before a socket
+  is opened" is measured against a server that counts TCP accepts, not asserted.
+- `tools/check-ui.mjs` parses all 31 UI modules and resolves every named import — the UI has
+  no bundler, so a mistyped import used to surface as a blank page.
+- `tools/render-check.mjs` renders all 8 pages against a running core in jsdom, and
+  `tools/mock-es.mjs` gives them a cluster with data to draw. A static check cannot see a call
+  to something that was never imported at all; this can, and it caught exactly that during
+  development.
+- One dependency advisory is **accepted rather than fixed**: RUSTSEC-2023-0071, the "Marvin
+  Attack" timing sidechannel in `rsa`, which has no patched release upstream. It arrives via
+  russh's `rsa` feature — what authenticates to a jump host with an `id_rsa` key. The
+  reasoning is in [`.cargo/audit.toml`](.cargo/audit.toml) and disclosed in
+  [SECURITY.md](SECURITY.md); `cargo audit` runs directly in CI so that file is the single
+  source of truth and a local run agrees with CI exactly.
 - Added `.gitignore` (build output, operator config, runtime data).
 
 ## 2.1.0 — 2026-09-08
