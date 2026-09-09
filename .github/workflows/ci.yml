@@ -68,8 +68,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Pinned to the exact tag: the action publishes v2.0.0 but no moving `v2`, so
-      # `@v2` never resolved and this job failed before it ran anything.
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: dtolnay/rust-toolchain@stable
+      # cargo audit is run directly rather than through rustsec/audit-check, because that
+      # action takes its exclusions as a workflow input and ignores .cargo/audit.toml.
+      # Running the tool itself keeps one file as the source of truth for what is accepted
+      # and why, and makes a local `cargo audit` agree with CI exactly.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit
+        run: cargo audit
