@@ -60,7 +60,10 @@ keyring = { version = "3", optional = true, features = ["windows-native"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", optional = true, features = ["apple-native"] }
 
-# Secret Service (GNOME Keyring / KWallet) over D-Bus, so the credential survives a
-# reboot; linux-keyutils alone would lose it at the end of the session.
+# linux-keyutils: pure Rust, no system library. Secret Service would persist across a
+# reboot, but it links libdbus, which would make libdbus-1-dev a build requirement for
+# anyone compiling on Linux — too much to ask for an opt-in convenience. The credential
+# lives in the kernel session keyring instead, so it lasts the login session; the
+# encrypted config file remains the way to keep a secret across restarts.
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", optional = true, features = ["sync-secret-service", "crypto-rust"] }
+keyring = { version = "3", optional = true, features = ["linux-native"] }

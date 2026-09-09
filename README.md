@@ -197,7 +197,7 @@ same everywhere. Three things are not:
 |---|---|---|---|
 | Web view | WebView2 (Edge) | WKWebView | WebKitGTK |
 | Portable mode (`portable` marker, `data\` beside the exe) | yes | no — use the app bundle | no — use the AppImage |
-| Optional OS credential store | Credential Manager | Keychain | Secret Service (GNOME Keyring / KWallet) |
+| Optional OS credential store | Credential Manager | Keychain | kernel keyring — **login session only** |
 
 Windows is the platform the app is deployed and documented for; macOS and Linux builds exist
 so the app can be run and developed anywhere, and are less exercised in the field.

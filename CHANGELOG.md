@@ -1,6 +1,11 @@
 # Changelog
 
-## 2.2.0 — 2026-09-09
+## 2.2.1 — 2026-09-09
+
+First tagged release of this work. 2.2.0 was built and committed but never tagged, and its
+Linux build could not compile: the credential store pulled in libdbus through Secret Service,
+which is not present on a bare machine. 2.2.1 is 2.2.0 with that fixed.
+
 
 ### Fixed
 - **Reload config from disk did nothing useful.** A config whose secrets are sealed (the
@@ -54,8 +59,12 @@ Writes are still off by default. Ticking **Allow writes** unlocks the session in
   (WebView2 / WKWebView / WebKitGTK), and portable mode remains Windows-only. None of the
   binaries are code-signed, so macOS Gatekeeper needs right-click → *Open* on first run.
 - The OS credential store now has a backend on every platform. `keyring` was built with only
-  the Windows and macOS backends, so on Linux the optional vault compiled but had nothing to
-  talk to; Secret Service (GNOME Keyring / KWallet) is wired up there now.
+  the Windows and macOS backends, so on Linux the optional "remember on this machine" compiled
+  but had nothing to talk to. Linux uses the kernel keyring (`linux-keyutils`), which needs no
+  system library — Secret Service would persist across a reboot but links libdbus, making
+  `libdbus-1-dev` a build requirement for anyone compiling on Linux. The consequence is that
+  on Linux a remembered credential lasts the login session; the encrypted config file remains
+  the way to keep a secret across restarts.
 - **The exe carries its version**: `elasticvue-pro-2.2.0.exe`, so which build a machine is
   running is answerable by looking at it rather than by starting it. The build it replaces
   moves to [`previous-releases/`](previous-releases/) with its checksum and a note on rolling
