@@ -29,3 +29,16 @@ not file public issues for vulnerabilities.
 
 **Not covered.** The Windows binaries are not code-signed. Verify `SHA256SUMS.txt` from the
 release, or build from source.
+
+**Known advisories in dependencies.** CI runs `cargo audit` on every push. One advisory is
+currently accepted rather than fixed, because there is no fixed version to move to:
+
+| Advisory | Crate | Why it is still here |
+|---|---|---|
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) — "Marvin Attack", a timing sidechannel that can leak an RSA private key to an attacker who can measure many private-key operations precisely | `rsa`, via `russh`'s `rsa` feature | No patched release exists ([RustCrypto/RSA#626](https://github.com/RustCrypto/RSA/issues/626) is open). The feature is what lets the app authenticate to a jump host with an `id_rsa` key; removing it would drop RSA jump-host support. Revisit when a fix ships. |
+
+`cargo audit` also reports unmaintained crates (`serde_yaml`, `proc-macro-error`, the `unic-*`
+family) and an unsoundness in `glib` — the latter reached only through the Linux GTK build, not
+the Windows one. These are warnings, not vulnerabilities. The accepted advisory is listed in
+[`.cargo/audit.toml`](.cargo/audit.toml) with the same reasoning, so nothing is suppressed
+silently.
