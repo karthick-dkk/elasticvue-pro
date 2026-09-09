@@ -167,7 +167,7 @@ export async function editCluster(existing = null) {
   const body = [
     h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' } },
       field('Name', text('ce-name', c.name || '', { placeholder: 'acme-prod' })),
-      field('URL', text('ce-url', c.url || '', { mono: true, placeholder: 'https://172.23.40.118:9200' }), 'Scheme, host or IP, port. For a jump-host cluster: the address as the jump host resolves it.')),
+      field('URL', text('ce-url', c.url || '', { mono: true, placeholder: 'https://es.example.com:9200' }), 'Scheme, host or IP, port. For a jump-host cluster: the address as the jump host resolves it.')),
     h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' } },
       field('Route', select('ce-via', c.via || c.jump || '', [['', 'direct'], ...jumps.map((j) => [j, `via ${j}`])]),
         jumps.length ? null : 'No jump hosts defined yet — add one on the Config page.'),
