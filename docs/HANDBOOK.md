@@ -117,6 +117,7 @@ cargo install tauri-cli --version "^2" --locked
 # 2. Build
 cargo tauri build
 #    portable:  target\release\elasticvue-pro.exe          (single file; needs the WebView2 Runtime on the box)
+#               packaged as elasticvue-pro-<version>.exe by tools/build-windows-cross.sh
 #    installer: target\release\bundle\nsis\ElasticVue Pro_<ver>_x64-setup.exe  (per-user, embeds the WebView2 bootstrapper)
 ```
 
@@ -126,7 +127,7 @@ attaches them to `v*` tag releases.
 **Or cross-compile from Linux with no Microsoft toolchain** — `tools/build-windows-cross.sh`
 (Ubuntu 24.04: mingw-w64 linker, `x86_64-pc-windows-gnu` target, std built from source with
 `-Zbuild-std`, idempotent). Output: `dist/ElasticVue-Pro-<ver>-portable-win64.zip` containing
-`elasticvue-pro.exe` + `WebView2Loader.dll` (this build loads the WebView2 loader dynamically,
+`elasticvue-pro-<version>.exe` + `WebView2Loader.dll` (this build loads the WebView2 loader dynamically,
 so the DLL must stay next to the exe) + the example YAML. This is how the shipped portable
 zip was produced; its core binary was exercised under Wine (SSH tunnel, TLS pinning, guard,
 Credential Manager) — the WebView2 UI itself needs real Windows.
@@ -147,7 +148,7 @@ Delete the marker to go back to per-user storage under `%APPDATA%`.
 
 ## Steps to deploy
 
-1. Put `elasticvue-pro.exe` anywhere (no admin rights needed) — or run the installer.
+1. Put `elasticvue-pro-<version>.exe` anywhere (no admin rights needed) — or run the installer.
 2. Create `clusters.yaml` (Config page → *Save example YAML…*), keep it readable only by you.
 3. Start the app, *Open clusters.yaml…*. For each jump host: confirm the host-key fingerprint
    once (compare with `ssh-keygen -lf` on the jump host). For each cluster with an untrusted
@@ -157,7 +158,7 @@ Delete the marker to go back to per-user storage under `%APPDATA%`.
    the Windows Credential Manager (your account only) instead of typing it each start.
 
 On the jump server itself: same exe, `clusters.yaml` without `via:`, optionally started as
-`elasticvue-pro.exe --config C:\esfleet\clusters.yaml`.
+`elasticvue-pro-<version>.exe --config C:\esfleet\clusters.yaml`.
 
 ## Security model
 

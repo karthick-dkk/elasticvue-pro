@@ -1,58 +1,111 @@
 #!/usr/bin/env bash
-# Cross-compile the Windows portable build on Linux (Ubuntu 24.04), without any Microsoft
-# toolchain: target x86_64-pc-windows-gnu, linker mingw-w64, std built from source
-# (-Zbuild-std) so no rust-std download from static.rust-lang.org is needed.
+# Cross-compile the Windows portable build without any Microsoft toolchain:
+# target x86_64-pc-windows-gnu, linker mingw-w64, std built from source (-Zbuild-std)
+# so no rust-std download is needed and a plain distro/brew rustc is enough.
 #
-# Idempotent: every step checks before it downloads or rebuilds.
-# Result: dist/ElasticVue-Pro-portable-win64.zip  (exe + WebView2Loader.dll + example YAML)
+# Works on Linux (apt) and macOS (brew). Idempotent: every step checks first.
+#
+#   tools/build-windows-cross.sh              # -> dist/ElasticVue-Pro-<ver>-portable-win64.zip
+#   tools/build-windows-cross.sh --install    # …and refresh the build committed at the repo root
+#
+# The exe carries its version in the name (elasticvue-pro-<ver>.exe), so which build a
+# machine is running is answerable by looking at it. --install also moves the previous
+# root build into previous-releases/ rather than overwriting it.
+#
+# Result: dist/ElasticVue-Pro-portable-win64/ (exe + WebView2Loader.dll + example YAML + README)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-need() { command -v "$1" >/dev/null || return 1; }
-if ! need x86_64-w64-mingw32-gcc-posix; then
-  sudo apt-get install -y gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
-fi
-need cargo || { echo "install rust (rustup) first"; exit 1; }
+INSTALL=0
+[ "${1:-}" = "--install" ] && INSTALL=1
 
-# 1. standard-library source at the exact commit of the installed rustc
+have() { command -v "$1" >/dev/null 2>&1; }
+have cargo || { echo "install rust first (rustup, or 'brew install rust')"; exit 1; }
+
+# ---------------------------------------------------------------- 1. mingw-w64
+# Debian ships -posix suffixed drivers (the plain ones use the win32 threading
+# model, which std needs to not be); brew ships only the unsuffixed ones.
+pick() { for c in "$@"; do have "$c" && { echo "$c"; return; }; done; return 1; }
+
+if ! CC_WIN=$(pick x86_64-w64-mingw32-gcc-posix x86_64-w64-mingw32-gcc); then
+  case "$(uname -s)" in
+    Linux)  sudo apt-get install -y gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 ;;
+    Darwin) have brew || { echo "install Homebrew, then: brew install mingw-w64"; exit 1; }
+            brew install mingw-w64 ;;
+    *)      echo "install a mingw-w64 cross toolchain providing x86_64-w64-mingw32-gcc"; exit 1 ;;
+  esac
+  CC_WIN=$(pick x86_64-w64-mingw32-gcc-posix x86_64-w64-mingw32-gcc)
+fi
+CXX_WIN=$(pick x86_64-w64-mingw32-g++-posix x86_64-w64-mingw32-g++)
+AR_WIN=$(pick x86_64-w64-mingw32-ar llvm-ar ar)
+echo "mingw: $CC_WIN"
+
+# ------------------------------------------- 2. std source at this rustc commit
 COMMIT=$(rustc -vV | awk '/commit-hash/ {print $2}')
-SYS=$(rustc --print sysroot)
-LIB="$SYS/lib/rustlib/src/rust/library"
-if [ ! -f "$LIB/Cargo.lock" ] || [ "$(cat "$LIB/.commit" 2>/dev/null)" != "$COMMIT" ]; then
+LIB="$(rustc --print sysroot)/lib/rustlib/src/rust/library"
+if [ ! -f "$LIB/Cargo.lock" ]; then
   echo "fetching library/ at rustc commit $COMMIT"
-  rm -rf /tmp/rust-src && git init -q /tmp/rust-src && cd /tmp/rust-src
-  git remote add origin https://github.com/rust-lang/rust.git
-  git sparse-checkout init --cone && git sparse-checkout set library
-  git fetch --depth 1 origin "$COMMIT" && git checkout -q FETCH_HEAD
-  BT=$(git ls-tree FETCH_HEAD library/backtrace | awk '{print $3}')
-  rm -rf /tmp/bt && git init -q /tmp/bt && cd /tmp/bt
-  git remote add origin https://github.com/rust-lang/backtrace-rs.git
-  git fetch --depth 1 origin "$BT" && git checkout -q FETCH_HEAD && rm -rf .git
-  rm -rf "$LIB" && mkdir -p "$(dirname "$LIB")" && cp -r /tmp/rust-src/library "$LIB"
-  rm -rf "$LIB/backtrace" && cp -r /tmp/bt "$LIB/backtrace"
-  echo "$COMMIT" > "$LIB/.commit"
-  cd - >/dev/null
+  TMP=$(mktemp -d)
+  git init -q "$TMP/rust-src" && (
+    cd "$TMP/rust-src"
+    git remote add origin https://github.com/rust-lang/rust.git
+    git sparse-checkout init --cone && git sparse-checkout set library
+    git fetch --depth 1 origin "$COMMIT" && git checkout -q FETCH_HEAD
+    BT=$(git ls-tree FETCH_HEAD library/backtrace | awk '{print $3}')
+    git init -q "$TMP/bt" && cd "$TMP/bt"
+    git remote add origin https://github.com/rust-lang/backtrace-rs.git
+    git fetch --depth 1 origin "$BT" && git checkout -q FETCH_HEAD && rm -rf .git
+  )
+  mkdir -p "$(dirname "$LIB")"
+  rm -rf "$LIB" && cp -r "$TMP/rust-src/library" "$LIB"
+  rm -rf "$LIB/backtrace" && cp -r "$TMP/bt" "$LIB/backtrace"
+  rm -rf "$TMP"
 fi
 
-# 2. build
-export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc-posix
-export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++-posix
-export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
-export RUSTC_BOOTSTRAP=1
-cargo build --release -Zbuild-std=std,panic_abort,panic_unwind --target x86_64-pc-windows-gnu -p elasticvue-pro
+# ---------------------------------------------------------------------- 3. build
+export CC_x86_64_pc_windows_gnu="$CC_WIN"
+export CXX_x86_64_pc_windows_gnu="$CXX_WIN"
+export AR_x86_64_pc_windows_gnu="$AR_WIN"
+export RUSTC_BOOTSTRAP=1                       # -Zbuild-std on a stable rustc
+cargo build --release -Zbuild-std=std,panic_abort,panic_unwind \
+  --target x86_64-pc-windows-gnu -p elasticvue-pro
 
-# 3. package
+# -------------------------------------------------------------------- 4. package
 OUT=target/x86_64-pc-windows-gnu/release
-LOADER=$(ls -d ~/.cargo/registry/src/*/webview2-com-sys-*/x64/WebView2Loader.dll | head -1)
+LOADER=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*webview2-com-sys-*/x64/WebView2Loader.dll' 2>/dev/null | head -1)
+[ -n "$LOADER" ] || { echo "WebView2Loader.dll not found in the cargo registry"; exit 1; }
 VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+EXE="elasticvue-pro-${VER}.exe"
 D=dist/ElasticVue-Pro-portable-win64
-rm -rf "$D" && mkdir -p "$D"
-cp "$OUT/elasticvue-pro.exe" "$LOADER" ui/clusters.example.yaml "$D/"
-cp tools/PORTABLE-README.txt "$D/README.txt"
-: > "$D/portable"                                   # marker: keep all data in .\data\
-mkdir -p "$D/data" "$D/WebView2Runtime"
+rm -rf "$D" && mkdir -p "$D/data" "$D/WebView2Runtime"
+cp "$OUT/elasticvue-pro.exe" "$D/$EXE"
+cp "$LOADER" ui/clusters.example.yaml "$D/"
+sed -e "s/elasticvue-pro-<ver>\.exe/$EXE/g" -e "s/elasticvue-pro\.exe/$EXE/g" \
+    -e "s/^ElasticVue Pro [0-9][0-9.]* -/ElasticVue Pro $VER -/" \
+    tools/PORTABLE-README.txt > "$D/README.txt"
+: > "$D/portable"                              # marker: keep all data in .\data\
 printf 'Unpack Microsoft WebView2 Fixed Version Runtime (x64) here - see ..\\README.txt. Not needed on Windows 10/11 or Server 2019+.\r\n' > "$D/WebView2Runtime/PUT-RUNTIME-HERE.txt"
 printf 'created on first run\r\n' > "$D/data/README.txt"
-( cd "$D" && sha256sum elasticvue-pro.exe WebView2Loader.dll > SHA256SUMS.txt )
-( cd dist && rm -f "ElasticVue-Pro-${VER}-portable-win64.zip" && zip -qr "ElasticVue-Pro-${VER}-portable-win64.zip" ElasticVue-Pro-portable-win64 )
-echo "built dist/ElasticVue-Pro-${VER}-portable-win64.zip"
+
+sums() { if have sha256sum; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+( cd "$D" && sums "$EXE" WebView2Loader.dll > SHA256SUMS.txt )
+( cd dist && rm -f "ElasticVue-Pro-${VER}-portable-win64.zip" \
+  && zip -qr "ElasticVue-Pro-${VER}-portable-win64.zip" ElasticVue-Pro-portable-win64 )
+echo "built dist/ElasticVue-Pro-${VER}-portable-win64.zip  ($EXE)"
+
+# ------------------------------------- 5. refresh the copy committed in the repo
+if [ "$INSTALL" = "1" ]; then
+  mkdir -p previous-releases
+  # Retire whatever build is at the root, unless it is this same version being rebuilt.
+  for old in elasticvue-pro-*.exe; do
+    [ -e "$old" ] || continue
+    if [ "$old" = "$EXE" ]; then rm -f "$old"; else
+      mv "$old" "previous-releases/$old"
+      echo "archived previous-releases/$old"
+    fi
+  done
+  cp "$D/$EXE" "$D/WebView2Loader.dll" .
+  sums "$EXE" WebView2Loader.dll > SHA256SUMS.txt
+  echo "installed $EXE + WebView2Loader.dll at the repo root:"
+  cat SHA256SUMS.txt
+fi

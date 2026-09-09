@@ -1,10 +1,10 @@
-ElasticVue Pro 2.1.0 - portable build for Windows x64
+ElasticVue Pro 2.2.0 - portable build for Windows x64
 =======================================================
 
 Nothing to install, no admin rights, nothing written outside this folder.
 
 Folder layout
-  elasticvue-pro.exe       the app
+  elasticvue-pro-<ver>.exe the app (the version is in the file name)
   WebView2Loader.dll       keep next to the exe
   portable                 marker file: keeps all app data in .\data\ (delete it to use %APPDATA% instead)
   data\                    created on first run: pins.json (trusted certs / host keys), WebView profile
@@ -36,5 +36,9 @@ Optional
   Tick "Remember on this machine" in the sign-in dialog to keep the credential in the
   Windows Credential Manager (your account only) - the only thing that can leave this folder.
 
-Read-only: the app only sends GET/HEAD and _search-family POSTs to Elasticsearch unless
-clusters.yaml sets readOnly: false.
+Read-only by default: the app only sends GET/HEAD and _search-family POSTs to Elasticsearch.
+To act on a cluster - create or delete a snapshot, open/close/delete an index, send a PUT or
+DELETE from the REST console - tick "Allow writes" on that page. That unlock lasts for the
+session only, is never written to disk, and covers only the actions you take by hand: nothing
+that refreshes on a timer can write. Setting readOnly: false in the config allows writes
+everywhere instead.

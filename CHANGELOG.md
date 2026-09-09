@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 — 2026-09-09
 
 ### Fixed
 - **Reload config from disk did nothing useful.** A config whose secrets are sealed (the

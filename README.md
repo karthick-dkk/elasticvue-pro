@@ -44,9 +44,9 @@ Browser tools cannot do three things an operator behind a jump host needs:
 
 ## Quick start (Windows, portable)
 
-1. Download `ElasticVue-Pro-<version>-portable-win64.zip` from [Releases](../../releases) and unzip it anywhere (e.g. `C:\Tools\ElasticVuePro\`). Keep `elasticvue-pro.exe` and `WebView2Loader.dll` together.
+1. Download `ElasticVue-Pro-<version>-portable-win64.zip` from [Releases](../../releases) and unzip it anywhere (e.g. `C:\Tools\ElasticVuePro\`) — or take `elasticvue-pro-<version>.exe` straight from this repository. Keep the exe and `WebView2Loader.dll` together.
 2. **Windows Server 2016 only:** the app needs the Microsoft WebView2 runtime, which Server 2016 does not ship. No install is required — unpack Microsoft's *Fixed Version Runtime* into the `WebView2Runtime\` folder next to the exe (see [docs/HANDBOOK.md → Portable mode](docs/HANDBOOK.md#portable-mode-no-install-at-all)). Windows 10/11 and Server 2019+ already have it.
-3. Run `elasticvue-pro.exe`. The binaries are not code-signed: on first run SmartScreen may ask — *More info → Run anyway*.
+3. Run `elasticvue-pro-<version>.exe`. The binaries are not code-signed: on first run SmartScreen may ask — *More info → Run anyway*.
 4. **+ Create new config**, add your first cluster, and (for on-prem clusters) a jump host with your SSH key. Confirm the jump host's key fingerprint once, trust each self-signed certificate once.
 
 Everything the app stores stays in `data\` next to the exe (`portable` marker file): `config_cluster.json`, `pins.json` (fingerprints only), the WebView profile.
@@ -80,7 +80,7 @@ Created and edited in the app (Config page), or hand-written. JSON is what the a
 | `clusters[].tls` / `defaults.tls` | `auto` (OS store, else ask & pin — default), `system` (strict), `insecure` (lab only) |
 | `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you tick *Allow writes* for the session *and* it is an action you took by hand; `false` allows writes from anywhere |
 
-Command line: `elasticvue-pro.exe --config C:\path\config_cluster.json` (or `ELASTICVUE_CONFIG`) pre-provisions the file, handy on a jump server.
+Command line: `elasticvue-pro-<version>.exe --config C:\path\config_cluster.json` (or `ELASTICVUE_CONFIG`) pre-provisions the file, handy on a jump server.
 
 <p align="center"><img src="docs/screenshots/config.png" alt="Config page" width="900"></p>
 
@@ -100,9 +100,16 @@ cargo tauri build
 **From Linux, without any Microsoft toolchain** — this is how the release zips are made:
 
 ```bash
-tools/build-windows-cross.sh          # mingw-w64, x86_64-pc-windows-gnu, std built from source; idempotent
+tools/build-windows-cross.sh            # mingw-w64, x86_64-pc-windows-gnu, std from source; idempotent
 # dist/ElasticVue-Pro-<ver>-portable-win64.zip
+
+tools/build-windows-cross.sh --install  # …and refresh the build committed at the repo root
 ```
+
+Runs on Linux (apt) and macOS (brew). The exe carries its version in the name
+(`elasticvue-pro-<version>.exe`), so which build a machine runs is answerable by looking at
+it; `--install` moves the build it replaces into [previous-releases/](previous-releases/)
+rather than overwriting it.
 
 
 **Run the UI in a browser** (development, tests):
@@ -153,6 +160,15 @@ the session is unlocked.
 See [SECURITY.md](SECURITY.md). Short version: read-only towards Elasticsearch, credentials
 never in plain text on disk, TLS and SSH host keys pinned on explicit consent, loopback-only
 listeners, unsigned binaries (verify `SHA256SUMS.txt` or build from source).
+
+## Builds in this repository
+
+The current portable build is committed at the root — `elasticvue-pro-<version>.exe` next to
+`WebView2Loader.dll`, with `SHA256SUMS.txt` covering the pair. Copy both to a Windows machine
+and run it; nothing else is needed on Windows 10/11 or Server 2019+.
+
+Superseded builds move to [previous-releases/](previous-releases/) with their checksums, so a
+machine can be rolled back to a binary that is known to have worked.
 
 ## Documentation
 
