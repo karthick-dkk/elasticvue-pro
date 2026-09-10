@@ -1,9 +1,10 @@
-/** Minimal IndexedDB helper. Stores the config FILE HANDLE, query history and UI settings.
- *  It never stores credentials — the YAML file on disk stays the only place they live. */
+/** Minimal IndexedDB helper. Stores the config FILE HANDLE, query history, alert
+ *  acknowledgements and notes, and UI settings.
+ *  It never stores credentials — the config file on disk stays the only place they live. */
 
 const DB_NAME = 'elasticvue-pro';
-const DB_VERSION = 1;
-const STORES = { handles: 'handles', queries: 'queries', kv: 'kv' };
+const DB_VERSION = 2;
+const STORES = { handles: 'handles', queries: 'queries', kv: 'kv', acks: 'acks' };
 
 let dbPromise = null;
 
@@ -20,6 +21,8 @@ function open() {
         s.createIndex('ts', 'ts');
         s.createIndex('fav', 'fav');
       }
+      // v2: acknowledgements and operator notes against an alert key
+      if (!db.objectStoreNames.contains(STORES.acks)) db.createObjectStore(STORES.acks, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -54,6 +57,11 @@ export const idb = {
 
   getKV: (k) => tx(STORES.kv, 'readonly', (os) => os.get(k)),
   setKV: (k, v) => tx(STORES.kv, 'readwrite', (os) => os.put(v, k)),
+
+  getAck: (k) => tx(STORES.acks, 'readonly', (os) => os.get(k)),
+  putAck: (a) => tx(STORES.acks, 'readwrite', (os) => os.put(a)),
+  delAck: (k) => tx(STORES.acks, 'readwrite', (os) => os.delete(k)),
+  allAcks: () => tx(STORES.acks, 'readonly', (os) => os.getAll()),
 
   putQuery: (q) => tx(STORES.queries, 'readwrite', (os) => os.put(q)),
   delQuery: (id) => tx(STORES.queries, 'readwrite', (os) => os.delete(id)),

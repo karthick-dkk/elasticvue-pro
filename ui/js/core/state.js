@@ -356,29 +356,37 @@ export function stopAutoRefresh() {
 
 /* ---------------------------------- alerts ----------------------------------- */
 
+/**
+ * Everything currently wrong across the fleet.
+ *
+ * Each alert carries a `key` that identifies the PROBLEM rather than its current value —
+ * `<cluster>:disk`, not "disk 87.3%". An acknowledgement is stored against that key, so
+ * it survives the number moving and only disappears when the problem itself clears.
+ */
 export function alerts() {
   const out = [];
+  const add = (a) => out.push(a);
   for (const c of clusters()) {
     const d = state.data.get(c.id);
     const cl = state.clients.get(c.id);
     if (!d || !d.reachable) {
-      out.push({ level: 'critical', cluster: c, title: `${c.name} unreachable`,
+      add({ key: `${c.id}:unreachable`, level: 'critical', cluster: c, title: `${c.name} unreachable`,
         detail: (cl && cl.lastError && cl.lastError.message) || 'No response', kind: cl && cl.state });
       continue;
     }
-    if (d.health && d.health.status === 'red') out.push({ level: 'critical', cluster: c, title: `${c.name} health is RED`, detail: `${d.health.unassigned_shards} unassigned shards` });
-    else if (d.health && d.health.status === 'yellow') out.push({ level: 'warning', cluster: c, title: `${c.name} health is YELLOW`, detail: `${d.health.unassigned_shards} unassigned shards` });
+    if (d.health && d.health.status === 'red') add({ key: `${c.id}:health`, level: 'critical', cluster: c, title: `${c.name} health is RED`, detail: `${d.health.unassigned_shards} unassigned shards` });
+    else if (d.health && d.health.status === 'yellow') add({ key: `${c.id}:health`, level: 'warning', cluster: c, title: `${c.name} health is YELLOW`, detail: `${d.health.unassigned_shards} unassigned shards` });
     if (d.disk && isFinite(d.disk.percent)) {
-      if (d.disk.percent >= state.defaults.diskCritPercent) out.push({ level: 'critical', cluster: c, title: `${c.name} disk ${d.disk.percent.toFixed(1)}%`, detail: 'Above critical threshold' });
-      else if (d.disk.percent >= state.defaults.diskWarnPercent) out.push({ level: 'warning', cluster: c, title: `${c.name} disk ${d.disk.percent.toFixed(1)}%`, detail: 'Above warning threshold' });
+      if (d.disk.percent >= state.defaults.diskCritPercent) add({ key: `${c.id}:disk`, level: 'critical', cluster: c, title: `${c.name} disk ${d.disk.percent.toFixed(1)}%`, detail: 'Above critical threshold' });
+      else if (d.disk.percent >= state.defaults.diskWarnPercent) add({ key: `${c.id}:disk`, level: 'warning', cluster: c, title: `${c.name} disk ${d.disk.percent.toFixed(1)}%`, detail: 'Above warning threshold' });
     }
-    if (d.ilmErrorCount) out.push({ level: 'warning', cluster: c, title: `${c.name}: ${d.ilmErrorCount} index(es) in ILM error step`, detail: Object.keys(d.ilmErrors).slice(0, 3).join(', ') });
-    if (d.slmStatus && d.slmStatus.operation_mode && d.slmStatus.operation_mode !== 'RUNNING') out.push({ level: 'warning', cluster: c, title: `${c.name}: SLM is ${d.slmStatus.operation_mode}`, detail: 'Snapshot lifecycle is not running' });
+    if (d.ilmErrorCount) add({ key: `${c.id}:ilm`, level: 'warning', cluster: c, title: `${c.name}: ${d.ilmErrorCount} index(es) in ILM error step`, detail: Object.keys(d.ilmErrors).slice(0, 3).join(', ') });
+    if (d.slmStatus && d.slmStatus.operation_mode && d.slmStatus.operation_mode !== 'RUNNING') add({ key: `${c.id}:slm-mode`, level: 'warning', cluster: c, title: `${c.name}: SLM is ${d.slmStatus.operation_mode}`, detail: 'Snapshot lifecycle is not running' });
     (d.slm || []).forEach((p) => {
       const lf = p.last_failure, ls = p.last_success;
-      if (lf && (!ls || lf.time > ls.time)) out.push({ level: 'critical', cluster: c, title: `${c.name}/${p.id}: last SLM run failed`, detail: String(lf.details || '').slice(0, 160) });
+      if (lf && (!ls || lf.time > ls.time)) add({ key: `${c.id}:slm-fail:${p.id}`, level: 'critical', cluster: c, title: `${c.name}/${p.id}: last SLM run failed`, detail: String(lf.details || '').slice(0, 160) });
       const staleMs = state.defaults.snapshotStaleHours * 3600 * 1000;
-      if (ls && Date.now() - ls.time > staleMs) out.push({ level: 'warning', cluster: c, title: `${c.name}/${p.id}: no successful snapshot recently`, detail: `Last success ${new Date(ls.time).toISOString().replace('T', ' ').slice(0, 16)}` });
+      if (ls && Date.now() - ls.time > staleMs) add({ key: `${c.id}:slm-stale:${p.id}`, level: 'warning', cluster: c, title: `${c.name}/${p.id}: no successful snapshot recently`, detail: `Last success ${new Date(ls.time).toISOString().replace('T', ' ').slice(0, 16)}` });
     });
   }
   return out;

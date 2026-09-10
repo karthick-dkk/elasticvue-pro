@@ -5,11 +5,26 @@ import { ago, dt, toCsv, download, num } from '../lib/fmt.js';
 import { state, bus, alerts, clusters, activeClusters, client, fetchOverview, refreshAll } from '../core/state.js';
 import { card, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
+import { rowMenu, ICON } from '../ui/menu.js';
+import { confirmDialog } from '../ui/modal.js';
+import {
+  loadAcks, loadCurrentUser, currentUser, setCurrentUser, ackFor, isAcked, noteCount,
+  acknowledge, unacknowledge, addNote, removeNote, pruneAcks,
+} from '../core/acks.js';
 
 let host = null;
-const ui = { level: 'all', cluster: 'all', text: '' };
+const ui = { level: 'all', cluster: 'all', text: '', show: 'open', expanded: new Set() };
 
-export function render(el) { host = el; el.classList.add('dense'); draw(); }
+export function render(el) {
+  host = el;
+  el.classList.add('dense');
+  // Acknowledgements live on this machine; load them before the first paint so rows do
+  // not flicker from unacknowledged to acknowledged.
+  Promise.all([loadAcks(), loadCurrentUser()])
+    .then(() => { pruneAcks(alerts().map((a) => a.key)); draw(); })
+    .catch(() => {});
+  draw();
+}
 export function onData() { if (host && host.isConnected) draw(); }
 
 /** Which page answers this alert. */
@@ -26,8 +41,15 @@ function filtered(all) {
   let rows = all;
   if (ui.level !== 'all') rows = rows.filter((a) => (ui.level === 'critical' ? a.level === 'critical' : a.level !== 'critical'));
   if (ui.cluster !== 'all') rows = rows.filter((a) => a.cluster && a.cluster.id === ui.cluster);
+  if (ui.show === 'open') rows = rows.filter((a) => !isAcked(a.key));
+  else if (ui.show === 'acked') rows = rows.filter((a) => isAcked(a.key));
   const t = ui.text.trim().toLowerCase();
-  if (t) rows = rows.filter((a) => `${a.title} ${a.detail || ''}`.toLowerCase().includes(t));
+  if (t) {
+    rows = rows.filter((a) => {
+      const notes = (ackFor(a.key).notes || []).map((n) => n.text).join(' ');
+      return `${a.title} ${a.detail || ''} ${notes}`.toLowerCase().includes(t);
+    });
+  }
   // critical first, then by cluster name so a fleet reads consistently
   return [...rows].sort((a, b) => {
     if ((a.level === 'critical') !== (b.level === 'critical')) return a.level === 'critical' ? -1 : 1;
@@ -40,6 +62,8 @@ function draw() {
   const rows = filtered(all);
   const crit = all.filter((a) => a.level === 'critical');
   const warn = all.filter((a) => a.level !== 'critical');
+  const acked = all.filter((a) => isAcked(a.key));
+  const open = all.filter((a) => !isAcked(a.key));
   const byCluster = new Map();
   all.forEach((a) => {
     const k = a.cluster ? a.cluster.id : '?';
@@ -48,10 +72,10 @@ function draw() {
   const list = clusters();
 
   mount(host,
-    h('div.grid.c4', { style: { marginBottom: '14px' } },
-      statTile('Open alerts', num(all.length), all.length ? 'across the fleet' : 'nothing to report'),
-      statTile('Critical', num(crit.length), crit.length ? 'needs attention now' : 'none'),
-      statTile('Warnings', num(warn.length), warn.length ? 'worth a look' : 'none'),
+    h('div.grid.c4', { style: { marginBottom: '10px' } },
+      statTile('Open', num(open.length), open.length ? 'not yet acknowledged' : 'all acknowledged'),
+      statTile('Critical', num(crit.filter((a) => !isAcked(a.key)).length), `${num(crit.length)} in total`),
+      statTile('Acknowledged', num(acked.length), acked.length ? 'seen, still active' : 'none'),
       statTile('Clusters affected', num(byCluster.size), `of ${num(list.length)} configured`)),
 
     h('div.toolbar',
@@ -68,17 +92,24 @@ function draw() {
           ...list.map((c) => h('option', { value: c.id }, `${c.name}${byCluster.get(c.id) ? ` (${byCluster.get(c.id)})` : ''}`)));
         s.value = ui.cluster; return s;
       })()),
-      h('label.field', 'Search', h('input', { type: 'search', placeholder: 'title or detail…', value: ui.text,
-        style: { minWidth: '240px' }, oninput: (e) => { ui.text = e.target.value; draw(); } })),
+      h('label.field', 'Show', (() => {
+        const sel = h('select', { onchange: (e) => { ui.show = e.target.value; draw(); } },
+          h('option', { value: 'open' }, `Open (${open.length})`),
+          h('option', { value: 'acked' }, `Acknowledged (${acked.length})`),
+          h('option', { value: 'all' }, `Everything (${all.length})`));
+        sel.value = ui.show; return sel;
+      })()),
+      h('label.field', 'Search', h('input', { type: 'search', placeholder: 'title, detail or note…', value: ui.text,
+        style: { minWidth: '220px' }, oninput: (e) => { ui.text = e.target.value; draw(); } })),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'flex-end' } },
         h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
-        h('button.btn.sm', { onclick: () => { ui.level = 'all'; ui.cluster = 'all'; ui.text = ''; draw(); } }, 'Clear'),
+        h('button.btn.sm', { onclick: () => { ui.level = 'all'; ui.cluster = 'all'; ui.text = ''; ui.show = 'open'; draw(); } }, 'Clear'),
         h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'))),
 
     h('div', { style: { marginTop: '14px' } },
       all.length
         ? card(`Alerts (${rows.length}${rows.length !== all.length ? ` of ${all.length}` : ''})`,
-            `${crit.length} critical · ${warn.length} warning`,
+            `${crit.length} critical · ${warn.length} warning · ${acked.length} acknowledged`,
             alertTable(rows),
             [h('button.btn.sm', { disabled: !all.length, onclick: () => exportAlerts(all) }, 'Export CSV')])
         : card('Alerts', 'nothing to report',
@@ -95,28 +126,137 @@ function draw() {
         .map((c) => connectionBanner(c, () => fetchOverview(c.id)))));
 }
 
+/** Ask who is acknowledging, once per machine. */
+async function ensureUser() {
+  if (currentUser()) return currentUser();
+  const name = window.prompt(
+    'Your name or initials, recorded against acknowledgements and notes on this machine:', '');
+  if (name && name.trim()) await setCurrentUser(name);
+  return currentUser();
+}
+
+async function doAck(a) {
+  await ensureUser();
+  await acknowledge(a.key);
+  draw();
+}
+
+async function doUnack(a) {
+  const ok = await confirmDialog(`Re-open ${a.title}?`,
+    'The alert goes back to the open list. Notes written against it are kept.',
+    { yes: 're-open' });
+  if (!ok) return;
+  await unacknowledge(a.key);
+  draw();
+}
+
+/** The notes panel under an expanded row. */
+function notesPanel(a) {
+  const rec = ackFor(a.key);
+  const input = h('input', {
+    type: 'text', placeholder: 'Add a note — what was found, who is on it, ticket number…',
+    style: { flex: '1', minWidth: '240px' },
+    onkeydown: async (e) => {
+      if (e.key !== 'Enter' || !e.target.value.trim()) return;
+      await ensureUser();
+      await addNote(a.key, e.target.value);
+      e.target.value = '';
+      draw();
+    },
+  });
+
+  return h('div', { style: { display: 'grid', gap: '7px', padding: '4px 0 8px' } },
+    rec.acked
+      ? h('div.muted', { style: { fontSize: '11.5px' } },
+          `Acknowledged by ${rec.ackedBy || 'operator'} ${ago(rec.ackedAt)}`)
+      : null,
+    (rec.notes || []).length
+      ? h('div', ...rec.notes.slice().sort((x, y) => x.ts - y.ts).map((n) =>
+          h('div.note',
+            h('b', n.by || 'operator'), h('span.when', { title: dt(n.ts) }, ago(n.ts)),
+            h('div', n.text),
+            h('button.btn.sm.ghost', {
+              style: { padding: '0 5px', fontSize: '11px' },
+              title: 'Remove this note',
+              onclick: async () => {
+                if (await confirmDialog('Remove this note?', n.text, { yes: 'remove', danger: true })) {
+                  await removeNote(a.key, n.ts); draw();
+                }
+              },
+            }, ICON.delete))))
+      : h('div.muted', { style: { fontSize: '11.5px' } }, 'No notes yet.'),
+    h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+      input,
+      h('button.btn.sm', {
+        onclick: async (e) => {
+          const box = e.target.previousSibling;
+          if (!box.value.trim()) return;
+          await ensureUser();
+          await addNote(a.key, box.value);
+          box.value = '';
+          draw();
+        },
+      }, 'Add note')));
+}
+
 function alertTable(rows) {
-  const trs = rows.map((a) => {
+  const trs = [];
+  rows.forEach((a) => {
     const r = routeFor(a);
-    return h('tr',
+    const rec = ackFor(a.key);
+    const acked = !!rec.acked;
+    const notes = noteCount(a.key);
+    const open = ui.expanded.has(a.key);
+
+    trs.push(h(`tr${acked ? '.ack-row' : ''}`,
       h('td', pill(a.level === 'critical' ? 'critical' : 'warning', a.level === 'critical' ? 'red' : 'yellow')),
       h('td', h('div', { style: { fontWeight: 620 } }, a.cluster ? a.cluster.name : '–'),
         a.cluster ? h('div.mono.muted', { style: { fontSize: '11px' } }, a.cluster.url) : null),
-      h('td', h('div', a.title)),
-      h('td.muted', { style: { fontSize: '12px', maxWidth: '420px', wordBreak: 'break-word' } }, a.detail || ''),
-      h('td', h('button.btn.sm', { onclick: () => navigateTo(r.page) }, r.label)));
+      h('td', h('div', a.title),
+        acked ? h('div.muted', { style: { fontSize: '10.5px' } },
+          `ack ${rec.ackedBy || 'operator'} · ${ago(rec.ackedAt)}`) : null),
+      h('td.muted', { style: { fontSize: '12px', maxWidth: '360px', wordBreak: 'break-word' } }, a.detail || ''),
+      h('td', acked ? pill('acknowledged', 'grey') : pill('open', a.level === 'critical' ? 'red' : 'yellow')),
+      h('td', h('button.btn.sm.ghost', {
+        title: notes ? `${notes} note(s)` : 'Add a note',
+        onclick: () => { open ? ui.expanded.delete(a.key) : ui.expanded.add(a.key); draw(); },
+      }, `💬 ${notes || ''}`.trim())),
+      h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
+        acked
+          ? h('button.btn.sm', { title: 'Put it back on the open list', onclick: () => doUnack(a) }, 'Re-open')
+          : h('button.btn.sm.primary', { title: 'Mark as seen — it stays until the condition clears', onclick: () => doAck(a) }, 'ACK'),
+        rowMenu([
+          { label: open ? 'Hide notes' : 'Notes & comments…', icon: '💬',
+            onClick: () => { open ? ui.expanded.delete(a.key) : ui.expanded.add(a.key); draw(); } },
+          { label: `Go to ${r.label}`, icon: ICON.console, onClick: () => navigateTo(r.page) },
+          { sep: true },
+          { hint: `key: ${a.key}` },
+        ], { title: `Actions for ${a.title}` })))));
+
+    if (open) {
+      trs.push(h('tr', h('td', { colspan: 7, style: { background: 'var(--surface-2)' } }, notesPanel(a))));
+    }
   });
-  return table(['Level', 'Cluster', 'Alert', 'Detail', ''], trs, { emptyText: 'No alert matches the filter' });
+  return table(['Level', 'Cluster', 'Alert', 'Detail', 'State', 'Notes', ''], trs,
+    { emptyText: ui.show === 'open' ? 'Nothing open — every alert here is acknowledged.' : 'No alert matches the filter' });
 }
 
 function exportAlerts(all) {
   download(`es-alerts-${new Date().toISOString().slice(0, 10)}.csv`,
-    toCsv(all.map((a) => ({
-      level: a.level,
-      cluster: a.cluster ? a.cluster.name : '',
-      url: a.cluster ? a.cluster.url : '',
-      title: a.title,
-      detail: a.detail || '',
-      observed_at: new Date(state.lastRefresh || Date.now()).toISOString(),
-    }))), 'text/csv');
+    toCsv(all.map((a) => {
+      const rec = ackFor(a.key);
+      return {
+        level: a.level,
+        cluster: a.cluster ? a.cluster.name : '',
+        url: a.cluster ? a.cluster.url : '',
+        alert: a.title,
+        detail: a.detail || '',
+        state: rec.acked ? 'acknowledged' : 'open',
+        acknowledged_by: rec.ackedBy || '',
+        acknowledged_at: rec.ackedAt ? new Date(rec.ackedAt).toISOString() : '',
+        notes: (rec.notes || []).map((n) => `[${new Date(n.ts).toISOString().slice(0, 16)} ${n.by}] ${n.text}`).join(' | '),
+        key: a.key,
+        observed_at: new Date(state.lastRefresh || Date.now()).toISOString(),
+      };
+    })), 'text/csv');
 }
