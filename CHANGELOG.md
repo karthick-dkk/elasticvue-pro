@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- **"Client" now means one thing.** A client is a cluster — one client, one Elasticsearch
+  URL. The tenant parsed out of index names (`logstash-<source>-YYYY.MM.DD`) is a **source**,
+  and the Indices and Live logs pages say so: Source picker, "All sources", "Sources detected",
+  "Store size by source". The named group in `indexNameRegex` is `<source>`; `<client>` is
+  still honoured, so existing configs keep working untouched. The `client` field in the
+  Indices CSV export is now `source`.
 - **Clusters** sorts by cluster size — the store size of its indices, shown as its own
   column — alongside the existing keys, and starts sorted by cluster name ascending.
   Cluster size is in the CSV export too.

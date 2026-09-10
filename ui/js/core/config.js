@@ -24,7 +24,9 @@ export const DEFAULTS = {
   refreshIntervalSec: 30,
   requestTimeoutMs: 15000,
   logIndexPattern: 'logstash-*',
-  indexNameRegex: '^(?<prefix>[a-z0-9_.-]*?logstash)-(?<client>.+)-(?<date>\\d{4}[.\\-]\\d{2}[.\\-]\\d{2})$',
+  // Named groups <source> and <date> drive the source picker on the Indices page.
+  // <client> is still honoured for configs written before the rename.
+  indexNameRegex: '^(?<prefix>[a-z0-9_.-]*?logstash)-(?<source>.+)-(?<date>\\d{4}[.\\-]\\d{2}[.\\-]\\d{2})$',
   timeField: '@timestamp',
   diskWarnPercent: 80,
   diskCritPercent: 90,

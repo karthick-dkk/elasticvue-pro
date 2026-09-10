@@ -305,7 +305,9 @@ export function parseIndexName(name, reSrc, row = {}) {
   const g = (m && m.groups) || {};
   return {
     index: name,
-    client: g.client || null,
+    // The named group is `source`; `client` is still accepted because configs written
+    // before the rename use it, and "client" means a whole cluster in this app.
+    source: g.source || g.client || null,
     day: g.date ? g.date.replace(/[.\-]/g, '-') : null,
     health: row.health, status: row.status,
     pri: Number(row.pri) || 0, rep: Number(row.rep) || 0,

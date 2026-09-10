@@ -41,8 +41,10 @@ defaults:
   # Daily log indices, e.g. logstash-acme-2026.01.02
   logIndexPattern: "logstash-*"
   timeField: "@timestamp"
-  # Named groups <client> and <date> drive the client picker on the Indices page.
-  indexNameRegex: '^(?<prefix>[a-z0-9_.-]*?logstash)-(?<client>.+)-(?<date>\\d{4}[.\\-]\\d{2}[.\\-]\\d{2})$'
+  # Named groups <source> and <date> drive the source picker on the Indices page.
+  # A source is the tenant inside an index name — a whole cluster is a client.
+  # <client> is still accepted here, for configs written before the rename.
+  indexNameRegex: '^(?<prefix>[a-z0-9_.-]*?logstash)-(?<source>.+)-(?<date>\\d{4}[.\\-]\\d{2}[.\\-]\\d{2})$'
 
 # Jump hosts. A cluster with \`via: <name>\` is reached through an SSH connection the app
 # opens itself (no ssh.exe, no PuTTY): the same thing \`ssh -D\` does. Key file only —
@@ -91,5 +93,5 @@ clusters:
     # password: "another-secret"
     # per-cluster index naming override (optional):
     # logIndexPattern: "filebeat-*"
-    # indexNameRegex: '^(?<prefix>filebeat)-(?<client>.+)-(?<date>\\d{4}\\.\\d{2}\\.\\d{2})$'
+    # indexNameRegex: '^(?<prefix>filebeat)-(?<source>.+)-(?<date>\\d{4}\\.\\d{2}\\.\\d{2})$'
 `;

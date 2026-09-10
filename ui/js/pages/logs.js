@@ -1,4 +1,9 @@
-/** Page 4 — live log explorer over daily indices (logstash-<client>-YYYY.MM.DD). */
+/**
+ * Page — live log explorer over daily indices (logstash-<source>-YYYY.MM.DD).
+ *
+ * "Source" is the tenant inside the index name, not a client — a client here is a whole
+ * cluster with its own Elasticsearch URL.
+ */
 
 import { h, mount, $, clear } from '../lib/dom.js';
 import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } from '../lib/fmt.js';
@@ -12,7 +17,7 @@ let host = null;
 let tailTimer = null;
 
 const ui = {
-  clientFilter: 'all',
+  sourceFilter: 'all',
   from: '', to: '',
   query: '',
   size: 200,
@@ -54,10 +59,10 @@ function targetIndices(c) {
   const fromDay = ui.from.slice(0, 10), toDay = ui.to.slice(0, 10);
   const days = eachDay(fromDay, toDay).map((d) => ymdDots(d, '-'));
   const inRange = known.filter((r) => r.day && days.includes(r.day) &&
-    (ui.clientFilter === 'all' || r.client === ui.clientFilter));
+    (ui.sourceFilter === 'all' || r.source === ui.sourceFilter));
   if (inRange.length) return { list: inRange.map((r) => r.index), exact: true, days };
   // fall back to a wildcard the cluster resolves itself
-  const pat = ui.clientFilter === 'all' ? c.logIndexPattern : c.logIndexPattern.replace('*', `${ui.clientFilter}-*`);
+  const pat = ui.sourceFilter === 'all' ? c.logIndexPattern : c.logIndexPattern.replace('*', `${ui.sourceFilter}-*`);
   return { list: [pat], exact: false, days };
 }
 
@@ -141,15 +146,15 @@ function draw() {
   if (isSnapshotMode()) return mount(host, snapshotNotice('The log explorer'));
   if (!c) return mount(host, empty('No cluster selected'));
   const known = state.indices.get(c.id) || [];
-  const clientNames = [...new Set(known.filter((r) => r.client).map((r) => r.client))].sort();
+  const sourceNames = [...new Set(known.filter((r) => r.source).map((r) => r.source))].sort();
 
-  const sel = h('select', { onchange: (e) => { ui.clientFilter = e.target.value; search(); } },
-    h('option', { value: 'all' }, 'All clients'),
-    ...clientNames.map((n) => h('option', { value: n }, n)));
-  sel.value = ui.clientFilter;
+  const sel = h('select', { onchange: (e) => { ui.sourceFilter = e.target.value; search(); } },
+    h('option', { value: 'all' }, 'All sources'),
+    ...sourceNames.map((n) => h('option', { value: n }, n)));
+  sel.value = ui.sourceFilter;
 
   const bar = h('div.toolbar',
-    h('label.field', 'Client', sel),
+    h('label.field', 'Source', sel),
     h('label.field', 'From', h('input', { type: 'datetime-local', value: ui.from, onchange: (e) => { ui.from = e.target.value; } })),
     h('label.field', 'To', h('input', { type: 'datetime-local', value: ui.to, onchange: (e) => { ui.to = e.target.value; } })),
     h('label.field', 'Lucene query', h('input', { type: 'search', value: ui.query, placeholder: 'level:ERROR AND host:web*', style: { minWidth: '260px' },

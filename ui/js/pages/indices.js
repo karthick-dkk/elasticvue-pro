@@ -1,4 +1,10 @@
-/** Page 2 — live indices, with a client picker driven by the index naming pattern. */
+/**
+ * Page — live indices, with a source picker driven by the index naming pattern.
+ *
+ * "Source" is the tenant inside an index name (logstash-<source>-YYYY.MM.DD). It is NOT
+ * a client: in this app a client is a whole cluster with its own Elasticsearch URL, and
+ * one cluster holds many sources.
+ */
 
 import { h, mount, $, clear } from '../lib/dom.js';
 import { bytes, num, compact, dt, ago, toCsv, download } from '../lib/fmt.js';
@@ -14,7 +20,7 @@ import {
 import { rowMenu, ICON, closeMenus } from '../ui/menu.js';
 
 let host = null;
-const ui = { clientFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
+const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
 /** Index names ticked in the table, for the bulk actions. Cleared when the data reloads. */
 const selected = new Set();
 
@@ -42,8 +48,8 @@ async function load(force) {
 
 function rowsFor(c) {
   let rows = state.indices.get(c.id) || [];
-  if (ui.clientFilter === '__none') rows = rows.filter((r) => !r.client);
-  else if (ui.clientFilter !== 'all') rows = rows.filter((r) => r.client === ui.clientFilter);
+  if (ui.sourceFilter === '__none') rows = rows.filter((r) => !r.source);
+  else if (ui.sourceFilter !== 'all') rows = rows.filter((r) => r.source === ui.sourceFilter);
   if (ui.status !== 'all') rows = rows.filter((r) => (ui.status === 'open' || ui.status === 'close') ? r.status === ui.status : r.health === ui.status);
   if (ui.from) rows = rows.filter((r) => !r.day || r.day >= ui.from);
   if (ui.to) rows = rows.filter((r) => !r.day || r.day <= ui.to);
@@ -66,50 +72,50 @@ function draw() {
   const all = state.indices.get(c.id) || [];
   const rows = rowsFor(c);
 
-  const clientsMap = new Map();
+  const sourcesMap = new Map();
   all.forEach((r) => {
-    const k = r.client || '__none';
-    const cur = clientsMap.get(k) || { key: k, indices: 0, docs: 0, size: 0 };
+    const k = r.source || '__none';
+    const cur = sourcesMap.get(k) || { key: k, indices: 0, docs: 0, size: 0 };
     cur.indices++; cur.docs += r.docs; cur.size += r.size;
-    clientsMap.set(k, cur);
+    sourcesMap.set(k, cur);
   });
-  const clientList = [...clientsMap.values()].sort((a, b) => b.size - a.size);
+  const sourceList = [...sourcesMap.values()].sort((a, b) => b.size - a.size);
 
   const totals = rows.reduce((s, r) => ({ docs: s.docs + r.docs, size: s.size + r.size, pri: s.pri + r.pri, shards: s.shards + r.pri * (1 + r.rep) }),
     { docs: 0, size: 0, pri: 0, shards: 0 });
 
   mount(host,
-    clientBar(c, clientList, all.length),
+    sourceBar(c, sourceList, all.length),
     ui.error ? h('div.banner.err', h('div', h('div.ttl', 'Could not list indices'), h('div.mono', ui.error))) : null,
     h('div.grid.c4', { style: { marginBottom: '14px' } },
       statTile('Indices shown', `${num(rows.length)}`, `of ${num(all.length)} on ${c.name}`),
       statTile('Documents', compact(totals.docs), num(totals.docs) + ' docs'),
       statTile('Store size', bytes(totals.size), `${num(totals.shards)} shards`),
-      statTile('Clients detected', String(clientList.filter((x) => x.key !== '__none').length), 'parsed from index names')),
+      statTile('Sources detected', String(sourceList.filter((x) => x.key !== '__none').length), 'parsed from index names')),
 
     // Folded by default: useful, but tall enough to push the table off the screen.
     h('div.grid.c2', { style: { marginBottom: '10px' } },
-      collapsible('Store size by client', 'click a bar to filter the table', () =>
-        clientList.length
-          ? hbarList(clientList.map((x) => ({ key: x.key, label: x.key === '__none' ? '(unparsed)' : x.key, value: x.size,
+      collapsible('Store size by source', 'click a bar to filter the table', () =>
+        sourceList.length
+          ? hbarList(sourceList.map((x) => ({ key: x.key, label: x.key === '__none' ? '(unparsed)' : x.key, value: x.size,
               sub: `${num(x.indices)} indices · ${compact(x.docs)} docs` })),
-              { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.clientFilter = r.key; draw(); } })
-          : empty('No indices'), { key: 'idx-by-client' }),
+              { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.sourceFilter = r.key; draw(); } })
+          : empty('No indices'), { key: 'idx-by-source' }),
       collapsible('Indices per day', 'daily indices detected from the naming pattern',
         () => perDay(rows), { key: 'idx-per-day' })),
 
     tableCard(c, rows, all));
 }
 
-function clientBar(c, clientList, total) {
-  const sel = h('select', { onchange: (e) => { ui.clientFilter = e.target.value; draw(); } },
-    h('option', { value: 'all' }, `All clients (${total} indices)`),
-    ...clientList.filter((x) => x.key !== '__none').map((x) => h('option', { value: x.key }, `${x.key} — ${x.indices} idx · ${bytes(x.size)}`)),
-    clientList.some((x) => x.key === '__none') ? h('option', { value: '__none' }, '(indices without a client)') : null);
-  sel.value = ui.clientFilter;
+function sourceBar(c, sourceList, total) {
+  const sel = h('select', { onchange: (e) => { ui.sourceFilter = e.target.value; draw(); } },
+    h('option', { value: 'all' }, `All sources (${total} indices)`),
+    ...sourceList.filter((x) => x.key !== '__none').map((x) => h('option', { value: x.key }, `${x.key} — ${x.indices} idx · ${bytes(x.size)}`)),
+    sourceList.some((x) => x.key === '__none') ? h('option', { value: '__none' }, '(indices without a source)') : null);
+  sel.value = ui.sourceFilter;
 
   return h('div.toolbar',
-    h('label.field', 'Client', sel),
+    h('label.field', 'Source', sel),
     h('label.field', 'Search index', h('input#idx-search', { type: 'search', placeholder: 'substring…', value: ui.text, style: { minWidth: '200px' },
       oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } })),
     h('label.field', 'From day', h('input', { type: 'date', value: ui.from, onchange: (e) => { ui.from = e.target.value; draw(); } })),
@@ -124,7 +130,7 @@ function clientBar(c, clientList, total) {
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'flex-end' } },
       ui.loading ? h('span.muted', h('span.spin'), ' loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
       writeToggle(draw),
-      h('button.btn.sm', { onclick: () => { ui.clientFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; draw(); } }, 'Clear'),
+      h('button.btn.sm', { onclick: () => { ui.sourceFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; draw(); } }, 'Clear'),
       h('button.btn.sm', { onclick: () => load(true) }, '↻ Reload')));
 }
 
@@ -207,7 +213,7 @@ function buildTable(c, rows) {
     h('td', tick(r)),
     h('td', pill(r.health || '?', r.health)),
     h('td.mono', { style: { maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis' }, title: r.index }, r.index),
-    h('td', r.client ? h('button.btn.sm.ghost', { onclick: () => { ui.clientFilter = r.client; draw(); } }, r.client) : h('span.muted', '–')),
+    h('td', r.source ? h('button.btn.sm.ghost', { onclick: () => { ui.sourceFilter = r.source; draw(); } }, r.source) : h('span.muted', '–')),
     h('td.mono', r.day || '–'),
     h('td', r.status === 'open' ? h('span.pill.green', h('i.dot'), 'open') : h('span.pill.grey', h('i.dot'), r.status || '?')),
     h('td.num', `${r.pri}/${r.rep}`),
@@ -250,7 +256,7 @@ function buildTable(c, rows) {
   const t = h('div.tbl-wrap', h('table.tbl',
     h('thead', h('tr',
       h('th', { style: { width: '28px' } }, selectAll),
-      th('H', 'health'), th('Index', 'index'), th('Client', 'client'), th('Day', 'day'), th('State', 'status'),
+      th('H', 'health'), th('Index', 'index'), th('Source', 'source'), th('Day', 'day'), th('State', 'status'),
       th('P/R', 'pri', true), th('Docs', 'docs', true), th('Deleted', 'deleted', true),
       th('Size', 'size', true), th('Primary', 'priSize', true), th('Created', 'created'), h('th', ''))),
     h('tbody', ...(trs.length ? trs : [h('tr', h('td', { colspan: 13 }, empty('No indices match the filter')))]))));
@@ -264,9 +270,9 @@ function buildTable(c, rows) {
         oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } }),
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
         `${num(rows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
-      ui.text || ui.clientFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
+      ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
         ? h('button.btn.sm.ghost', { onclick: () => {
-            ui.text = ''; ui.clientFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; draw();
+            ui.text = ''; ui.sourceFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; draw();
           } }, 'Clear filters')
         : null),
     h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, rows)),
@@ -294,7 +300,7 @@ function tableCard(c, rows, all) {
     h('div#idx-table', buildTable(c, rows)),
     [h('span#idx-meta.muted', { style: { fontSize: '11.5px' } }, `${num(rows.length)} shown · limit ${ui.limit}`),
      h('button.btn.sm', { onclick: () => download(`indices-${c.id}-${new Date().toISOString().slice(0, 10)}.csv`,
-        toCsv(rows.map((r) => ({ index: r.index, client: r.client || '', day: r.day || '', health: r.health, status: r.status,
+        toCsv(rows.map((r) => ({ index: r.index, source: r.source || '', day: r.day || '', health: r.health, status: r.status,
           pri: r.pri, rep: r.rep, docs: r.docs, deleted: r.deleted, size_bytes: r.size, primary_bytes: r.priSize,
           created: r.created ? new Date(r.created).toISOString() : '' }))), 'text/csv') }, 'Export CSV')]);
 }
