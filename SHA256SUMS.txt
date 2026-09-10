@@ -1,2 +1,2 @@
-8f044e264d9da99013935baa36d88c69c3173a7739be8ed843493191dc4d00c3  elasticvue-pro-2.2.1.exe
+446edc44fd718bc71f855de7f2ec8f2c41a8f6257e7cd8e4cbbab5aff15761dd  elasticvue-pro-2.2.2.exe
 8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c  WebView2Loader.dll

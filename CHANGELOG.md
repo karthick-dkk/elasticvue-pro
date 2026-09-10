@@ -1,6 +1,58 @@
 # Changelog
 
-## Unreleased
+## 2.2.2 — 2026-09-10
+
+### Safer destructive actions
+- Delete no longer sits in the row next to Open and Close. Every action that changes or
+  removes something — indices, snapshots, repositories, certificate pins — is behind a **⋮
+  menu** with a bin icon and a divider above it. The row keeps only what is reversible.
+- Confirmations name the action in the button — *Yes, delete* / *No, cancel* — list what
+  will be affected, and demand the count or the repository name typed back for the worst
+  cases. Moving a shard confirms too, since it copies data across nodes. No browser
+  `confirm()` remains in the UI.
+
+### Volume report (new page)
+- Per-day ingest, what retention costs, and whether each cluster's storage matches the
+  policy it promises. The daily figure is the **mean of the three heaviest of the last seven
+  complete days** — a plain seven-day mean under-provisions whenever the window catches a
+  quiet weekend — and the report names the three days it used. Today is excluded throughout;
+  its index is still being written to.
+- Derived per cluster: the daily figure and a +30% planning buffer, live storage and how
+  long the free space lasts, what the stated retention costs and whether the disk can hold
+  it, the 30/90/365-day requirements, and the windows of live and snapshot data held.
+- Clusters gain `liveRetention` and `snapshotRetention` — `30d`, `90 days`, `3M`, `6 months`,
+  `1y` — editable and validated in the UI, falling back to the SLM policy's `expire_after`.
+- Repository size is not a number Elasticsearch reports cheaply, so it sits behind a
+  **Measure** button and reads "not measured" until asked. Anything unknowable shows a dash
+  or "unknown" rather than a confident zero, and the 365-day backup figure is labelled an
+  upper bound since snapshots are incremental.
+- Export is CSV, one row per cluster with every parameter as a column; the on-screen layout
+  is available as a second button.
+
+### Alerts
+- Alerts can be **acknowledged** and **annotated**. Each carries a key naming the problem
+  rather than its current value — `<cluster>:disk`, not "disk 87.3%" — so a note written at
+  86% is still attached at 91%, and only disappears when the condition clears. ACK records
+  who and when; notes are timestamped, attributed, and survive a re-open. Kept in IndexedDB
+  on that machine: a local operator log, not shared state.
+- Search also looks inside notes, and CSV export carries the ack state, the acknowledger and
+  the notes.
+- A **graph view**: one bar per cluster, so a fleet is read at a glance instead of scrolled,
+  and one per kind of problem, which says whether it is the same fault everywhere or
+  different ones. Bars are coloured by the worst level present, clicking one filters the page
+  to that cluster, and both cuts respect the filters above. Table, Graph and Graph + table
+  are selectable.
+
+### Reading long pages
+- Alerts, Indices, Snapshots and Nodes use a compact density, and their tall secondary panels
+  — charts, coverage strips, repositories, SLM — fold away and remember the choice. Folded
+  panels build nothing, so Snapshots dropped from 630 DOM nodes to 508.
+- Two panels open themselves when they have something to say: SLM when a policy's last run
+  failed, snapshot availability when there is a gap in the window.
+- The index filter is repeated directly above the list, with the row count and a
+  clear-filters button; both boxes drive the same filter and stay in step.
+
+### Naming and sorting
 - **"Client" now means one thing.** A client is a cluster — one client, one Elasticsearch
   URL. The tenant parsed out of index names (`logstash-<source>-YYYY.MM.DD`) is a **source**,
   and the Indices and Live logs pages say so: Source picker, "All sources", "Sources detected",
@@ -15,11 +67,6 @@
   everywhere or different ones. Bars are coloured by the worst level present, clicking one
   filters the page to that cluster, and both cuts respect the filters above. Table, Graph
   and Graph + table are selectable.
-- Per-day ingest is now the **mean of the three heaviest of the last seven complete days**,
-  replacing the earlier "seven-day mean, falling back to the top three when it is 30% lower".
-  Simpler, and it sizes against days that actually happen; the report names the days it used.
-- The volume report's default export is one row per cluster with every parameter as a column
-  — the shape a spreadsheet wants. The on-screen layout is still available as a second button.
 - **Nodes & shards** carries the capacity figures too: per-day indices size, both retention
   policies, live storage and how long the free space lasts, what the stated policy requires
   and whether it is met, the 30/90-day requirements, and the windows of live and snapshot data
