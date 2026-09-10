@@ -207,6 +207,33 @@ The headline figures — per-day size, both retention policies, what the storage
 how long the free space lasts — also appear on the **Nodes & shards** page, computed by the
 same code so the two cannot disagree.
 
+## Deleting an index safely
+
+Before a live index is deleted, every snapshot repository is checked for it, and **only a
+snapshot in state `SUCCESS` with no recorded failure on that index counts** — a `PARTIAL`
+snapshot may hold a broken copy, and one still `IN_PROGRESS` has not finished writing it.
+The confirmation shows the verdict per index with the newest good copy and where it is.
+
+Indices with no good copy are **unticked by default** and have to be ticked back in on
+purpose. "Delete it, it's in a snapshot" is the single most common way to lose log data
+when the snapshot turns out to be partial, so the default is the safe one.
+
+The check is one listing per repository, not one call per snapshot, so it is quick even
+for many indices. If a repository cannot be read, the dialog says so and treats "not in any
+snapshot" as "unknown" for that repository rather than as fact.
+
+The same lookup powers **also search snapshots** on the Indices page: tick it and a name is
+looked for both live and inside every snapshot, answering "was it deleted, and can it come
+back" without opening two pages.
+
+## Our own load on each cluster
+
+The status strip shows how many requests **this app** sent to the whole fleet in the last
+five minutes, and the Clusters page shows the figure per cluster with the rate it implies.
+The core counts every request the moment it goes out; a request the read-only guard refused
+never reached a socket and is not counted. It exists so "are we stressing Elasticsearch" is
+a number rather than a worry.
+
 ## Disk balance
 
 With more than one data node, the Nodes page says whether the data is spread evenly and —

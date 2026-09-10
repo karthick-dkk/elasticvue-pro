@@ -87,10 +87,24 @@ const routes = [
       'unassigned.reason': 'NODE_LEFT', node: null, store: '0' }])],
   [(u) => u.startsWith('/_cat/snapshots'), () => SNAPSHOTS],
   [(u) => u.startsWith('/_cat/aliases'), () => ([{ alias: 'logstash', index: 'logstash-acme-2026.09.09', is_write_index: 'true' }])],
-  [(u) => /^\/_snapshot\/[^/]+\//.test(u), () => ({ snapshots: [{ snapshot: 'daily-1', state: 'SUCCESS',
-    indices: INDICES.map((i) => i.index), shards: { total: 10, successful: 10, failed: 0 }, failures: [],
-    start_time: new Date(Date.now() - 3600000).toISOString(), end_time: new Date().toISOString(),
-    duration_in_millis: 300000, version: '8.13.4', include_global_state: false }] })],
+  [(u) => /^\/_snapshot\/[^/]+\//.test(u), () => ({ snapshots: [
+    // A good copy of every logstash index — but NOT of metrics-2026.09, which is therefore
+    // "not in any snapshot" and must be ticked on purpose before it can be deleted.
+    { snapshot: 'daily-1', state: 'SUCCESS',
+      indices: INDICES.map((i) => i.index).filter((n) => n.startsWith('logstash-')),
+      shards: { total: 10, successful: 10, failed: 0 }, failures: [],
+      start_time_in_millis: Date.now() - 3600000, end_time_in_millis: Date.now() - 3300000,
+      start_time: new Date(Date.now() - 3600000).toISOString(), end_time: new Date(Date.now() - 3300000).toISOString(),
+      duration_in_millis: 300000, version: '8.13.4', include_global_state: false },
+    // A PARTIAL snapshot that does list metrics-2026.09 — which must NOT count as a copy.
+    { snapshot: 'daily-0', state: 'PARTIAL',
+      indices: ['metrics-2026.09', 'logstash-acme-2026.09.09'],
+      shards: { total: 10, successful: 8, failed: 2 },
+      failures: [{ index: 'metrics-2026.09', shard_id: 0, reason: 'node left' }],
+      start_time_in_millis: Date.now() - 90000000, end_time_in_millis: Date.now() - 89700000,
+      start_time: new Date(Date.now() - 90000000).toISOString(), end_time: new Date(Date.now() - 89700000).toISOString(),
+      duration_in_millis: 300000, version: '8.13.4', include_global_state: false },
+  ] })],
   [(u) => u === '/_snapshot' || u.startsWith('/_snapshot?'), () => ({
     daily: { type: 'fs', settings: { location: '/mnt/backups', compress: true } } })],
   [(u) => u.startsWith('/_slm/status'), () => ({ operation_mode: 'RUNNING' })],

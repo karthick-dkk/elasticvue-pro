@@ -4,7 +4,7 @@ import { h, $, mount, clear } from './lib/dom.js';
 import { ago, dur } from './lib/fmt.js';
 import { idb } from './lib/idb.js';
 import * as cfg from './core/config.js';
-import { state, bus, setConfig, refreshAll, startAutoRefresh, clusters, alerts, worstHealth,
+import { state, bus, setConfig, refreshAll, startAutoRefresh, clusters, alerts, worstHealth, requestLoad,
          clustersNeedingCredential, clustersWithAuthError, hasSessionCredential, isReadOnly } from './core/state.js';
 import { showCredentialDialog } from './ui/credential-dialog.js';
 import { loadSnapshotFile, isSnapshotMode } from './core/snapshot.js';
@@ -246,14 +246,13 @@ function renderTopbar() {
       ? h('button.btn.sm', { class: crit ? 'danger' : '', onclick: () => go('alerts'), title: 'Open the Alerts page' },
           `${a.length} alert${a.length > 1 ? 's' : ''}`)
       : h('span.pill.green', h('i.dot'), 'all healthy'),
+    // The read-only / writes-enabled pill used to sit here. Every page that can write
+    // now carries its own "Allow writes" toggle, which says the same thing where it
+    // matters; a second copy in the title bar was noise.
     isSnapshotMode()
       ? h('span.pill.grey', { title: `Rendered from a file collected by PowerShell${state.snapshot && state.snapshot.host ? ' on ' + state.snapshot.host : ''}. The browser is making no network requests.` },
           h('i.dot'), 'snapshot')
-      : isReadOnly()
-      ? h('span.pill.grey', { title: 'Only GET/HEAD and search-family POSTs are sent. Enforced in the extension service worker, not just the UI. Set readOnly: false in clusters.yaml to allow writes.' },
-          h('i.dot'), 'read-only')
-      : h('span.pill.yellow', { title: 'clusters.yaml sets readOnly: false — PUT/POST/DELETE are permitted from the REST console and the SLM Run-now button.' },
-          h('i.dot'), 'writes enabled'),
+      : null,
     h('span#refresh-status.muted', { style: { fontSize: '11.5px', fontVariantNumeric: 'tabular-nums' } }, ''),
     h('button.btn.sm', {
       hidden: isSnapshotMode(),
@@ -308,6 +307,13 @@ function renderSideFoot() {
     row('Clusters', String(clusters().length)),
     row('Health', worstHealth()),
     row('Build', h('span.mono', 'v' + (coreInfo.version || '?'))),
+    // Our own load on the fleet, so "are we stressing Elasticsearch" has a number.
+    (() => {
+      const total = Object.values(requestLoad.clusters).reduce((n, r) => n + (r.last5m || 0), 0);
+      const perMin = Object.values(requestLoad.clusters).reduce((n, r) => n + (r.perMinute || 0), 0);
+      return row('Requests', h('span', { title: 'Requests this app sent to every cluster in the last 5 minutes; see the Clusters page for each one' },
+        `${total} in 5m · ${perMin.toFixed(1)}/min`));
+    })(),
     // one per jump host: "jumpwin ● up"
     ...((coreInfo.tunnels || []).map((t) => {
       const st = (t.status && t.status.state) || 'idle';

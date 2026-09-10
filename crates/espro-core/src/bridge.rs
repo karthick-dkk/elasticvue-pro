@@ -35,8 +35,14 @@ pub struct Core {
     /// The operator's write unlock. Session-only on purpose: never written to disk and
     /// never surviving a restart, so the app always starts read-only.
     writes_unlocked: std::sync::atomic::AtomicBool,
+    /// When each request left for each cluster, so "how hard are we hitting it" is a
+    /// number rather than a guess. Trimmed to the reporting window on every read.
+    request_log: parking_lot::Mutex<HashMap<String, std::collections::VecDeque<std::time::Instant>>>,
     started: std::time::Instant,
 }
+
+/// The window the request counter reports over.
+pub const REQUEST_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// `--config <path>` / `--config=<path>` on the command line, else $ELASTICVUE_CONFIG.
 fn config_hint_from_env() -> Option<String> {
@@ -77,6 +83,7 @@ impl Core {
             data_dir,
             config_hint: config_hint_from_env(),
             writes_unlocked: std::sync::atomic::AtomicBool::new(false),
+            request_log: parking_lot::Mutex::new(HashMap::new()),
             started: std::time::Instant::now(),
         })
     }
@@ -188,6 +195,9 @@ impl Core {
                 self.set_writes_unlocked(on);
                 json!({ "ok": true, "writesUnlocked": on })
             }
+            // How many requests this app has sent to each cluster lately — the answer to
+            // "are we stressing Elasticsearch", as a number.
+            "REQUEST_STATS" => json!({ "ok": true, "requests": self.request_stats() }),
             "PINS" => json!({ "ok": true, "pins": self.pins.list() }),
             "CONFIG_READ" => {
                 let path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -253,6 +263,37 @@ impl Core {
         }
     }
 
+    fn record_request(&self, cluster: &str) {
+        let mut log = self.request_log.lock();
+        let q = log.entry(cluster.to_string()).or_default();
+        q.push_back(std::time::Instant::now());
+        // Keep the queue bounded even for a very chatty cluster.
+        while q.len() > 10_000 {
+            q.pop_front();
+        }
+    }
+
+    /// Requests sent to each cluster in the last `REQUEST_WINDOW`, plus the rate that
+    /// implies. Old entries are dropped as they age out, so memory stays flat.
+    pub fn request_stats(&self) -> Value {
+        let now = std::time::Instant::now();
+        let mut log = self.request_log.lock();
+        let mut out = serde_json::Map::new();
+        for (cluster, q) in log.iter_mut() {
+            while q.front().map(|t| now.duration_since(*t) > REQUEST_WINDOW).unwrap_or(false) {
+                q.pop_front();
+            }
+            let n = q.len();
+            let secs = REQUEST_WINDOW.as_secs_f64();
+            out.insert(cluster.clone(), json!({
+                "last5m": n,
+                "perMinute": (n as f64) / (secs / 60.0),
+                "perSecond": (n as f64) / secs,
+            }));
+        }
+        json!({ "windowSec": REQUEST_WINDOW.as_secs(), "clusters": out })
+    }
+
     pub fn writes_unlocked(&self) -> bool {
         self.writes_unlocked.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -269,6 +310,7 @@ impl Core {
         json!({
             "ok": true, "primed": primed, "readOnly": read_only, "version": crate::VERSION,
             "writesUnlocked": self.writes_unlocked(),
+            "requests": self.request_stats(),
             "desktop": true, "netErrors": true, "clusters": ids,
             "vault": cfg!(feature = "vault"),
             "dataDir": self.data_dir, "configHint": self.config_hint, "uptimeSec": self.started.elapsed().as_secs(),
@@ -382,6 +424,11 @@ impl Core {
         };
         let route = Route { tunnel, tls: TlsMode::parse(tls.as_deref()) };
         let writes = Writes::decide(read_only, self.writes_unlocked(), req.allow_writes);
-        self.transport.request(&req, &url, auth.as_deref(), writes, route).await
+        let out = self.transport.request(&req, &url, auth.as_deref(), writes, route).await;
+        // Only requests that actually went to the cluster count as load on it.
+        if out.get("kind").and_then(|k| k.as_str()) != Some("blocked_readonly") {
+            self.record_request(&req.cluster_id);
+        }
+        out
     }
 }

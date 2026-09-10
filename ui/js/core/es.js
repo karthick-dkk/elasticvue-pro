@@ -23,6 +23,8 @@ export const untrustHostKey = (jumpId) => send({ type: 'UNTRUST_HOSTKEY', jumpId
 export const tunnelSecret = (jumpId, secret) => send({ type: 'TUNNEL_SECRET', jumpId, ...secret });
 export const tunnelReconnect = (jumpId) => send({ type: 'TUNNEL_RECONNECT', jumpId });
 export const listPins = () => send({ type: 'PINS' });
+/** Requests this app sent to each cluster in the last five minutes — our load on it. */
+export const requestStats = () => send({ type: 'REQUEST_STATS' });
 /** REST console write unlock. Session-only in the core: never persisted, gone on restart. */
 export const writeUnlock = (on) => send({ type: 'WRITE_UNLOCK', on: !!on });
 export const vaultGet = (scope) => send({ type: 'VAULT_GET', scope });

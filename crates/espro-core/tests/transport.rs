@@ -497,3 +497,48 @@ async fn reading_snapshots_never_needs_the_unlock() {
         assert_eq!(res["ok"], json!(true), "{path} -> {res}");
     }
 }
+
+/* ------------------------ how hard are we hitting the cluster ------------------------ */
+
+#[tokio::test]
+async fn requests_to_each_cluster_are_counted_over_the_window() {
+    let dir = TempDir::new("reqcount");
+    let a = TestServer::start().await;
+    let b = TestServer::start().await;
+    let c = core(&dir);
+    c.handle(json!({ "type": "PRIME", "clusters": [
+        { "id": "a", "url": a.url() }, { "id": "b", "url": b.url() }
+    ]}))
+    .await;
+
+    for _ in 0..3 {
+        c.handle(json!({ "type": "ES", "clusterId": "a", "path": "/" })).await;
+    }
+    c.handle(json!({ "type": "ES", "clusterId": "b", "path": "/" })).await;
+
+    let st = c.handle(json!({ "type": "REQUEST_STATS" })).await;
+    assert_eq!(st["ok"], json!(true));
+    assert_eq!(st["requests"]["windowSec"], json!(300));
+    assert_eq!(st["requests"]["clusters"]["a"]["last5m"], json!(3), "{st}");
+    assert_eq!(st["requests"]["clusters"]["b"]["last5m"], json!(1), "{st}");
+    assert!(st["requests"]["clusters"]["a"]["perMinute"].as_f64().unwrap() > 0.0);
+
+    // PING carries the same figure, so the UI needs no extra round trip.
+    let ping = c.handle(json!({ "type": "PING" })).await;
+    assert_eq!(ping["requests"]["clusters"]["a"]["last5m"], json!(3));
+}
+
+#[tokio::test]
+async fn a_request_the_guard_blocked_is_not_counted_as_load() {
+    // It never reached a socket, so it is not load on the cluster.
+    let dir = TempDir::new("reqblocked");
+    let srv = TestServer::start().await;
+    let c = primed(&dir, &srv.url(), true).await;
+
+    c.handle(json!({ "type": "ES", "clusterId": "es", "method": "DELETE", "path": "/x" })).await;
+    c.handle(json!({ "type": "ES", "clusterId": "es", "path": "/" })).await;
+
+    let st = c.handle(json!({ "type": "REQUEST_STATS" })).await;
+    assert_eq!(st["requests"]["clusters"]["es"]["last5m"], json!(1), "only the GET counts: {st}");
+    assert_eq!(srv.connections(), 1);
+}

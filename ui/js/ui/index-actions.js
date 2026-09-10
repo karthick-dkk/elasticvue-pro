@@ -11,6 +11,8 @@ import { bytes, num } from '../lib/fmt.js';
 import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
 import { ensureWrites } from '../core/writes.js';
 import { client, state } from '../core/state.js';
+import { verifyIndicesInSnapshots, coverageLabel } from '../core/snapshot-verify.js';
+import { pill } from '../pages/common.js';
 
 /** Run one action per index, collecting failures rather than stopping at the first. */
 async function forEachIndex(cl, names, fn) {
@@ -62,6 +64,14 @@ export async function closeIndices(cluster, names, { onChanged } = {}) {
  * Deleting is the one action that cannot be undone, so it asks for the count to be
  * typed back when more than one index is going.
  */
+/**
+ * Delete live indices — after checking each one is held in a SUCCESSFUL snapshot.
+ *
+ * The check runs before the confirmation, and the confirmation shows its result per index.
+ * Indices with no good copy are left out by default and must be ticked back in on purpose,
+ * because "delete it, it's in a snapshot" is the single most common way to lose log data
+ * when the snapshot turns out to be partial.
+ */
 export async function deleteIndices(cluster, names, { onChanged } = {}) {
   if (!names.length || !(await ensureWrites())) return false;
 
@@ -70,26 +80,66 @@ export async function deleteIndices(cluster, names, { onChanged } = {}) {
     return s + ((row && row.size) || 0);
   }, 0);
 
+  // Verify first. This is one listing per repository, so it is quick even for many indices.
+  let coverage = null, verifyError = null;
+  try { coverage = await verifyIndicesInSnapshots(cluster, names); }
+  catch (e) { verifyError = e.message || String(e); }
+
+  const covered = names.filter((n) => coverage && coverage.get(n) && coverage.get(n).covered);
+  const uncovered = names.filter((n) => !covered.includes(n));
+  const unverified = coverage ? [...new Set(names.flatMap((n) => coverage.get(n).unverified))] : [];
+
+  // What actually gets deleted: covered by default; uncovered only if ticked on purpose.
+  const chosen = new Set(covered);
+  const rowFor = (n) => {
+    const v = coverage && coverage.get(n);
+    const lbl = coverageLabel(v);
+    const safe = v && v.covered;
+    const box = h('input', { type: 'checkbox', checked: safe, style: { cursor: 'pointer' },
+      onchange: (e) => { if (e.target.checked) chosen.add(n); else chosen.delete(n); } });
+    return h('tr',
+      h('td', box),
+      h('td.mono', { style: { fontSize: '11.5px', wordBreak: 'break-all' } }, n),
+      h('td', pill(lbl.text, lbl.cls)),
+      h('td.muted', { style: { fontSize: '11px' } },
+        safe ? `${v.best.repo} · ${new Date(v.best.end || v.best.start).toISOString().slice(0, 16).replace('T', ' ')}`
+             : v && v.all.length ? `${v.all.length} snapshot(s), none successful for this index` : ''));
+  };
+
   const body = [
     h('div.banner.err', { style: { margin: '0 0 4px' } },
       h('div', h('div.ttl', 'This cannot be undone'),
-        h('div', `The data is removed from ${cluster.name}. If it is held in a snapshot it can be restored ` +
-                 'from there; otherwise it is gone.'))),
-    h('div', { style: { fontSize: '12.5px' } },
-      h('b', `${num(names.length)} index/indices`), total ? h('span.muted', ` · ${bytes(total)} on disk`) : null),
-    h('div.mono', { style: { fontSize: '11.5px', maxHeight: '190px', overflow: 'auto',
-                             border: '1px solid var(--border)', borderRadius: '6px', padding: '7px' } },
-      names.map((n) => h('div', n))),
+        h('div', `The data is removed from ${cluster.name}. Each index was checked against every ` +
+                 'snapshot repository; only a snapshot in state SUCCESS with no failure on that index counts.'))),
+    verifyError
+      ? h('div.banner.warn', { style: { margin: 0 } }, h('div', h('div.ttl', 'Could not verify snapshots'), h('div.mono', verifyError)))
+      : null,
+    unverified.length
+      ? h('div.banner.warn', { style: { margin: 0 } },
+          h('div', h('div.ttl', `${unverified.length} repository/repositories could not be read`),
+            h('div.mono', { style: { fontSize: '11px' } }, unverified.join('; ')),
+            h('div', 'An index may be held there without this check seeing it. Treat "NOT in any snapshot" as "unknown" for those.')))
+      : null,
+    h('div', { style: { display: 'flex', gap: '10px', fontSize: '12.5px', alignItems: 'baseline' } },
+      h('b', `${num(names.length)} index/indices`), total ? h('span.muted', `${bytes(total)} on disk`) : null,
+      h('span', { style: { color: 'var(--good)' } }, `${covered.length} safely in a snapshot`),
+      uncovered.length ? h('span', { style: { color: 'var(--critical)', fontWeight: 640 } }, `${uncovered.length} NOT — unticked, delete only on purpose`) : null),
+    h('div.tbl-wrap', { style: { maxHeight: '240px', overflow: 'auto' } },
+      h('table.tbl', h('thead', h('tr', h('th', ''), h('th', 'Index'), h('th', 'Snapshot copy'), h('th', 'Newest good copy'))),
+        h('tbody', ...names.map(rowFor)))),
   ].filter(Boolean);
 
   const ok = await confirmDialog(
     `Delete ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
-    h('div', ...body),
-    { yes: 'delete', danger: true, typeToConfirm: names.length > 1 ? String(names.length) : null });
+    h('div', { style: { display: 'grid', gap: '8px' } }, ...body),
+    { yes: 'delete the ticked ones', danger: true, typeToConfirm: names.length > 1 ? String(names.length) : null });
   if (!ok) return false;
 
-  const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).deleteIndex(n));
-  report('delete', names.length, failed);
+  const list = names.filter((n) => chosen.has(n));
+  if (!list.length) { alert('Nothing was ticked, so nothing was deleted.'); return false; }
+
+  const failed = await forEachIndex(client(cluster.id), list, (n) => client(cluster.id).deleteIndex(n));
+  report('delete', list.length, failed);
   if (onChanged) await onChanged();
   return true;
 }

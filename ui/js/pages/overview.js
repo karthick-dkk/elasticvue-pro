@@ -2,7 +2,7 @@
 
 import { h, mount, clear } from '../lib/dom.js';
 import { bytes, num, compact, pct, ago, dt, toCsv, download, healthClass } from '../lib/fmt.js';
-import { state, bus, clusters, activeClusters, client, fetchOverview, refreshAll, alerts } from '../core/state.js';
+import { state, bus, clusters, activeClusters, client, fetchOverview, refreshAll, alerts, requestsFor, requestLoad } from '../core/state.js';
 import { hbarList, usageMeter } from '../lib/charts.js';
 import { card, pill, statTile, table, connectionBanner, diskCell, lastSnapshotOf, snapshotPill, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
@@ -182,7 +182,7 @@ function tiles(rows) {
 }
 
 function summaryCard(rows, all) {
-  const headers = ['Cluster', 'Version', 'Health', 'Nodes', { label: 'Size', num: true }, 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', ''];
+  const headers = ['Cluster', 'Version', 'Health', 'Nodes', { label: 'Size', num: true }, 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', { label: 'Our reqs/5m', num: true }, ''];
   const byCluster = alertsByCluster();
   const trs = [];
   rows.forEach((r) => {
@@ -217,6 +217,10 @@ function summaryCard(rows, all) {
         ? h('button.btn.sm.ghost', { title: 'Show these on the Alerts page', onclick: () => navigateTo('alerts') },
             pill(String(byCluster.get(c.id)), 'yellow'))
         : h('span.muted', '–')),
+      // Requests THIS app sent to the cluster — its share of the cluster's load.
+      h('td.num', { title: `${requestsFor(c.id).perMinute.toFixed(1)} per minute · ${requestsFor(c.id).perSecond.toFixed(2)} per second, over the last ${Math.round(requestLoad.windowSec / 60)} minutes` },
+        h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, String(requestsFor(c.id).last5m)),
+        h('span.muted', { style: { fontSize: '10.5px' } }, ` · ${requestsFor(c.id).perMinute.toFixed(1)}/min`)),
       h('td', h('button.btn.sm.ghost', {
         onclick: () => { expanded.has(c.id) ? expanded.delete(c.id) : expanded.add(c.id); draw(); },
       }, expanded.has(c.id) ? 'Hide' : 'Details'))));
@@ -358,6 +362,7 @@ function exportSummary(rows) {
       health: (d.health && d.health.status) || 'offline',
       nodes: (d.health && d.health.number_of_nodes) || 0,
       cluster_size_bytes: Math.max(0, clusterSize({ c, d })),
+      our_requests_last_5m: requestsFor(c.id).last5m,
       disk_used_bytes: (d.disk && d.disk.used) || 0,
       disk_total_bytes: (d.disk && d.disk.total) || 0,
       disk_percent: d.disk && isFinite(d.disk.percent) ? d.disk.percent.toFixed(2) : '',

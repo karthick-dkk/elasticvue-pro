@@ -1,6 +1,6 @@
 /** Application state, refresh loop and auto-reconnect. */
 
-import { EsClient, primeWorker, setBadge } from './es.js';
+import { EsClient, primeWorker, setBadge, requestStats } from './es.js';
 // Cyclic with field-volume.js, which needs client() from here. Safe because both sides
 // only touch the other inside functions, never while the modules are evaluating.
 import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
@@ -411,6 +411,7 @@ export async function refreshAll({ force = false } = {}) {
     return force || !cl || cl.state === 'online' || cl.state === 'unknown' || cl.canTryNow;
   });
   await Promise.all(targets.map((c) => fetchOverview(c.id).catch(() => {})));
+  await refreshRequestLoad();
   state.lastRefresh = Date.now();
   state.nextRefreshAt = state.lastRefresh + state.defaults.refreshIntervalSec * 1000;
   state.refreshing = false;
@@ -498,6 +499,29 @@ export function alerts() {
 function spikesFor(clusterId) {
   try { return fieldVolumeSpikes().filter((s) => s.clusterId === clusterId); }
   catch (_) { return []; }
+}
+
+/**
+ * Our own load on each cluster: requests sent in the last five minutes, per cluster.
+ * Refreshed alongside the data so the number on screen is never older than the data
+ * beside it. The core keeps the log; this is only the latest reading.
+ */
+export const requestLoad = { at: 0, windowSec: 300, clusters: {} };
+
+export async function refreshRequestLoad() {
+  try {
+    const r = await requestStats();
+    if (r && r.ok && r.requests) {
+      requestLoad.at = Date.now();
+      requestLoad.windowSec = r.requests.windowSec || 300;
+      requestLoad.clusters = r.requests.clusters || {};
+    }
+  } catch (_) { /* the previous reading stands */ }
+  return requestLoad;
+}
+
+export function requestsFor(clusterId) {
+  return requestLoad.clusters[clusterId] || { last5m: 0, perMinute: 0, perSecond: 0 };
 }
 
 export function worstHealth() {

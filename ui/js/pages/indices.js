@@ -21,6 +21,7 @@ import { rowMenu, ICON, closeMenus } from '../ui/menu.js';
 import { fetchFieldVolume, storeFieldVolume, fieldVolumeFor, SPIKE_WINDOW_DAYS, SPIKE_THRESHOLD }
   from '../core/field-volume.js';
 import { timeHistogram } from '../lib/charts.js';
+import { findIndexEverywhere } from '../core/snapshot-verify.js';
 
 let host = null;
 const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
@@ -28,6 +29,8 @@ const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1
 const selected = new Set();
 /** Volume-analysis UI state: which field, how far back, and whether a run is in flight. */
 const va = { field: null, days: 14, topN: 12, running: false, error: null, byTerm: null, selectedTerm: null };
+/** The everywhere-search: live indices AND every snapshot, for "does this still exist". */
+const ev = { on: false, term: '', running: false, result: null, error: null };
 
 export function render(el) {
   host = el;
@@ -412,9 +415,16 @@ function buildTable(c, rows) {
     // The toolbar search sits above the charts; with them folded away it is still a
     // scroll from the table, so the filter is repeated where the rows actually are.
     h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '0 0 8px', flexWrap: 'wrap' } },
-      h('input#idx-search2', { type: 'search', value: ui.text, placeholder: 'filter these indices…',
+      h('input#idx-search2', { type: 'search', value: ui.text, placeholder: ev.on ? 'index name — live and snapshots…' : 'filter these indices…',
         style: { flex: '1', minWidth: '220px' },
-        oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } }),
+        oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); if (!ev.on) redrawTable(); },
+        onkeydown: (e) => { if (e.key === 'Enter' && ev.on) searchEverywhere(c); } }),
+      h('label', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px', cursor: 'pointer', whiteSpace: 'nowrap' },
+        title: 'Also look inside every snapshot repository, so an index that was deleted can still be found' },
+        h('input', { type: 'checkbox', checked: ev.on, style: { cursor: 'pointer' },
+          onchange: (e) => { ev.on = e.target.checked; ev.result = null; draw(); } }),
+        'also search snapshots'),
+      ev.on ? h('button.btn.sm', { disabled: ev.running, onclick: () => searchEverywhere(c) }, ev.running ? 'Searching…' : 'Search') : null,
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
         `${num(rows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
       ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
@@ -422,6 +432,7 @@ function buildTable(c, rows) {
             ui.text = ''; ui.sourceFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; draw();
           } }, 'Clear filters')
         : null),
+    ev.on && (ev.result || ev.error) ? h('div', { style: { padding: '0 0 9px' } }, everywherePanel(c)) : null,
     h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, rows)),
     t,
     rows.length > ui.limit
@@ -450,4 +461,53 @@ function tableCard(c, rows, all) {
         toCsv(rows.map((r) => ({ index: r.index, source: r.source || '', day: r.day || '', health: r.health, status: r.status,
           pri: r.pri, rep: r.rep, docs: r.docs, deleted: r.deleted, size_bytes: r.size, primary_bytes: r.priSize,
           created: r.created ? new Date(r.created).toISOString() : '' }))), 'text/csv') }, 'Export CSV')]);
+}
+
+/* ------------------------- live + snapshot search ------------------------- */
+
+async function searchEverywhere(c) {
+  const term = ui.text.trim();
+  if (!term) return;
+  ev.running = true; ev.error = null; ev.term = term; draw();
+  try { ev.result = await findIndexEverywhere(c, term); }
+  catch (e) { ev.error = e.message || String(e); ev.result = null; }
+  ev.running = false;
+  draw();
+}
+
+/**
+ * Where an index exists: live on the cluster, held in a snapshot, or both. Answers the
+ * question "was it deleted, and can it come back" in one place.
+ */
+function everywherePanel(c) {
+  if (ev.error) return h('div.banner.err', { style: { margin: 0 } }, h('div', h('div.ttl', 'Search failed'), h('div.mono', ev.error)));
+  const r = ev.result;
+  const liveOnly = r.live.filter((x) => !r.snapshotted.some((s) => s.index === x.index));
+  const gone = r.snapshotted.filter((s) => !s.alsoLive);
+  const both = r.snapshotted.filter((s) => s.alsoLive);
+
+  const snapRow = (s) => h('tr',
+    h('td.mono', { style: { fontSize: '11.5px' } }, s.index),
+    h('td', s.alsoLive ? pill('live + snapshot', 'green') : pill('snapshot only', 'yellow')),
+    h('td.num', String(s.snapshots.length)),
+    h('td', s.successful ? pill(`${s.successful} successful`, 'green') : pill('none successful', 'red')),
+    h('td.mono.muted', { style: { fontSize: '11px' } },
+      s.snapshots[0] ? `${s.snapshots[0].repo} / ${s.snapshots[0].snapshot} (${s.snapshots[0].state})` : '–'));
+
+  return card(`"${ev.term}" — live and in snapshots`,
+    `${r.live.length} live · ${r.snapshotted.length} in snapshots · ${gone.length} only in snapshots`,
+    h('div', { style: { display: 'grid', gap: '8px' } },
+      r.unverified.length
+        ? h('div.banner.warn', { style: { margin: 0 } }, h('div', `Could not read: ${r.unverified.join('; ')}`))
+        : null,
+      liveOnly.length
+        ? h('div', { style: { fontSize: '12px' } },
+            h('b', `${liveOnly.length} live only`), h('span.muted', ' — on the cluster, in no snapshot: '),
+            h('span.mono', liveOnly.slice(0, 8).map((x) => x.index).join(', ')), liveOnly.length > 8 ? ` …+${liveOnly.length - 8}` : '')
+        : null,
+      r.snapshotted.length
+        ? table(['Index', 'Where', { label: 'Snapshots', num: true }, 'Good copies', 'Newest'],
+            [...gone, ...both].slice(0, 200).map(snapRow))
+        : empty(r.live.length ? 'Nothing matching is held in any snapshot.' : 'Nothing matching, live or in snapshots.')),
+    [h('button.btn.sm.ghost', { onclick: () => { ev.result = null; draw(); } }, 'Clear')]);
 }

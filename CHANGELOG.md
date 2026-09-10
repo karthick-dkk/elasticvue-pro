@@ -1,6 +1,21 @@
 # Changelog
 
 ## Unreleased
+- **Deleting an index checks the snapshots first.** Every repository is listed and only a
+  snapshot in state SUCCESS with no failure on that index counts as a copy — PARTIAL and
+  IN_PROGRESS do not. The confirmation shows the verdict per index with the newest good
+  copy; indices with none are unticked by default and must be ticked on purpose. A
+  repository that cannot be read is reported as unknown rather than as "not in any
+  snapshot".
+- **Search live and snapshots together.** Tick *also search snapshots* on the Indices page
+  and a name is looked for both on the cluster and inside every snapshot, with how many
+  good copies each has.
+- **Our own request count per cluster.** The core counts every request it sends, per
+  cluster, over a five-minute window; the Clusters page shows it per cluster with the rate,
+  and the status strip shows the fleet total. A request the read-only guard refused never
+  reached a socket and is not counted.
+- The read-only / writes-enabled pill left the title bar. Every page that can write carries
+  its own *Allow writes* toggle, which says the same thing where it matters.
 - **Disk balance on the Nodes page**, for clusters with more than one data node: per-node
   usage against the cluster's own watermarks, the spread between the fullest and emptiest
   node, shard counts against the average, and a plain verdict on whether **shard
