@@ -4,7 +4,7 @@ import { h, mount, $, clear } from '../lib/dom.js';
 import { bytes, num, compact, dt, ago, toCsv, download } from '../lib/fmt.js';
 import { state, client, fetchIndices, activeClusters } from '../core/state.js';
 import { hbarList } from '../lib/charts.js';
-import { card, pill, statTile, table, empty, connectionBanner } from './common.js';
+import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { syncWrites, writeToggle } from '../core/writes.js';
 import {
@@ -20,6 +20,7 @@ const selected = new Set();
 
 export function render(el) {
   host = el;
+  el.classList.add('dense');   // long tables: fit more on one screen
   selected.clear();
   syncWrites().then(draw).catch(() => {});
   draw();
@@ -86,14 +87,16 @@ function draw() {
       statTile('Store size', bytes(totals.size), `${num(totals.shards)} shards`),
       statTile('Clients detected', String(clientList.filter((x) => x.key !== '__none').length), 'parsed from index names')),
 
-    h('div.grid.c2', { style: { marginBottom: '14px' } },
-      card('Store size by client', 'click a bar to filter the table',
+    // Folded by default: useful, but tall enough to push the table off the screen.
+    h('div.grid.c2', { style: { marginBottom: '10px' } },
+      collapsible('Store size by client', 'click a bar to filter the table', () =>
         clientList.length
           ? hbarList(clientList.map((x) => ({ key: x.key, label: x.key === '__none' ? '(unparsed)' : x.key, value: x.size,
               sub: `${num(x.indices)} indices · ${compact(x.docs)} docs` })),
               { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.clientFilter = r.key; draw(); } })
-          : empty('No indices')),
-      card('Indices per day', 'daily indices detected from the naming pattern', perDay(rows))),
+          : empty('No indices'), { key: 'idx-by-client' }),
+      collapsible('Indices per day', 'daily indices detected from the naming pattern',
+        () => perDay(rows), { key: 'idx-per-day' })),
 
     tableCard(c, rows, all));
 }
@@ -107,8 +110,8 @@ function clientBar(c, clientList, total) {
 
   return h('div.toolbar',
     h('label.field', 'Client', sel),
-    h('label.field', 'Search index', h('input', { type: 'search', placeholder: 'substring…', value: ui.text, style: { minWidth: '200px' },
-      oninput: (e) => { ui.text = e.target.value; redrawTable(); } })),
+    h('label.field', 'Search index', h('input#idx-search', { type: 'search', placeholder: 'substring…', value: ui.text, style: { minWidth: '200px' },
+      oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } })),
     h('label.field', 'From day', h('input', { type: 'date', value: ui.from, onchange: (e) => { ui.from = e.target.value; draw(); } })),
     h('label.field', 'To day', h('input', { type: 'date', value: ui.to, onchange: (e) => { ui.to = e.target.value; draw(); } })),
     h('label.field', 'Status', (() => {
@@ -253,12 +256,32 @@ function buildTable(c, rows) {
     h('tbody', ...(trs.length ? trs : [h('tr', h('td', { colspan: 13 }, empty('No indices match the filter')))]))));
 
   return h('div',
+    // The toolbar search sits above the charts; with them folded away it is still a
+    // scroll from the table, so the filter is repeated where the rows actually are.
+    h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '0 0 8px', flexWrap: 'wrap' } },
+      h('input#idx-search2', { type: 'search', value: ui.text, placeholder: 'filter these indices…',
+        style: { flex: '1', minWidth: '220px' },
+        oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } }),
+      h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
+        `${num(rows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
+      ui.text || ui.clientFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
+        ? h('button.btn.sm.ghost', { onclick: () => {
+            ui.text = ''; ui.clientFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; draw();
+          } }, 'Clear filters')
+        : null),
     h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, rows)),
     t,
     rows.length > ui.limit
       ? h('div', { style: { padding: '10px', textAlign: 'center' } },
           h('button.btn.sm', { onclick: () => { ui.limit += 500; redrawTable(); } }, `Show more (${num(rows.length - ui.limit)} hidden)`))
       : null);
+}
+
+/** The toolbar and the over-table search are the same filter; keep them in step. */
+function syncSearchBoxes(source) {
+  for (const el of [$('#idx-search'), $('#idx-search2')]) {
+    if (el && el !== source && el.value !== ui.text) el.value = ui.text;
+  }
 }
 
 function redrawBulk(c) {

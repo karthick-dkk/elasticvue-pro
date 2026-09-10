@@ -9,6 +9,7 @@ import { card, empty, pill } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { intent, navigateTo } from '../core/intent.js';
 import { writesUnlocked, writesAllowed, syncWrites, setWritesUnlocked, writeToggle } from '../core/writes.js';
+import { confirmDialog } from '../ui/modal.js';
 
 /**
  * Common requests, grouped. `w: true` marks one that changes the cluster — it needs the
@@ -243,7 +244,9 @@ function isWrite(method, path) {
 /** Named in full, so pressing Run is never a surprise. */
 function confirmWrite(c) {
   const path = ui.path.trim() || '/';
-  return confirm(`Send this to ${c.name}?\n\n${ui.method} ${path}\n\nThis can change the cluster.`);
+  return confirmDialog(`Send ${ui.method} to ${c.name}?`,
+    `${ui.method} ${path}\n\nThis request can change the cluster.`,
+    { yes: 'send it', danger: ui.method === 'DELETE' });
 }
 
 function format() {
@@ -260,7 +263,7 @@ async function run() {
   const c = cluster();
   if (!c) return;
   // Confirm only when the request is a write AND something will actually let it through.
-  if (isWrite(ui.method, ui.path) && writesAllowed() && !confirmWrite(c)) return;
+  if (isWrite(ui.method, ui.path) && writesAllowed() && !(await confirmWrite(c))) return;
   const cl = client(c.id);
   ui.running = true;
   const btn = $('#c-run'); if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
@@ -378,7 +381,9 @@ function historyCard() {
         : empty('No saved requests yet')),
     [h('button.btn.sm', { onclick: () => download('rest-history.json', JSON.stringify(history, null, 2), 'application/json') }, 'Export'),
      h('button.btn.sm.danger', { onclick: async () => {
-        if (!confirm('Delete all history except favourites?')) return;
+        if (!(await confirmDialog('Clear the request history?',
+          'Everything except starred favourites is removed from this machine. Nothing on any ' +
+          'cluster is affected.', { yes: 'clear it', danger: true }))) return;
         const favs = history.filter((x) => x.fav);
         await idb.clearQueries();
         for (const f of favs) await idb.putQuery(f);

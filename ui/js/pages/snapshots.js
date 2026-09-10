@@ -4,7 +4,7 @@ import { h, mount, $ } from '../lib/dom.js';
 import { num, dt, dur, ago, bytes, eachDay, ymdDots, toCsv, download } from '../lib/fmt.js';
 import { state, client, activeClusters, fetchSnapshots, fetchOverview } from '../core/state.js';
 import { coverageStrip } from '../lib/charts.js';
-import { card, pill, statTile, table, empty } from './common.js';
+import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { confirmDialog } from '../ui/modal.js';
 import { writesAllowed, syncWrites, writeToggle, ensureWrites } from '../core/writes.js';
 import { rowMenu, ICON } from '../ui/menu.js';
@@ -22,6 +22,7 @@ const ui = { repo: {}, days: 60, limit: DEFAULT_LIMIT };
 
 export function render(el) {
   host = el;
+  el.classList.add('dense');   // long tables: fit more on one screen
   syncWrites().then(draw).catch(() => {});
   draw();
 }
@@ -66,18 +67,22 @@ function clusterBlock(c) {
       statTile('Retention window', oldest && newest ? `${Math.max(1, Math.round((newest.start - oldest.start) / 86400000))} days` : '–',
         cov.missing.length ? `${cov.missing.length} day(s) with no snapshot` : 'no gaps in the window')),
 
-    card('Repositories', repos.length ? `${repos.length} registered` : '',
-      repoTable(c, d, repos),
-      [h('button.btn.sm.primary', {
-        onclick: async () => { if (await createRepositoryDialog(c, d.pathRepo || [])) await reload(c); },
-      }, '+ Add repository')]),
+    collapsible('Repositories', repos.length ? `${repos.length} registered · add or manage` : 'none registered',
+      () => h('div',
+        repoTable(c, d, repos),
+        h('div', { style: { paddingTop: '8px' } },
+          h('button.btn.sm.primary', {
+            onclick: async () => { if (await createRepositoryDialog(c, d.pathRepo || [])) await reload(c); },
+          }, '+ Add repository'))),
+      { key: 'snap-repos' }),
 
-    h('div', { style: { marginTop: '14px' } },
-      card('SLM policies', policies.length ? `${policies.length} configured` : '',
-        policies.length ? slmTable(c, policies) : empty(d.slmSupported === false ? 'SLM API not available on this cluster' : 'No SLM policies configured'))),
+    h('div', { style: { marginTop: '10px' } },
+      collapsible('SLM policies', policies.length ? `${policies.length} configured` : 'none configured',
+        () => (policies.length ? slmTable(c, policies) : empty(d.slmSupported === false ? 'SLM API not available on this cluster' : 'No SLM policies configured')),
+        { key: 'snap-slm', open: policies.some((p) => { const lf = p.last_failure, ls = p.last_success; return lf && (!ls || lf.time > ls.time); }) })),
 
-    h('div', { style: { marginTop: '14px' } },
-      card('Snapshot availability', `last ${ui.days} days in ${selected || '—'}`,
+    h('div', { style: { marginTop: '10px' } },
+      collapsible('Snapshot availability', `last ${ui.days} days in ${selected || '—'}`, () =>
         h('div', { style: { display: 'grid', gap: '10px' } },
           h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-end', flexWrap: 'wrap' } },
             h('label.field', 'Repository', (() => {
@@ -94,9 +99,10 @@ function clusterBlock(c) {
           cov.missing.length
             ? h('div.banner.warn', h('div', h('div.ttl', `${cov.missing.length} day(s) without a successful snapshot`),
                 h('div.mono', { style: { fontSize: '11.5px' } }, cov.missing.slice(0, 12).join(', ') + (cov.missing.length > 12 ? ` … +${cov.missing.length - 12}` : ''))))
-            : repos.length ? h('div.sec', { style: { fontSize: '12px' } }, `Every day in the window has at least one successful snapshot.`) : null))),
+            : repos.length ? h('div.sec', { style: { fontSize: '12px' } }, `Every day in the window has at least one successful snapshot.`) : null),
+        { key: 'snap-coverage', open: cov.missing.length > 0 })),
 
-    h('div', { style: { marginTop: '14px' } },
+    h('div', { style: { marginTop: '10px' } },
       card(`Snapshots in ${selected || '—'}`,
         snaps.length ? `${num(snaps.length)} total · showing the latest ${Math.min(ui.limit, snaps.length)}` : '',
         h('div', snapTable(c, selected, snaps),

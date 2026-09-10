@@ -14,7 +14,7 @@ import * as cfg from '../core/config.js';
 import { bridge } from '../core/transport.js';
 import { rememberConfigPath, pickFilePath } from '../core/platform.js';
 import { bus } from '../core/state.js';
-import { modal, field, text, select, val, checked } from './modal.js';
+import { modal, confirmDialog, field, text, select, val, checked } from './modal.js';
 
 let masterInMemory = null;      // master password for this session only (needed to seal new secrets)
 
@@ -186,7 +186,9 @@ export async function editCluster(existing = null) {
     'Saved to config_cluster.json; the dashboard reconnects immediately.', body,
     (ctx) => [
       existing ? h('button.btn.danger', { onclick: async () => {
-        if (!confirm(`Remove cluster ${existing.name || existing.url}?`)) return;
+        if (!(await confirmDialog(`Remove cluster ${existing.name || existing.url}?`,
+          'It is taken out of the config file. The cluster itself and its data are untouched — ' +
+          'the app simply stops watching it.', { yes: 'remove', danger: true }))) return;
         r.clusters = r.clusters.filter((x) => x !== existing);
         try { await saveRaw(); ctx.done(true); } catch (e) { ctx.msg(e.message); }
       } }, 'Remove') : null,
@@ -240,7 +242,9 @@ export async function editJumpHost(existingId = null) {
       existingId ? h('button.btn.danger', { onclick: async () => {
         const used = r.clusters.filter((c) => (c.via || c.jump) === existingId).length;
         if (used) return ctx.msg(`${used} cluster(s) route via ${existingId}; change them first.`);
-        if (!confirm(`Remove jump host ${existingId}?`)) return;
+        if (!(await confirmDialog(`Remove jump host ${existingId}?`,
+          'Any cluster routed through it with via: will stop being reachable until it is ' +
+          'pointed at another jump host.', { yes: 'remove', danger: true }))) return;
         delete r.jump_hosts[existingId];
         try { await saveRaw(); ctx.done(true); } catch (e) { ctx.msg(e.message); }
       } }, 'Remove') : null,
@@ -280,7 +284,9 @@ export async function editCredentials() {
     (ctx) => [
       cur.username || cur.password || cur.apiKey || cur.bearer
         ? h('button.btn.danger', { onclick: async () => {
-          if (!confirm('Remove the shared credential from the file? The app will ask for one on start.')) return;
+          if (!(await confirmDialog('Remove the shared credential?',
+            'It is deleted from the config file. The app will ask for a credential on the next start.',
+            { yes: 'remove', danger: true }))) return;
           delete r.credentials; try { await saveRaw(); ctx.done(true); } catch (e) { ctx.msg(e.message); } } }, 'Remove from file') : null,
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '8px' } },
         h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),

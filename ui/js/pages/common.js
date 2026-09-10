@@ -1,7 +1,9 @@
 /** Shared page pieces. */
-import { h } from '../lib/dom.js';
+import { h, mount } from '../lib/dom.js';
 import { healthClass, diskClass, bytes, pct, ago, dt } from '../lib/fmt.js';
 import { state, client, refreshAll } from '../core/state.js';
+import { idb } from '../lib/idb.js';
+import { confirmDialog } from '../ui/modal.js';
 import { showCredentialDialog } from '../ui/credential-dialog.js';
 import { diagnoseCluster } from '../core/diagnose.js';
 import { trustCert, untrustCert, trustHostKey, untrustHostKey, tunnelSecret, tunnelReconnect } from '../core/es.js';
@@ -11,6 +13,49 @@ export function card(title, sub, body, actions) {
     h('header', h('h2', title), sub ? h('span.sub', sub) : null,
       actions ? h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } }, actions) : null),
     h('div.body', body));
+}
+
+/**
+ * A card the operator can fold away.
+ *
+ * The charts and coverage strips are useful but tall; left open they push the table
+ * that people actually work in below the fold. Secondary panels start folded, and the
+ * choice is remembered per panel so it only has to be made once.
+ */
+const foldState = new Map();
+
+export function collapsible(title, sub, bodyFn, opts = {}) {
+  const key = `fold:${opts.key || title}`;
+  const openByDefault = opts.open !== undefined ? opts.open : false;
+  const isOpen = foldState.has(key) ? foldState.get(key) : openByDefault;
+
+  const body = h('div.body', { hidden: !isOpen }, isOpen ? bodyFn() : null);
+  const chevron = h('span', { style: { display: 'inline-block', width: '11px', fontSize: '10px' } },
+    isOpen ? '▾' : '▸');
+
+  const toggle = () => {
+    const next = body.hidden;                    // hidden now => we are opening it
+    if (next && !body.firstChild) mount(body, bodyFn());   // build on first open
+    body.hidden = !next;
+    chevron.textContent = next ? '▾' : '▸';
+    foldState.set(key, next);
+    idb.setKV(key, next).catch(() => {});
+  };
+
+  // Restore the remembered choice; the first paint uses the default so nothing jumps.
+  idb.getKV(key).then((v) => {
+    if (v === undefined || v === null || v === !body.hidden) return;
+    foldState.set(key, v);
+    if (v && !body.firstChild) mount(body, bodyFn());
+    body.hidden = !v;
+    chevron.textContent = v ? '▾' : '▸';
+  }).catch(() => {});
+
+  return h('section.card',
+    h('header', { style: { cursor: 'pointer', userSelect: 'none' }, onclick: toggle },
+      chevron, h('h2', title), sub ? h('span.sub', sub) : null,
+      h('span.muted', { style: { marginLeft: 'auto', fontSize: '11px' } }, 'click to fold')),
+    body);
 }
 
 export function pill(text, cls) {
@@ -76,7 +121,12 @@ export function connectionBanner(cluster, onRetry) {
       actions.push(h('button.btn.sm.danger', {
         title: 'Only if the certificate was rotated on purpose.',
         onclick: (e) => act(e.target, async () => {
-          if (!confirm(`Replace the pinned certificate for ${c.host}?\n\nOld: ${err.pinned}\nNew: ${c.sha256}\n\nDo this only if the rotation was planned.`)) return;
+          const ok = await confirmDialog(`Replace the pinned certificate for ${c.host}?`,
+            `Old  ${err.pinned}\nNew  ${c.sha256}\n\n` +
+            'Do this only if you know the certificate was rotated on purpose. If it was not, ' +
+            'something is sitting between you and this cluster.',
+            { yes: 'replace the pin', danger: true });
+          if (!ok) return;
           await untrustCert(c.host); await trustCert(c.host, c.sha256); await refreshAll({ force: true });
         }),
       }, 'Replace pin with the new certificate'));
@@ -101,7 +151,12 @@ export function connectionBanner(cluster, onRetry) {
     } else if (tk === 'hostkey_mismatch') {
       actions.push(h('button.btn.sm.danger', {
         onclick: (e) => act(e.target, async () => {
-          if (!confirm(`Replace the pinned SSH host key for ${jumpId}?\n\nOnly if the jump host was reinstalled on purpose.`)) return;
+          const ok = await confirmDialog(`Replace the pinned SSH host key for ${jumpId}?`,
+            `Offered  ${hk.keyType || ''} ${hk.fingerprint || ''}\nPinned    ${hk.pinned || ''}\n\n` +
+            'Do this only if the jump host was reinstalled or rekeyed on purpose. Otherwise the ' +
+            'host you are reaching is not the one you pinned.',
+            { yes: 'replace the key', danger: true });
+          if (!ok) return;
           await untrustHostKey(jumpId); await trustHostKey(jumpId, hk.fingerprint); await refreshAll({ force: true });
         }),
       }, 'Replace pinned host key'));

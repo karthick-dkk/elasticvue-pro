@@ -9,7 +9,7 @@ import { navigateTo } from '../core/intent.js';
 let host = null;
 const ui = { level: 'all', cluster: 'all', text: '' };
 
-export function render(el) { host = el; draw(); }
+export function render(el) { host = el; el.classList.add('dense'); draw(); }
 export function onData() { if (host && host.isConnected) draw(); }
 
 /** Which page answers this alert. */

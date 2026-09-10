@@ -14,6 +14,8 @@ import { card, pill, table, empty } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { applyLoadedConfig } from '../ui/load-config.js';
+import { confirmDialog } from '../ui/modal.js';
+import { rowMenu, ICON } from '../ui/menu.js';
 
 let host = null;
 
@@ -61,14 +63,30 @@ function trustCard() {
         h('button.btn.sm', { onclick: async () => { if (await editJumpHost(j.id)) { draw(); loadTrust(); } } }, 'Edit'),
         h('button.btn.sm', { onclick: async () => { await tunnelReconnect(j.id); await refreshAll({ force: true }); loadTrust(); } }, 'Reconnect'),
         hks[j.id] ? h('button.btn.sm.danger', { title: 'Forget the pinned host key; the next connection asks again.',
-          onclick: async () => { if (confirm(`Forget the pinned host key of ${j.id}?`)) { await untrustHostKey(j.id); loadTrust(); } } }, 'Untrust') : null)));
+          onclick: async () => {
+            if (await confirmDialog(`Forget the pinned host key of ${j.id}?`,
+              'The next connection treats this jump host as unknown and asks you to confirm its ' +
+              'fingerprint again. Do this after a deliberate reinstall or rekey.',
+              { yes: 'forget it', danger: true })) { await untrustHostKey(j.id); loadTrust(); }
+          } }, 'Untrust') : null)));
   });
   const cRows = Object.entries(certs).sort().map(([hostport, pin]) => h('tr',
     h('td.mono', { style: { fontSize: '11.5px' } }, hostport),
     h('td', { style: { fontSize: '11.5px' } }, pin.subject || '–'),
     h('td.mono', { style: { fontSize: '11px', wordBreak: 'break-all' } }, pin.sha256),
     h('td.muted', { style: { fontSize: '11px' } }, pin.since ? dt(Date.parse(pin.since)) : '–'),
-    h('td', h('button.btn.sm.danger', { onclick: async () => { if (confirm(`Untrust the certificate pinned for ${hostport}?`)) { await untrustCert(hostport); await refreshAll({ force: true }); loadTrust(); } } }, 'Untrust'))));
+    h('td', h('div', { style: { display: 'flex', justifyContent: 'flex-end' } }, rowMenu([
+      { label: 'Forget this pin…', icon: ICON.delete, danger: true,
+        title: 'The certificate is offered for trust again on the next connection',
+        onClick: async () => {
+          if (await confirmDialog(`Forget the certificate pinned for ${hostport}?`,
+            'The next connection treats this certificate as unknown and offers it for trust ' +
+            'again. Do this after a deliberate rotation.',
+            { yes: 'forget it', danger: true })) {
+            await untrustCert(hostport); await refreshAll({ force: true }); loadTrust();
+          }
+        } },
+    ], { title: `Actions for ${hostport}` })))));
   return h('div', { style: { display: 'grid', gap: '14px' } },
     h('div',
       h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: '6px' } },
@@ -249,7 +267,10 @@ async function repick() {
 }
 
 async function forget() {
-  if (!confirm('Forget the config file path, drop the in-memory credentials and remove a remembered vault credential?\n\nThe YAML file on disk is not touched.')) return;
+  if (!(await confirmDialog('Forget this configuration?',
+    'The remembered file path, the credentials held in memory and any credential kept in the OS ' +
+    'vault are dropped, and the app restarts at the setup screen.\n\n' +
+    'The config file on disk is not touched.', { yes: 'forget it', danger: true }))) return;
   await forgetVaultCredential();
   await cfg.forgetHandle();
   await forgetWorker();

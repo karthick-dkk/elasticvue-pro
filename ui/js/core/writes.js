@@ -11,6 +11,7 @@
  */
 
 import { h } from '../lib/dom.js';
+import { confirmDialog } from '../ui/modal.js';
 import { writeUnlock, workerStatus } from './es.js';
 import { isReadOnly } from './state.js';
 
@@ -42,17 +43,16 @@ function setLocal(v) {
 }
 
 const UNLOCK_PROMPT =
-  'Allow writes to this cluster?\n\n' +
   'Actions you take by hand — a request typed in the REST console, creating or deleting a ' +
-  'snapshot — will be sent. Background refreshes stay read-only, and this is forgotten when ' +
-  'the app closes.';
+  'snapshot, opening or removing an index — will be sent to the cluster.\n\n' +
+  'Background refreshes stay read-only, and this is forgotten when the app closes.';
 
 /**
  * Turn the unlock on or off. Asks first when turning it on.
  * @returns {Promise<boolean>} whether the switch ended up where it was asked to go.
  */
 export async function setWritesUnlocked(want, { confirmFirst = true } = {}) {
-  if (want && confirmFirst && !confirm(UNLOCK_PROMPT)) return false;
+  if (want && confirmFirst && !(await confirmDialog('Allow writes to this cluster?', UNLOCK_PROMPT, { yes: 'allow writes' }))) return false;
   const res = await writeUnlock(want);
   setLocal(!!(res && res.ok && res.writesUnlocked));
   return unlocked === want;
