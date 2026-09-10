@@ -1,6 +1,9 @@
 /** Application state, refresh loop and auto-reconnect. */
 
 import { EsClient, primeWorker, setBadge } from './es.js';
+// Cyclic with field-volume.js, which needs client() from here. Safe because both sides
+// only touch the other inside functions, never while the modules are evaluating.
+import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
 
 class Emitter {
@@ -144,6 +147,7 @@ export async function setConfig(config, handle) {
   for (const m of [state.data, state.indices]) {
     for (const id of [...m.keys()]) if (!live.has(id)) m.delete(id);
   }
+  clearFieldVolume();   // field analysis is tied to the config that produced it
   await reprime();
   bus.emit('config', config);
 }
@@ -453,6 +457,13 @@ export function alerts() {
     }
     if (d.ilmErrorCount) add({ key: `${c.id}:ilm`, level: 'warning', cluster: c, title: `${c.name}: ${d.ilmErrorCount} index(es) in ILM error step`, detail: Object.keys(d.ilmErrors).slice(0, 3).join(', ') });
     if (d.slmStatus && d.slmStatus.operation_mode && d.slmStatus.operation_mode !== 'RUNNING') add({ key: `${c.id}:slm-mode`, level: 'warning', cluster: c, title: `${c.name}: SLM is ${d.slmStatus.operation_mode}`, detail: 'Snapshot lifecycle is not running' });
+    // Field-volume spikes, when the Indices page has run an analysis for this cluster.
+    for (const sp of spikesFor(c.id)) {
+      add({ key: `${c.id}:volume:${sp.field}:${sp.term}`, level: 'warning', cluster: c,
+        title: `${c.name}: ${sp.field} "${sp.term}" volume up ${Math.round(sp.changePct)}%`,
+        detail: `${sp.latest.docs.toLocaleString()} documents on ${sp.latestDay} against a ` +
+                `${Math.round(sp.baseline).toLocaleString()} average over the previous ${sp.baselineDays} days` });
+    }
     (d.slm || []).forEach((p) => {
       const lf = p.last_failure, ls = p.last_success;
       if (lf && (!ls || lf.time > ls.time)) add({ key: `${c.id}:slm-fail:${p.id}`, level: 'critical', cluster: c, title: `${c.name}/${p.id}: last SLM run failed`, detail: String(lf.details || '').slice(0, 160) });
@@ -461,6 +472,12 @@ export function alerts() {
     });
   }
   return out;
+}
+
+/** Spikes the Indices page found for this cluster, if it has been asked to look. */
+function spikesFor(clusterId) {
+  try { return fieldVolumeSpikes().filter((s) => s.clusterId === clusterId); }
+  catch (_) { return []; }
 }
 
 export function worstHealth() {

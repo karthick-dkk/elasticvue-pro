@@ -33,6 +33,7 @@ Browser tools cannot do three things an operator behind a jump host needs:
 - **Clusters** — health, nodes, disk usage, ILM/SLM status, repositories, last snapshot; search by name, URL, tag, jump host, version or repository, and sort by health, disk, shards, version, last snapshot or open alerts
 - **Alerts** — every problem across the fleet on one page, filtered by level and cluster, each row linking to the page that answers it; the count sits on the nav tab. Alerts can be **acknowledged** and **annotated** — who saw it, what was found, which ticket — kept against the problem rather than its current value, so a note written at 86% disk is still there at 91%
 - **Volume report** — per-day ingest, what retention costs, and whether each cluster's storage matches the policy it promises; exportable for the whole fleet as CSV
+- **Volume analysis** — daily volume broken down by an ECS field (`tag1`, `src_hostname`), with a spike raised when a value goes more than 40% above its own 7-day average
 - **Indices** — daily `logstash-<source>-YYYY.MM.DD` indices with a source / date picker, sizes, health; open, close, delete, move a shard between nodes, change replicas and run maintenance, one index or a ticked selection at a time
 - **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites, and ~60 grouped ready-made requests (ILM policies, disk watermarks, replica and shard counts, snapshots, diagnostics)
 - **Live logs** — tail a day's index with a time histogram
@@ -83,6 +84,7 @@ Created and edited in the app (Config page), or hand-written. JSON is what the a
 | `clusters[].via` | route through that jump host; the hostname is resolved **on the jump host** |
 | `clusters[].tls` / `defaults.tls` | `auto` (OS store, else ask & pin — default), `system` (strict), `insecure` (lab only) |
 | `clusters[].indexNameRegex` | named groups `<source>` and `<date>` drive the source picker on the Indices and Live logs pages. A **source** is the tenant inside an index name; a **client** is a whole cluster with its own URL, so one client holds many sources. `<client>` is still honoured for configs written before the rename |
+| `clusters[].volumeFields` | ECS fields the Indices page breaks daily volume down by and watches for spikes. Default `tag1, src_hostname`. Each must be aggregatable; a `.keyword` sub-field is tried automatically |
 | `clusters[].liveRetention` | how long logs stay on the cluster — `30d`, `90 days`, `3M`, `6 months`, `1y`. Drives the Volume report; omit it and the report says "not set" rather than assuming |
 | `clusters[].snapshotRetention` | how long snapshots are kept in the repository. Falls back to the SLM policy's `expire_after` |
 | `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you tick *Allow writes* for the session *and* it is an action you took by hand; `false` allows writes from anywhere |
@@ -204,6 +206,26 @@ report says so, which is how retention drift gets noticed.
 The headline figures — per-day size, both retention policies, what the storage must hold and
 how long the free space lasts — also appear on the **Nodes & shards** page, computed by the
 same code so the two cannot disagree.
+
+## Volume analysis
+
+The index list answers *how much did this cluster take yesterday*. Volume analysis answers
+*which device or tag was responsible* — the question asked as soon as the first number moves.
+
+Pick a field (`tag1`, `src_hostname`, or anything else in `volumeFields`) and it aggregates
+the last 7–60 days into a daily series per value, with a chart, a sortable table, and CSV
+export. Click a value to isolate its trend.
+
+**A value is flagged when its latest complete day exceeds the mean of the previous seven by
+more than 40%.** Today is excluded from both sides — it is partial, and counting it would
+make every value look like it had collapsed. A value with no history, or a zero baseline, is
+never a spike however large it looks. Spikes appear on the page and also become alerts, so
+they reach the Alerts page and the nav badge.
+
+One honest limitation: **the size figures are estimates.** Elasticsearch reports store size
+per index, never per field value, so a value's share of the day's documents is applied to
+that day's index size. The document counts beside them are exact, and the distinction is
+stated on screen.
 
 ## Downloads
 

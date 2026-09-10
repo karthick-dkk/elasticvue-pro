@@ -11,11 +11,13 @@
 const GB = 1024 ** 3;
 export const bytesToGB = (b) => (Number(b) || 0) / GB;
 
-/** Today is still being written to, so its index is short and would drag a mean down. */
-function today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+/**
+ * Today is still being written to, so its index is short and would drag a mean down.
+ *
+ * UTC, to match the dates in the index names themselves — deriving it from local parts
+ * would exclude the wrong day for anyone not on UTC.
+ */
+const today = () => new Date().toISOString().slice(0, 10);
 
 /**
  * "30d", "90 days", "3M", "6 months", "1y", or a bare number of days.

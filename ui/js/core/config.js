@@ -34,6 +34,9 @@ export const DEFAULTS = {
   // the volume report then says so rather than assuming a number.
   liveRetention: '',
   snapshotRetention: '',
+  // ECS fields the Indices page breaks daily volume down by, and watches for spikes.
+  // Each must be aggregatable; a `.keyword` sub-field is tried automatically.
+  volumeFields: ['tag1', 'src_hostname'],
   snapshotStaleHours: 26,
   maxLogRows: 200,
   // Certificate policy: auto (OS store, else trust-on-first-use with a prompt), system (strict), insecure.
@@ -143,6 +146,7 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       snapshotRepos: c.snapshotRepos || null,
       // Capacity planning: how long logs are meant to stay on the cluster and in the
       // repository. "30d", "90 days", "3M", "6 months", "1y" or a bare number of days.
+      volumeFields: normFields(c.volumeFields || c.volume_fields || defaults.volumeFields),
       liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
       snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
       enabled: c.enabled !== false,
@@ -150,6 +154,13 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
   });
 
   return { defaults, clusters, jumpHosts, sourceName, loadedAt: Date.now(), raw, sealed: anySealed };
+}
+
+/** `tag1, src_hostname` or a YAML list — either way, a clean array of field names. */
+function normFields(v) {
+  if (!v) return [];
+  const list = Array.isArray(v) ? v : String(v).split(',');
+  return [...new Set(list.map((x) => String(x).trim()).filter(Boolean))];
 }
 
 export function isSealed(v) { return typeof v === 'string' && v.startsWith('enc:v1:'); }

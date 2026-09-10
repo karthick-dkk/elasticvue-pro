@@ -1,6 +1,19 @@
 # Changelog
 
 ## Unreleased
+- **Volume analysis on the Indices page.** Daily volume broken down by an ECS field —
+  `tag1`, `src_hostname`, or anything named in the new `volumeFields` setting — with a daily
+  chart, a sortable table of values, click-to-isolate, and CSV export. A value is flagged
+  when its latest complete day exceeds the mean of the previous seven by more than 40%;
+  today is excluded from both sides, and a zero baseline is never a spike. Spikes also
+  become alerts, so they reach the Alerts page and the nav badge.
+  Size figures are estimates and say so: Elasticsearch reports store size per index, never
+  per field value, so a value's share of the day's documents is applied to that day's index
+  size. The document counts are exact.
+- Fixed: days were derived from local date parts in one place and UTC in another, so for
+  anyone not on UTC the partial current day was treated as complete and every value looked
+  as though it had collapsed. Both the volume report and the new analysis now use UTC
+  throughout, matching how `date_histogram` buckets and how index names are dated.
 - **Navigation moved to the top.** The nine pages are a row of tabs under the title bar
   instead of a 216px column down the left, so a wide table gets the whole window. The brand
   and the status that lived in the sidebar foot — config file, cluster count, health, build,

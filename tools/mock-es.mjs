@@ -102,10 +102,43 @@ const routes = [
   [(u) => u.startsWith('/_resolve/index'), () => ({ indices: INDICES.map((i) => ({ name: i.index })) })],
   [(u) => u.includes('/_settings'), () => ({ 'logstash-acme-2026.09.09': {
     settings: { 'index.number_of_replicas': '1', 'index.refresh_interval': '1s' } } })],
-  [(u) => u.includes('/_search'), () => ({ took: 3, hits: { total: { value: 2 }, hits: [
+  // Field-volume aggregation: terms split by day, plus the day totals. One value spikes
+  // on the latest complete day so the 40% rule has something to catch.
+  [(u) => u.includes('/_search'), (hit) => {
+    let body = {};
+    try { body = JSON.parse(hit.body || '{}'); } catch { /* fall through to the hit list */ }
+    if (body.aggs && body.aggs.terms) {
+      const DAYS = 14;
+      // UTC midnight, as a real date_histogram buckets by default.
+      const midnight = new Date(); midnight.setUTCHours(0, 0, 0, 0);
+      const dayMs = (n) => midnight.getTime() - n * 86400000;
+      // oldest -> newest, ending today
+      const keys = Array.from({ length: DAYS + 1 }, (_, i) => dayMs(DAYS - i));
+      const shape = { 'fw-edge-01': 1000, 'fw-core-02': 600, 'proxy-03': 300, 'vpn-04': 120 };
+      const spikeOn = dayMs(1);          // yesterday: the latest complete day
+      const buckets = Object.entries(shape).map(([key, base]) => ({
+        key,
+        doc_count: base * DAYS,
+        per_day: { buckets: keys.map((k) => ({
+          key: k,
+          // fw-edge-01 triples yesterday; everything else stays flat.
+          doc_count: k === spikeOn && key === 'fw-edge-01' ? base * 3
+                   : k === midnight.getTime() ? Math.round(base / 4)   // today is partial
+                   : base,
+        })) },
+      }));
+      const totalPerDay = keys.map((k) => ({
+        key: k,
+        doc_count: buckets.reduce((s, b) => s + (b.per_day.buckets.find((x) => x.key === k) || {}).doc_count, 0),
+      }));
+      return { took: 5, timed_out: false, hits: { total: { value: 0 }, hits: [] },
+               aggregations: { terms: { buckets }, per_day_total: { buckets: totalPerDay } } };
+    }
+    return { took: 3, hits: { total: { value: 2 }, hits: [
     { _index: 'logstash-acme-2026.09.09', _id: '1', _source: { '@timestamp': new Date().toISOString(), message: 'hello' } },
     { _index: 'logstash-acme-2026.09.09', _id: '2', _source: { '@timestamp': new Date().toISOString(), message: 'world' } },
-  ] }, aggregations: { over_time: { buckets: [] } } })],
+  ] }, aggregations: { over_time: { buckets: [] } } };
+  }],
 ];
 
 http.createServer((req, res) => {
@@ -118,6 +151,6 @@ http.createServer((req, res) => {
       return res.end(JSON.stringify({ acknowledged: true }));   // fixture: writes are no-ops
     }
     const hit = routes.find(([match]) => match(url));
-    res.end(JSON.stringify(hit ? hit[1]() : { acknowledged: true, url }));
+    res.end(JSON.stringify(hit ? hit[1]({ body, url }) : { acknowledged: true, url }));
   });
 }).listen(port, '127.0.0.1', () => console.log(`mock elasticsearch on http://127.0.0.1:${port}`));
