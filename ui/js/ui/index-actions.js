@@ -8,7 +8,7 @@
 
 import { h, mount, $ } from '../lib/dom.js';
 import { bytes, num } from '../lib/fmt.js';
-import { modal, field, text, select, checkbox, val, checked } from './modal.js';
+import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
 import { ensureWrites } from '../core/writes.js';
 import { client, state } from '../core/state.js';
 
@@ -29,8 +29,12 @@ function listFor(names, max = 12) {
 
 export async function openIndices(cluster, names, { onChanged } = {}) {
   if (!names.length || !(await ensureWrites())) return false;
-  if (!confirm(`Open ${names.length} index/indices on ${cluster.name}?\n\n${listFor(names)}\n\n` +
-               'Opening restores the shards to memory and makes them searchable again.')) return false;
+  const ok = await confirmDialog(
+    `Open ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
+    h('div', h('div', `On ${cluster.name}. Opening restores the shards to memory and makes them searchable again.`),
+      nameList(names)),
+    { yes: 'open' });
+  if (!ok) return false;
   const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).openIndex(n));
   report('open', names.length, failed);
   if (onChanged) await onChanged();
@@ -39,9 +43,13 @@ export async function openIndices(cluster, names, { onChanged } = {}) {
 
 export async function closeIndices(cluster, names, { onChanged } = {}) {
   if (!names.length || !(await ensureWrites())) return false;
-  if (!confirm(`Close ${names.length} index/indices on ${cluster.name}?\n\n${listFor(names)}\n\n` +
-               'A closed index keeps its data on disk but cannot be searched or written to. ' +
-               'It can be reopened at any time.')) return false;
+  const ok = await confirmDialog(
+    `Close ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
+    h('div', h('div', `On ${cluster.name}. A closed index keeps its data on disk but cannot be searched ` +
+                      'or written to. It can be reopened at any time.'),
+      nameList(names)),
+    { yes: 'close' });
+  if (!ok) return false;
   const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).closeIndex(n));
   report('close', names.length, failed);
   if (onChanged) await onChanged();
@@ -72,26 +80,18 @@ export async function deleteIndices(cluster, names, { onChanged } = {}) {
     h('div.mono', { style: { fontSize: '11.5px', maxHeight: '190px', overflow: 'auto',
                              border: '1px solid var(--border)', borderRadius: '6px', padding: '7px' } },
       names.map((n) => h('div', n))),
-    names.length > 1
-      ? field(`Type ${names.length} to confirm`, text('ia-confirm', '', { mono: true, placeholder: String(names.length) }))
-      : null,
-  ];
+  ].filter(Boolean);
 
-  const res = await modal(`Delete ${names.length === 1 ? names[0] : `${names.length} indices`}`, cluster.name, body,
-    (ctx) => [
-      h('button.btn.danger', { onclick: (e) => ctx.run(e.target, async () => {
-        if (names.length > 1 && val('ia-confirm').trim() !== String(names.length)) {
-          throw new Error(`Type ${names.length} to confirm.`);
-        }
-        const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).deleteIndex(n));
-        if (failed.length) throw new Error(`${failed.length} failed — ${failed[0]}`);
-        ctx.done(names.length);
-      }) }, `Delete ${names.length === 1 ? 'index' : 'indices'}`),
-      h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),
-    ], { width: '580px' });
+  const ok = await confirmDialog(
+    `Delete ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
+    h('div', ...body),
+    { yes: 'delete', danger: true, typeToConfirm: names.length > 1 ? String(names.length) : null });
+  if (!ok) return false;
 
-  if (res && onChanged) await onChanged();
-  return !!res;
+  const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).deleteIndex(n));
+  report('delete', names.length, failed);
+  if (onChanged) await onChanged();
+  return true;
 }
 
 /* ------------------------------ move a shard -------------------------------- */
@@ -152,6 +152,12 @@ export async function moveShardDialog(cluster, indexName, { onChanged } = {}) {
         const [shard, , fromNode] = (val('ia-shard') || '').split('|');
         const toNode = val('ia-tonode');
         if (!toNode) throw new Error('There is no other node to move this shard to.');
+        const go = await confirmDialog('Move this shard?',
+          `${indexName} shard ${shard}\n\nfrom  ${fromNode}\nto    ${toNode}\n\n` +
+          'The shard is copied to the target node and removed from the source once the copy ' +
+          'completes. The index stays available, but the copy uses disk and network on both nodes.',
+          { yes: 'move' });
+        if (!go) return;
         await cl.reroute([{ move: { index: indexName, shard: Number(shard), from_node: fromNode, to_node: toNode } }]);
         ctx.done({ shard, fromNode, toNode });
       }) }, 'Move shard'),
@@ -238,7 +244,10 @@ const MAINTENANCE = {
 export async function maintenance(cluster, names, kind, { onChanged } = {}) {
   const spec = MAINTENANCE[kind];
   if (!spec || !names.length || !(await ensureWrites())) return false;
-  if (!confirm(`${spec.label} ${names.length} index/indices on ${cluster.name}?\n\n${listFor(names)}\n\n${spec.note}`)) return false;
+  const ok = await confirmDialog(`${spec.label} ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
+    h('div', h('div', `On ${cluster.name}. ${spec.note}`), nameList(names)),
+    { yes: spec.label.toLowerCase() });
+  if (!ok) return false;
   const cl = client(cluster.id);
   const failed = await forEachIndex(cl, names, (n) => spec.call(cl, n));
   report(spec.verb, names.length, failed);

@@ -68,3 +68,52 @@ export function checkbox(id, label, value, hint) {
 
 export function val(id) { const el = $(`#${id}`); return el ? el.value : ''; }
 export function checked(id) { const el = $(`#${id}`); return !!(el && el.checked); }
+
+/* ------------------------------ confirmation -------------------------------- */
+
+/**
+ * A yes/no question the operator must answer before something irreversible happens.
+ *
+ * The browser's own confirm() offers OK/Cancel, which says nothing about what is
+ * about to occur — this names the action in the button, so the answer is deliberate.
+ * `typeToConfirm` demands the exact text back for the worst cases (deleting many
+ * indices, removing a repository).
+ */
+export function confirmDialog(title, body, opts = {}) {
+  const {
+    yes = 'Yes', no = 'No', danger = false, typeToConfirm = null, hint = null,
+  } = opts;
+
+  const nodes = [
+    typeof body === 'string'
+      ? h('div', { style: { fontSize: '13px', lineHeight: '1.55', whiteSpace: 'pre-wrap' } }, body)
+      : body,
+    hint ? h('div.muted', { style: { fontSize: '11.5px' } }, hint) : null,
+    typeToConfirm
+      ? field(`Type ${typeToConfirm} to confirm`,
+          text('confirm-echo', '', { mono: true, placeholder: typeToConfirm }))
+      : null,
+  ].filter(Boolean);
+
+  return modal(title, null, nodes, (ctx) => [
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '8px' } },
+      h('button.btn', { onclick: () => ctx.done(false) }, `No, ${no.toLowerCase()}`),
+      h(`button.btn.${danger ? 'danger' : 'primary'}`, {
+        onclick: () => {
+          if (typeToConfirm && val('confirm-echo').trim() !== typeToConfirm) {
+            return ctx.msg(`Type ${typeToConfirm} exactly to confirm.`);
+          }
+          ctx.done(true);
+        },
+      }, `Yes, ${yes.toLowerCase()}`)),
+  ], { width: '520px' }).then((v) => v === true);
+}
+
+/** A list of names, for a confirmation that must name what it will affect. */
+export function nameList(names, max = 14) {
+  return h('div.mono', {
+    style: { fontSize: '11.5px', maxHeight: '190px', overflow: 'auto', marginTop: '2px',
+             border: '1px solid var(--border)', borderRadius: '6px', padding: '7px' },
+  }, names.slice(0, max).map((n) => h('div', n)),
+     names.length > max ? h('div.muted', `…and ${names.length - max} more`) : null);
+}

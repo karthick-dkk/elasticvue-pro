@@ -5,7 +5,9 @@ import { num, dt, dur, ago, bytes, eachDay, ymdDots, toCsv, download } from '../
 import { state, client, activeClusters, fetchSnapshots, fetchOverview } from '../core/state.js';
 import { coverageStrip } from '../lib/charts.js';
 import { card, pill, statTile, table, empty } from './common.js';
+import { confirmDialog } from '../ui/modal.js';
 import { writesAllowed, syncWrites, writeToggle, ensureWrites } from '../core/writes.js';
+import { rowMenu, ICON } from '../ui/menu.js';
 import {
   createSnapshotDialog, snapshotDetailsDialog, restoreSnapshotDialog, deleteSnapshot,
   deleteIndicesDialog, createRepositoryDialog, deleteRepository, verifyRepository, cleanupRepository,
@@ -138,10 +140,15 @@ function repoTable(c, d, repos) {
       h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
         h('button.btn.sm', { title: 'Check that every node can reach this repository',
           onclick: () => verifyRepository(c, r.name) }, 'Verify'),
-        h('button.btn.sm', { title: 'Delete repository data no snapshot references any more',
-          onclick: () => cleanupRepository(c, r.name, { onChanged: () => reload(c) }) }, 'Clean up'),
-        h('button.btn.sm.danger', { title: can ? 'Unregister this repository' : 'Allow writes first',
-          onclick: () => deleteRepository(c, r.name, { onChanged: () => reload(c) }) }, 'Remove'))));
+        rowMenu([
+          { label: 'Clean up…', icon: ICON.cleanup,
+            title: 'Delete repository data no snapshot references any more',
+            onClick: () => cleanupRepository(c, r.name, { onChanged: () => reload(c) }) },
+          { sep: true },
+          { label: 'Remove repository…', icon: ICON.delete, danger: true,
+            title: can ? 'Unregister this repository' : 'Allow writes first',
+            onClick: () => deleteRepository(c, r.name, { onChanged: () => reload(c) }) },
+        ], { title: `Actions for ${r.name}` }))));
   });
   return table(['Repository', 'Type', 'Location', 'Snapshots', ''], trs,
     { emptyText: 'No snapshot repository registered on this cluster' });
@@ -205,7 +212,10 @@ function slmTable(c, policies) {
 
 async function execute(c, id) {
   if (!(await ensureWrites())) return;
-  if (!confirm(`Trigger SLM policy "${id}" on ${c.name} now?\n\nThis starts a real snapshot.`)) return;
+  const ok = await confirmDialog(`Run SLM policy ${id} now?`,
+    `On ${c.name}. This starts a real snapshot immediately, outside the policy's schedule.`,
+    { yes: 'run it' });
+  if (!ok) return;
   try {
     const r = await client(c.id).executeSlmPolicy(id);
     alert(`Snapshot started: ${(r && r.snapshot_name) || 'ok'}`);
@@ -237,13 +247,18 @@ function snapTable(c, repo, snaps) {
       h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
         h('button.btn.sm', { title: 'Indices, shards and failures in this snapshot',
           onclick: () => snapshotDetailsDialog(c, repo, s.id, refresh).then((changed) => { if (changed) reload(c); }) }, 'Details'),
-        h('button.btn.sm', { disabled: running, title: running ? 'Still running' : 'Restore indices from this snapshot',
-          onclick: () => restoreSnapshotDialog(c, repo, s.id, refresh) }, 'Restore'),
-        h('button.btn.sm', { disabled: running,
-          title: 'Delete the live indices this snapshot holds — the snapshot itself is kept',
-          onclick: () => deleteIndicesDialog(c, repo, s.id, refresh) }, 'Free indices'),
-        h('button.btn.sm.danger', { disabled: running, title: running ? 'Still running' : 'Delete this snapshot',
-          onclick: () => deleteSnapshot(c, repo, s.id, refresh) }, 'Delete'))));
+        rowMenu([
+          { label: 'Restore…', icon: ICON.restore, disabled: running,
+            title: running ? 'Still running' : 'Restore indices from this snapshot',
+            onClick: () => restoreSnapshotDialog(c, repo, s.id, refresh) },
+          { label: 'Free live indices…', icon: ICON.free, disabled: running,
+            title: 'Delete the live indices this snapshot holds — the snapshot itself is kept',
+            onClick: () => deleteIndicesDialog(c, repo, s.id, refresh) },
+          { sep: true },
+          { label: 'Delete snapshot…', icon: ICON.delete, danger: true, disabled: running,
+            title: running ? 'Still running' : 'Delete this snapshot',
+            onClick: () => deleteSnapshot(c, repo, s.id, refresh) },
+        ], { title: `Actions for ${s.id}` }))));
   });
   return table(['Snapshot', 'Status', 'Started', 'Ended', 'Duration', 'Indices', 'Shards ok', 'Failed', ''], trs,
     { emptyText: 'No snapshots in this repository' });

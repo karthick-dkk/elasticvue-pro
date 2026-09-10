@@ -11,6 +11,7 @@ import {
   openIndices, closeIndices, deleteIndices, moveShardDialog, indexSettingsDialog,
   maintenance, MAINTENANCE_KINDS,
 } from '../ui/index-actions.js';
+import { rowMenu, ICON, closeMenus } from '../ui/menu.js';
 
 let host = null;
 const ui = { clientFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
@@ -168,11 +169,6 @@ function bulkBar(c, rows) {
       'Tick indices to open, close, delete or reconfigure them.');
   }
 
-  const maintSel = h('select', { style: { maxWidth: '150px' },
-    onchange: async (e) => { const k = e.target.value; e.target.value = ''; if (k) await maintenance(c, names, k, refresh); } },
-    h('option', { value: '' }, 'Maintenance…'),
-    ...MAINTENANCE_KINDS.map(([k, label]) => h('option', { value: k }, label)));
-
   return h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
     h('span', { style: { fontWeight: 640, fontSize: '12px' } },
       `${num(names.length)} selected`, size ? h('span.muted', { style: { fontWeight: 400 } }, ` · ${bytes(size)}`) : null),
@@ -180,9 +176,16 @@ function bulkBar(c, rows) {
       onclick: () => openIndices(c, chosen.filter((r) => r.status !== 'open').map((r) => r.index), refresh) }, 'Open'),
     h('button.btn.sm', { disabled: !anyOpen, title: anyOpen ? 'Close the selected indices' : 'All selected indices are already closed',
       onclick: () => closeIndices(c, chosen.filter((r) => r.status === 'open').map((r) => r.index), refresh) }, 'Close'),
-    h('button.btn.sm', { onclick: () => indexSettingsDialog(c, names, refresh) }, 'Settings…'),
-    maintSel,
-    h('button.btn.sm.danger', { onclick: () => deleteIndices(c, names, refresh) }, 'Delete…'),
+    rowMenu([
+      { label: 'Settings…', icon: ICON.settings, onClick: () => indexSettingsDialog(c, names, refresh) },
+      { sep: true },
+      ...MAINTENANCE_KINDS.map(([k, label]) => ({
+        label, icon: ICON.refresh, onClick: () => maintenance(c, names, k, refresh),
+      })),
+      { sep: true },
+      { label: `Delete ${num(names.length)} indices…`, icon: ICON.delete, danger: true,
+        onClick: () => deleteIndices(c, names, refresh) },
+    ], { label: '⋮ Actions', title: 'Actions for the selection' }),
     h('button.btn.sm.ghost', { onclick: () => { selected.clear(); redrawTable(); } }, 'Clear selection'));
 }
 
@@ -211,15 +214,26 @@ function buildTable(c, rows) {
     h('td.num.muted', bytes(r.priSize)),
     h('td.muted', { style: { fontSize: '11.5px' } }, r.created ? dt(r.created).slice(0, 12) : '–'),
     h('td', h('div', { style: { display: 'flex', gap: '3px', justifyContent: 'flex-end' } },
+      // Only the reversible action stays in the row; the rest need the menu.
       r.status === 'open'
-        ? h('button.btn.sm', { title: 'Close this index — data stays on disk', onclick: () => closeIndices(c, [r.index], refresh) }, 'Close')
+        ? h('button.btn.sm', { title: 'Close this index — the data stays on disk', onclick: () => closeIndices(c, [r.index], refresh) }, 'Close')
         : h('button.btn.sm', { title: 'Open this index again', onclick: () => openIndices(c, [r.index], refresh) }, 'Open'),
-      h('button.btn.sm', { disabled: r.status !== 'open', title: r.status === 'open' ? 'Relocate a shard to another node' : 'The index must be open to move a shard',
-        onclick: () => moveShardDialog(c, r.index, refresh) }, 'Move'),
-      h('button.btn.sm', { title: 'Replicas, refresh interval, allocation', onclick: () => indexSettingsDialog(c, [r.index], refresh) }, '⚙'),
-      h('button.btn.sm.danger', { title: 'Delete this index', onclick: () => deleteIndices(c, [r.index], refresh) }, 'Delete'),
-      h('button.btn.sm.ghost', { title: 'Open in REST console',
-        onclick: () => navigateTo('console', { method: 'GET', path: `/${r.index}/_settings`, body: '' }) }, '↗')))));
+      rowMenu([
+        { label: 'Open in REST console', icon: ICON.console,
+          onClick: () => navigateTo('console', { method: 'GET', path: `/${r.index}/_settings`, body: '' }) },
+        { label: 'Settings…', icon: ICON.settings, title: 'Replicas, refresh interval, allocation',
+          onClick: () => indexSettingsDialog(c, [r.index], refresh) },
+        { label: 'Move a shard…', icon: ICON.move, disabled: r.status !== 'open',
+          title: r.status === 'open' ? 'Relocate a shard to another node' : 'The index must be open to move a shard',
+          onClick: () => moveShardDialog(c, r.index, refresh) },
+        { sep: true },
+        ...MAINTENANCE_KINDS.map(([k, label]) => ({
+          label, icon: ICON.refresh, onClick: () => maintenance(c, [r.index], k, refresh),
+        })),
+        { sep: true },
+        { label: 'Delete index…', icon: ICON.delete, danger: true,
+          onClick: () => deleteIndices(c, [r.index], refresh) },
+      ], { title: `Actions for ${r.index}` })))));
 
   const selectAll = h('input', {
     type: 'checkbox', checked: allShownTicked, style: { cursor: 'pointer' },

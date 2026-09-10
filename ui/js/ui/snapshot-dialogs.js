@@ -8,7 +8,7 @@
 
 import { h, mount, $ } from '../lib/dom.js';
 import { bytes, num, dt, dur, ago } from '../lib/fmt.js';
-import { modal, field, text, select, checkbox, val, checked } from './modal.js';
+import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
 import { ensureWrites } from '../core/writes.js';
 import { client } from '../core/state.js';
 
@@ -243,9 +243,12 @@ export async function restoreSnapshotDialog(cluster, repo, snapshotId, { onChang
 
 export async function deleteSnapshot(cluster, repo, snapshotId, { onChanged } = {}) {
   if (!(await ensureWrites())) return false;
-  if (!confirm(`Delete snapshot "${snapshotId}" from ${repo} on ${cluster.name}?\n\n` +
-               'The snapshot and the data only it holds are removed from the repository. ' +
-               'Indices in the cluster are not touched. This cannot be undone.')) return false;
+  const ok = await confirmDialog(`Delete snapshot ${snapshotId}?`,
+    `From repository "${repo}" on ${cluster.name}.\n\n` +
+    'The snapshot, and the data only it holds, are removed from the repository. Indices in ' +
+    'the cluster are not touched. This cannot be undone.',
+    { yes: 'delete', danger: true });
+  if (!ok) return false;
   try {
     await client(cluster.id).deleteSnapshot(repo, snapshotId);
     if (onChanged) await onChanged();
@@ -332,9 +335,11 @@ export async function deleteIndicesDialog(cluster, repo, snapshotId, { onChanged
       h('button.btn.danger', { onclick: (e) => ctx.run(e.target, async () => {
         if (!chosen.size) throw new Error('Select at least one index.');
         const list = [...chosen];
-        if (!confirm(`Delete ${list.length} index/indices from ${cluster.name}?\n\n` +
-                     list.slice(0, 12).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '') +
-                     `\n\nThey remain in snapshot "${snapshotId}". This cannot be undone.`)) return;
+        const go = await confirmDialog(`Delete ${list.length} index/indices from ${cluster.name}?`,
+          h('div', h('div', `They remain in snapshot "${snapshotId}" and can be restored from ${repo}. ` +
+                            'Removing them from the cluster cannot be undone.'), nameList(list)),
+          { yes: 'delete', danger: true, typeToConfirm: list.length > 1 ? String(list.length) : null });
+        if (!go) return;
         const failed = [];
         for (const n of list) {
           try { await cl.deleteIndex(n); } catch (err) { failed.push(`${n}: ${err.message}`); }
@@ -435,9 +440,13 @@ export async function createRepositoryDialog(cluster, pathRepo = []) {
 
 export async function deleteRepository(cluster, name, { onChanged } = {}) {
   if (!(await ensureWrites())) return false;
-  if (!confirm(`Remove repository "${name}" from ${cluster.name}?\n\n` +
-               'Elasticsearch stops using it. The snapshot files on disk or in the bucket are left alone, ' +
-               'so the repository can be registered again later.')) return false;
+  const ok = await confirmDialog(`Remove repository ${name}?`,
+    `From ${cluster.name}.\n\n` +
+    'Elasticsearch stops using it, and every snapshot in it disappears from this app. The files ' +
+    'on disk or in the bucket are left alone, so the repository can be registered again later — ' +
+    'but any SLM policy writing to it will start failing.',
+    { yes: 'remove', danger: true, typeToConfirm: name });
+  if (!ok) return false;
   try {
     await client(cluster.id).deleteRepository(name);
     if (onChanged) await onChanged();
@@ -461,8 +470,11 @@ export async function verifyRepository(cluster, name) {
 
 export async function cleanupRepository(cluster, name, { onChanged } = {}) {
   if (!(await ensureWrites())) return;
-  if (!confirm(`Clean up repository "${name}"?\n\n` +
-               'Removes data in the repository that no snapshot references any more. Snapshots are not affected.')) return;
+  const ok = await confirmDialog(`Clean up repository ${name}?`,
+    'Removes data in the repository that no snapshot references any more. Existing snapshots are ' +
+    'not affected. On a large repository this can run for a long time.',
+    { yes: 'clean up' });
+  if (!ok) return;
   try {
     const r = await client(cluster.id).cleanupRepository(name);
     const res = r.results || {};
