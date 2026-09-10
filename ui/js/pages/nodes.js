@@ -7,6 +7,7 @@ import { hbarList } from '../lib/charts.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { volumeReport, gb, days as fmtDays, yesNo } from '../core/volume.js';
+import { diskBalance, balanceHeadline, SPREAD_WATCH } from '../core/disk-balance.js';
 import { navigateTo } from '../core/intent.js';
 
 let host = null;
@@ -102,6 +103,8 @@ function block(c) {
       statTile('Pending tasks', d.health ? num(d.health.number_of_pending_tasks) : '–',
         d.health ? `max wait ${dur(d.health.task_max_waiting_in_queue_millis)}` : '')),
 
+    h('div', { style: { marginBottom: '10px' } }, balanceCard(c, d)),
+
     h('div', { style: { marginBottom: '10px' } }, capacityCard(c, d)),
 
     h('div.grid.c2', { style: { marginBottom: '10px' } },
@@ -181,4 +184,110 @@ function capacityCard(c, d) {
 
   return card('Capacity', 'per-day ingest, retention and what the storage must hold', body,
     [h('button.btn.sm', { onclick: () => navigateTo('volume') }, 'Full volume report')]);
+}
+
+/* ------------------------------- disk balance -------------------------------- */
+
+const VERDICT = {
+  'single-node': { pill: 'grey',   title: 'Single data node', lead: 'Nothing to rebalance.' },
+  ok:            { pill: 'green',  title: 'Evenly spread',    lead: 'No reallocation needed.' },
+  watch:         { pill: 'yellow', title: 'Worth watching',   lead: 'Not urgent, but drifting apart.' },
+  required:      { pill: 'orange', title: 'Action needed',    lead: 'Elasticsearch is constrained by disk.' },
+  critical:      { pill: 'red',    title: 'Flood stage',      lead: 'Indices are read-only until this is cleared.' },
+};
+
+/**
+ * Whether the data is spread evenly enough across nodes, and — the part that matters —
+ * whether moving shards would actually fix it. A cluster where every node is full is a
+ * capacity problem; saying "rebalance" there sends someone down the wrong path.
+ */
+function balanceCard(c, d) {
+  const b = diskBalance(d, d.clusterSettings);
+  const v = VERDICT[b.verdict] || VERDICT.ok;
+  const wm = b.watermarks;
+
+  if (!b.applicable) {
+    return card('Disk balance', `${b.dataNodes} data node${b.dataNodes === 1 ? '' : 's'}`,
+      h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center' } },
+        pill(v.title, v.pill),
+        h('span.muted', { style: { fontSize: '12px' } }, b.reasons[0])));
+  }
+
+  const bar = (n) => {
+    const cls = n.pct >= wm.flood ? 'var(--critical)' : n.pct >= wm.high ? 'var(--serious)'
+      : n.pct >= wm.low ? 'var(--warning)' : 'var(--good)';
+    return h('tr',
+      h('td', h('div', { style: { fontWeight: 620 } }, n.name)),
+      h('td', h('div', { style: { minWidth: '190px' } },
+        h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '11px' } },
+          h('span', `${n.pct.toFixed(1)}%`),
+          h('span.muted', `${bytes(n.used)} / ${bytes(n.total)}`)),
+        h('div.bar-mini', h('i', { style: { width: `${Math.min(100, Math.max(1.5, n.pct))}%`, background: cls } })))),
+      h('td.num', bytes(n.avail)),
+      h('td.num', num(n.shards)),
+      h('td.num.muted', b.avgShards ? `${(n.shards - b.avgShards >= 0 ? '+' : '')}${Math.round(n.shards - b.avgShards)}` : '–'),
+      h('td', n.pct >= wm.flood ? pill('flood', 'red') : n.pct >= wm.high ? pill('high', 'orange')
+        : n.pct >= wm.low ? pill('low', 'yellow') : pill('ok', 'green')));
+  };
+
+  const body = h('div', { style: { display: 'grid', gap: '9px' } },
+    h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center', flexWrap: 'wrap' } },
+      pill(v.title, v.pill),
+      h('span', { style: { fontWeight: 620, fontSize: '12.5px' } }, balanceHeadline(b)),
+      h('span.muted', { style: { fontSize: '11.5px', marginLeft: 'auto' } },
+        `watermarks ${wm.low}/${wm.high}/${wm.flood}%${wm.assumed ? ' (assumed — the cluster did not report them)' : ''}`)),
+
+    h('div', { style: { display: 'grid', gap: '2px' } },
+      ...b.reasons.map((r) => h('div', { style: { fontSize: '12px' } }, '• ', r))),
+
+    // The question the page exists to answer.
+    h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 9px',
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        background: 'var(--surface-1)' } },
+      h('b', { style: { fontSize: '12.5px' } }, 'Shard reallocation'),
+      b.reallocationHelps
+        ? pill('would help', 'orange')
+        : pill(b.allFull ? 'would NOT help — add capacity' : 'not needed', b.allFull ? 'red' : 'green'),
+      h('span.muted', { style: { fontSize: '11.5px' } },
+        b.reallocationHelps
+          ? `${b.fullest.name} is heavy and ${b.emptiest.name} has room`
+          : b.allFull
+          ? 'every node is above the high watermark, so there is nowhere to move data to'
+          : `spread is ${b.spread.toFixed(1)} points, under the ${SPREAD_WATCH}-point mark`)),
+
+    table(['Node', 'Disk', { label: 'Free', num: true }, { label: 'Shards', num: true },
+           { label: 'vs avg', num: true }, 'Watermark'],
+      [...b.nodes].sort((x, y) => y.pct - x.pct).map(bar)),
+
+    b.suggestions.length ? suggestionList(c, b) : null);
+
+  return card('Disk balance', `${b.dataNodes} data nodes · ${b.spread ? b.spread.toFixed(1) + ' point spread' : ''}`, body);
+}
+
+/**
+ * The requests an operator would reach for, in the order they would reach for them.
+ * Each opens in the REST console prefilled rather than being run from here — these
+ * change cluster settings, and they should be read before they are sent.
+ */
+function suggestionList(c, b) {
+  return h('div', { style: { display: 'grid', gap: '5px' } },
+    h('div', { style: { fontWeight: 620, fontSize: '12.5px', marginTop: '2px' } }, 'Suggested commands'),
+    h('div.muted', { style: { fontSize: '11px' } },
+      'Each opens in the REST console prefilled. Nothing is sent from here — read it first, ' +
+      'and replace anything marked REPLACE.'),
+    ...b.suggestions.map((s) => h('div', {
+        style: { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '4px 0',
+                 borderTop: '1px solid var(--border)' },
+      },
+      h('span.mono', { style: { fontSize: '10.5px', fontWeight: 700, minWidth: '48px',
+                                color: s.write ? 'var(--warning)' : 'var(--text-muted)' } }, s.method),
+      h('div', { style: { flex: '1', minWidth: 0 } },
+        h('div', { style: { fontSize: '12.5px', fontWeight: 600 } }, s.title,
+          s.write ? h('span.pill.yellow', { style: { marginLeft: '6px', fontSize: '10px' } }, 'changes the cluster') : null),
+        h('div.mono.muted', { style: { fontSize: '10.5px', wordBreak: 'break-all' } }, s.path),
+        h('div.muted', { style: { fontSize: '11px' } }, s.why)),
+      h('button.btn.sm', {
+        title: 'Open in the REST console, prefilled',
+        onclick: () => navigateTo('console', { method: s.method, path: s.path, body: s.body || '' }),
+      }, 'Open →'))));
 }

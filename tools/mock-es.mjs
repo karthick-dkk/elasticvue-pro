@@ -48,8 +48,27 @@ const routes = [
   [(u) => u.startsWith('/_cluster/health'), () => ({ status: 'yellow', number_of_nodes: 3,
     number_of_data_nodes: 2, active_shards: 40, active_primary_shards: 20, unassigned_shards: 2,
     relocating_shards: 0, initializing_shards: 0, active_shards_percent_as_number: 95 })],
-  [(u) => u.startsWith('/_cat/allocation'), () => ([{ node: 'node-1', shards: '20',
-    'disk.used': '80000000000', 'disk.avail': '20000000000', 'disk.total': '100000000000', 'disk.percent': '80' }])],
+  // Deliberately skewed: node-1 heavy, node-3 nearly idle, so the disk-balance panel
+  // has a real case to describe rather than a flat one.
+  [(u) => u.startsWith('/_cat/allocation'), () => ([
+    { node: 'node-1', shards: '38', 'disk.used': '91000000000', 'disk.avail': '9000000000',
+      'disk.total': '100000000000', 'disk.percent': '91', 'disk.indices': '86000000000' },
+    { node: 'node-2', shards: '22', 'disk.used': '55000000000', 'disk.avail': '45000000000',
+      'disk.total': '100000000000', 'disk.percent': '55', 'disk.indices': '50000000000' },
+    { node: 'node-3', shards: '9', 'disk.used': '21000000000', 'disk.avail': '79000000000',
+      'disk.total': '100000000000', 'disk.percent': '21', 'disk.indices': '18000000000' },
+    { node: 'UNASSIGNED', shards: '2' },
+  ])],
+  [(u) => u.startsWith('/_cluster/settings'), () => ({
+    persistent: {}, transient: {},
+    defaults: {
+      'cluster.routing.allocation.disk.watermark.low': '85%',
+      'cluster.routing.allocation.disk.watermark.high': '90%',
+      'cluster.routing.allocation.disk.watermark.flood_stage': '95%',
+      'cluster.routing.allocation.enable': 'all',
+      'cluster.routing.rebalance.enable': 'all',
+    },
+  })],
   [(u) => u.startsWith('/_cat/nodes'), () => ([
     { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', 'node.role': 'dim', master: '*',
       'heap.percent': '61', 'ram.percent': '70', cpu: '12', load_1m: '1.2',

@@ -1,6 +1,20 @@
 # Changelog
 
 ## Unreleased
+- **Disk balance on the Nodes page**, for clusters with more than one data node: per-node
+  usage against the cluster's own watermarks, the spread between the fullest and emptiest
+  node, shard counts against the average, and a plain verdict on whether **shard
+  reallocation would help**. A skewed cluster and a full one need opposite responses, so a
+  cluster whose every node is above the high watermark is told `would NOT help — add
+  capacity` rather than being pointed at a rebalance that cannot work.
+- Watermarks are read from `_cluster/settings` rather than assumed; when the cluster does
+  not report them the page says the thresholds are assumed.
+- **Suggested requests** alongside the verdict — allocation explain, retry failed
+  allocations, check that rebalancing is enabled, move a named shard between the two nodes
+  identified, clear a flood-stage read-only block, list the oldest indices. Each appears
+  only when it applies, opens in the REST console prefilled instead of running from the
+  page, and anything that changes the cluster is labelled.
+- The verdict becomes an alert, so it reaches the Alerts page and the nav badge.
 - **Volume analysis on the Indices page.** Daily volume broken down by an ECS field —
   `tag1`, `src_hostname`, or anything named in the new `volumeFields` setting — with a daily
   chart, a sortable table of values, click-to-isolate, and CSV export. A value is flagged

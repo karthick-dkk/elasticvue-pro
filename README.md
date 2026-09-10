@@ -38,7 +38,7 @@ Browser tools cannot do three things an operator behind a jump host needs:
 - **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites, and ~60 grouped ready-made requests (ILM policies, disk watermarks, replica and shard counts, snapshots, diagnostics)
 - **Live logs** — tail a day's index with a time histogram
 - **Snapshots & SLM** — the latest 5 snapshots per repository (widened on demand), availability of logstash days, policies and last run; create and delete snapshots, restore with index selection and renaming, free the live indices a snapshot already holds, and add, verify, clean up or remove repositories
-- **Nodes & shards** — heap, CPU, disk per node; unassigned / initializing shards
+- **Nodes & shards** — heap, CPU, disk per node; unassigned / initializing shards; **disk balance** across data nodes, whether shard reallocation would actually help, and the requests to run if it would
 - **Config in the UI** — add clusters, jump hosts, the shared credential and defaults; saved as `config_cluster.json`
 - **Security** — read-only guard in the core: a write needs both a session unlock *and* a request the operator asked for by hand, so nothing that refreshes on a timer can write; secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
 - **Portable** — one folder, no installer, no admin rights; runs on the analyst PC and on the jump server itself
@@ -206,6 +206,30 @@ report says so, which is how retention drift gets noticed.
 The headline figures — per-day size, both retention policies, what the storage must hold and
 how long the free space lasts — also appear on the **Nodes & shards** page, computed by the
 same code so the two cannot disagree.
+
+## Disk balance
+
+With more than one data node, the Nodes page says whether the data is spread evenly and —
+the part that matters — whether **moving shards would actually fix it**.
+
+Two different problems get confused here. A cluster can be *skewed*, one node heavy while
+others idle, which relocation fixes. Or it can simply be *full*, every node near the
+watermark, which relocation cannot fix at all. Telling someone to rebalance a full cluster
+sends them down the wrong path for an afternoon, so the verdict distinguishes them and says
+`would NOT help — add capacity` when that is the honest answer.
+
+Thresholds come from the cluster's **own** watermark settings rather than assuming
+Elasticsearch's defaults, which are routinely changed; when the cluster does not report
+them the page says the numbers are assumed.
+
+Alongside the verdict is a list of **suggested requests** — allocation explain, retry failed
+allocations, confirm rebalancing is enabled, move a named shard between the two nodes it
+identified, clear a flood-stage read-only block, find the oldest indices to delete. Each is
+contextual: a flood-stage block is only offered when a node is actually at flood stage. They
+open in the REST console prefilled rather than running from the page, because most of them
+change cluster settings and should be read first. Anything that writes is labelled.
+
+The verdict also becomes an alert, so it reaches the Alerts page and the nav badge.
 
 ## Volume analysis
 

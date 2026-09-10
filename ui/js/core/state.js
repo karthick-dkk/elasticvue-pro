@@ -4,6 +4,7 @@ import { EsClient, primeWorker, setBadge } from './es.js';
 // Cyclic with field-volume.js, which needs client() from here. Safe because both sides
 // only touch the other inside functions, never while the modules are evaluating.
 import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
+import { diskBalance, balanceHeadline } from './disk-balance.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
 
 class Emitter {
@@ -182,7 +183,7 @@ async function settled(p) {
  */
 export function buildClusterData(id, prev, raw) {
   const { root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths,
-          ilmPolicies, ilmOfIndices } = raw;
+          ilmPolicies, ilmOfIndices, clusterSettings } = raw;
   const out = { ...prev, id, loading: false, updatedAt: raw.updatedAt || Date.now() };
 
   out.reachable = root.ok || health.ok;
@@ -225,6 +226,7 @@ export function buildClusterData(id, prev, raw) {
     }));
   } else out.repos = prev.repos || [];
 
+  out.clusterSettings = clusterSettings && clusterSettings.ok ? clusterSettings.value : prev.clusterSettings || null;
   out.appliedIlm = appliedIlm(ilmPolicies, ilmOfIndices) || prev.appliedIlm || null;
   out.appliedSlm = appliedSlm(out.slm) || prev.appliedSlm || null;
 
@@ -295,7 +297,8 @@ export async function fetchOverview(id, { withSnapshots = true } = {}) {
   if (!cl) return null;
   const prev = state.data.get(id) || {};
 
-  const [root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies, ilmOfIndices] =
+  const [root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies,
+         ilmOfIndices, clusterSettings] =
     await Promise.all([
       settled(cl.root()), settled(cl.health()), settled(cl.allocation()), settled(cl.nodes()),
       settled(cl.repositories()), settled(cl.slmPolicies()), settled(cl.slmStatus()),
@@ -304,10 +307,14 @@ export async function fetchOverview(id, { withSnapshots = true } = {}) {
       // What the cluster actually enforces, as opposed to what the config says it should.
       settled(cl.ilmPolicies()),
       settled(cl.ilmPolicyOfIndices(cl.c.logIndexPattern || '*')),
+      // The real watermarks, so disk advice is not given against assumed thresholds.
+      settled(cl.json('GET', '/_cluster/settings?include_defaults=true&flat_settings=true' +
+        '&filter_path=**.disk.watermark**,**.allocation.enable,**.rebalance.enable')),
     ]);
 
   const out = buildClusterData(id, prev, {
-    root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies, ilmOfIndices,
+    root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies,
+    ilmOfIndices, clusterSettings,
   });
   state.data.set(id, out);
   bus.emit('data', id);
@@ -457,6 +464,16 @@ export function alerts() {
     }
     if (d.ilmErrorCount) add({ key: `${c.id}:ilm`, level: 'warning', cluster: c, title: `${c.name}: ${d.ilmErrorCount} index(es) in ILM error step`, detail: Object.keys(d.ilmErrors).slice(0, 3).join(', ') });
     if (d.slmStatus && d.slmStatus.operation_mode && d.slmStatus.operation_mode !== 'RUNNING') add({ key: `${c.id}:slm-mode`, level: 'warning', cluster: c, title: `${c.name}: SLM is ${d.slmStatus.operation_mode}`, detail: 'Snapshot lifecycle is not running' });
+    // Disk balance across data nodes — only meaningful with more than one.
+    const bal = diskBalance(d, d.clusterSettings);
+    if (bal.applicable && (bal.verdict === 'critical' || bal.verdict === 'required')) {
+      add({ key: `${c.id}:disk-balance`,
+        level: bal.verdict === 'critical' ? 'critical' : 'warning',
+        cluster: c,
+        title: `${c.name}: ${balanceHeadline(bal)}`,
+        detail: bal.reasons[0] + (bal.reallocationHelps ? ' Moving shards would help.' : '') });
+    }
+
     // Field-volume spikes, when the Indices page has run an analysis for this cluster.
     for (const sp of spikesFor(c.id)) {
       add({ key: `${c.id}:volume:${sp.field}:${sp.term}`, level: 'warning', cluster: c,
