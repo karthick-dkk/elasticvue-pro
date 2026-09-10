@@ -1,0 +1,68 @@
+# ElasticVue Pro, hosted. One exposed port: nginx on 443.
+#
+#   cp .env.example .env            # then edit
+#   ./make-htpasswd.sh alice        # one line per user (phase 1 auth gate)
+#   docker compose up -d --build
+#
+# The core is reachable ONLY through nginx. Never publish port 8765.
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      ESPRO_BIND: 0.0.0.0
+      ESPRO_DATA_DIR: /app/data
+      ELASTICVUE_CONFIG: /app/config/config_cluster.json
+      RUST_LOG: info,audit=info
+    volumes:
+      - ./config:/app/config:ro        # config_cluster.json, secrets sealed
+      - core-data:/app/data            # pins.json — trust decisions
+      - ${SSH_KEYS_DIR:-./ssh}:/app/ssh:ro   # jump-host keys, read-only
+    networks: [internal]
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "10" }
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [core]
+    ports:
+      - "${LISTEN:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/htpasswd:/etc/nginx/htpasswd:ro
+      - ./tls:/etc/nginx/tls:ro         # fullchain.pem + privkey.pem
+    networks: [internal]
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "10" }
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: elasticvue
+      POSTGRES_USER: elasticvue
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elasticvue"]
+      interval: 10s
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+
+volumes:
+  core-data:
+  db-data:
+
+networks:
+  internal:

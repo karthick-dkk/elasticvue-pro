@@ -37,7 +37,8 @@ base64 = "0.22"
 regex = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# "json": the hosted bridge writes structured audit lines a log collector can parse.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 parking_lot = "0.12"
 dirs = "6"
 hex = "0.4"
