@@ -7,6 +7,9 @@
 # The core is reachable ONLY through nginx. Never publish port 8765.
 services:
   core:
+    # Built from this repo; the tag lets a pre-built image be reused instead of
+    # rebuilding on every `up`. `docker compose build` refreshes it.
+    image: elasticvue-pro-core:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile
