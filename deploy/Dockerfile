@@ -4,10 +4,12 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
-# The Tauri shell is a workspace member but not built here; a stub keeps the workspace valid.
-RUN mkdir -p src-tauri/src && echo 'fn main(){}' > src-tauri/src/main.rs && echo '' > src-tauri/build.rs
-RUN cargo build --release -p espro-core --features bridge --bin espro-bridge
+# The Tauri shell is a workspace member, so cargo has to be able to load its manifest
+# even though only espro-core is built here. Its manifest declares a [lib], which means
+# src/lib.rs must exist — a stub main.rs is not enough. The directory is under 1 MB, so
+# copying it whole is simpler than a stub and cannot drift from the real manifest.
+COPY src-tauri ./src-tauri
+RUN cargo build --release --locked -p espro-core --features bridge --bin espro-bridge
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
