@@ -93,6 +93,18 @@ needs `X-Auth-User` to arrive from something it can trust.
   other's notes.
 - **Zabbix.** A polling endpoint for alerts and the volume report is planned; see the plan.
 
+## Trying it on one machine first
+
+`deploy/trial.sh` brings the stack up against a mock cluster and proves the four things
+the deployment exists for: no credentials → 401 at nginx; valid credentials → the UI and
+the bridge over TLS; a write appears in the core's audit log under the signed-in user's
+name; and the core has no host port binding and is unreachable from a container outside
+the compose network. Run it after any change to the compose file or nginx config.
+
+Note that `docker compose ps` shows `8765/tcp` against the core. That is the image's
+`EXPOSE` metadata — the port is open *inside* the compose network — not a host mapping;
+a mapping would read `0.0.0.0:8765->8765/tcp`, as it does for nginx on 443.
+
 ## Updating
 
 ```bash
