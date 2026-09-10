@@ -4,7 +4,7 @@ import { EsClient, primeWorker, setBadge } from './es.js';
 // Cyclic with field-volume.js, which needs client() from here. Safe because both sides
 // only touch the other inside functions, never while the modules are evaluating.
 import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
-import { diskBalance, balanceHeadline } from './disk-balance.js';
+import { diskBalance, balanceHeadline, primaryAction } from './disk-balance.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
 
 class Emitter {
@@ -466,12 +466,15 @@ export function alerts() {
     if (d.slmStatus && d.slmStatus.operation_mode && d.slmStatus.operation_mode !== 'RUNNING') add({ key: `${c.id}:slm-mode`, level: 'warning', cluster: c, title: `${c.name}: SLM is ${d.slmStatus.operation_mode}`, detail: 'Snapshot lifecycle is not running' });
     // Disk balance across data nodes — only meaningful with more than one.
     const bal = diskBalance(d, d.clusterSettings);
-    if (bal.applicable && (bal.verdict === 'critical' || bal.verdict === 'required')) {
+    if (bal.applicable && (bal.verdict === 'critical' || bal.verdict === 'required' || bal.verdict === 'watch')) {
+      const act = primaryAction(bal);
       add({ key: `${c.id}:disk-balance`,
         level: bal.verdict === 'critical' ? 'critical' : 'warning',
         cluster: c,
         title: `${c.name}: ${balanceHeadline(bal)}`,
-        detail: bal.reasons[0] + (bal.reallocationHelps ? ' Moving shards would help.' : '') });
+        // One suggestion, named — an alert that only states a problem leaves the reader
+        // to work out the next step for themselves.
+        detail: bal.reasons[0] + (act ? `  Suggested: ${act.title} (${act.method} ${act.path}).` : '') });
     }
 
     // Field-volume spikes, when the Indices page has run an analysis for this cluster.

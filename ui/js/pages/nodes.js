@@ -7,7 +7,8 @@ import { hbarList } from '../lib/charts.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { volumeReport, gb, days as fmtDays, yesNo } from '../core/volume.js';
-import { diskBalance, balanceHeadline, SPREAD_WATCH } from '../core/disk-balance.js';
+import { diskBalance, balanceHeadline, primaryAction, SPREAD_WATCH } from '../core/disk-balance.js';
+import { collapsible as fold } from './common.js';
 import { navigateTo } from '../core/intent.js';
 
 let host = null;
@@ -235,47 +236,97 @@ function balanceCard(c, d) {
       pill(v.title, v.pill),
       h('span', { style: { fontWeight: 620, fontSize: '12.5px' } }, balanceHeadline(b)),
       h('span.muted', { style: { fontSize: '11.5px', marginLeft: 'auto' } },
-        `watermarks ${wm.low}/${wm.high}/${wm.flood}%${wm.assumed ? ' (assumed — the cluster did not report them)' : ''}`)),
+        `watermarks ${wm.low}/${wm.high}/${wm.flood}%${wm.assumed ? ' (assumed)' : ''}`)),
+
+    // Current settings, read from the cluster — the first thing to check before advising
+    // anyone to rebalance, because a switch left off makes everything else moot.
+    h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', fontSize: '11.5px',
+                        padding: '5px 9px', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)', background: 'var(--surface-1)' } },
+      h('span', h('b', 'Current settings'), ' '),
+      h('span', 'allocation ',
+        h('span', { style: { fontWeight: 640, color: b.settings.allocationOn ? 'var(--good)' : 'var(--critical)' } },
+          b.settings.allocation),
+        h('span.muted', ` (${b.settings.allocationSource})`)),
+      h('span', 'rebalance ',
+        h('span', { style: { fontWeight: 640, color: b.settings.rebalanceOn ? 'var(--good)' : 'var(--critical)' } },
+          b.settings.rebalance),
+        h('span.muted', ` (${b.settings.rebalanceSource})`)),
+      h('span.muted', `low ${wm.low}% · high ${wm.high}% · flood ${wm.flood}%` +
+        (wm.assumed ? ' — assumed, the cluster did not report them' : '')),
+      h('button.btn.sm.ghost', { style: { marginLeft: 'auto', padding: '0 6px' },
+        title: 'Read these settings in the REST console',
+        onclick: () => navigateTo('console', { method: 'GET',
+          path: '/_cluster/settings?include_defaults=true&flat_settings=true&filter_path=**.disk.watermark**,**.allocation.enable,**.rebalance.enable',
+          body: '' }) }, 'View')),
 
     h('div', { style: { display: 'grid', gap: '2px' } },
       ...b.reasons.map((r) => h('div', { style: { fontSize: '12px' } }, '• ', r))),
 
-    // The question the page exists to answer.
-    h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 9px',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                        background: 'var(--surface-1)' } },
-      h('b', { style: { fontSize: '12.5px' } }, 'Shard reallocation'),
-      b.reallocationHelps
-        ? pill('would help', 'orange')
-        : pill(b.allFull ? 'would NOT help — add capacity' : 'not needed', b.allFull ? 'red' : 'green'),
-      h('span.muted', { style: { fontSize: '11.5px' } },
-        b.reallocationHelps
-          ? `${b.fullest.name} is heavy and ${b.emptiest.name} has room`
-          : b.allFull
-          ? 'every node is above the high watermark, so there is nowhere to move data to'
-          : `spread is ${b.spread.toFixed(1)} points, under the ${SPREAD_WATCH}-point mark`)),
+    // The question the page exists to answer, and the one thing to do about it.
+    verdictStrip(c, b),
 
     table(['Node', 'Disk', { label: 'Free', num: true }, { label: 'Shards', num: true },
            { label: 'vs avg', num: true }, 'Watermark'],
       [...b.nodes].sort((x, y) => y.pct - x.pct).map(bar)),
 
-    b.suggestions.length ? suggestionList(c, b) : null);
+    // The rest is context, folded away so the panel stays readable.
+    b.suggestions.length > 1
+      ? fold('Other requests worth running', `${b.suggestions.length - 1} more`,
+          () => suggestionList(c, b.suggestions.filter((x) => x !== primaryAction(b))),
+          { key: `nodes-suggest-${c.id}` })
+      : null);
 
   return card('Disk balance', `${b.dataNodes} data nodes · ${b.spread ? b.spread.toFixed(1) + ' point spread' : ''}`, body);
 }
 
 /**
- * The requests an operator would reach for, in the order they would reach for them.
- * Each opens in the REST console prefilled rather than being run from here — these
- * change cluster settings, and they should be read before they are sent.
+ * Is the usage uneven, and what is the one thing to do about it?
+ *
+ * A single recommended action rather than a list: a page that offers eight commands at
+ * equal weight leaves the reader to work out which one comes first.
  */
-function suggestionList(c, b) {
+function verdictStrip(c, b) {
+  const act = primaryAction(b);
+  const uneven = b.reallocationHelps;
+
+  return h('div', { style: { display: 'grid', gap: '6px', padding: '8px 10px',
+                             border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                             background: 'var(--surface-1)' } },
+    h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+      h('b', { style: { fontSize: '12.5px' } }, 'Disk usage across nodes'),
+      uneven
+        ? pill('uneven — reallocation would help', 'orange')
+        : pill(b.allFull ? 'even, but every node is full' : 'even enough', b.allFull ? 'red' : 'green'),
+      h('span.muted', { style: { fontSize: '11.5px' } },
+        uneven
+          ? `${b.fullest.name} at ${b.fullest.pct.toFixed(1)}% against ${b.emptiest.name} at ${b.emptiest.pct.toFixed(1)}% — ${b.spread.toFixed(1)} points apart`
+          : b.allFull
+          ? 'nowhere to move data to; this needs capacity, not reallocation'
+          : `${b.spread.toFixed(1)} points between the fullest and emptiest node, under the ${SPREAD_WATCH}-point mark`)),
+    act
+      ? h('div', { style: { display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' } },
+          h('span.muted', { style: { fontSize: '11.5px' } }, 'Do this first:'),
+          h('span', { style: { fontSize: '12.5px', fontWeight: 620 } }, act.title),
+          act.write ? h('span.pill.yellow', { style: { fontSize: '10px' } }, 'changes the cluster') : null,
+          h('span.muted', { style: { fontSize: '11px', flex: '1', minWidth: '160px' } }, act.why),
+          h('button.btn.sm.primary', {
+            onclick: () => navigateTo('console', { method: act.method, path: act.path, body: act.body || '' }),
+          }, `Open ${act.method} →`))
+      : null);
+}
+
+/**
+ * The remaining requests, for when the first one was not the answer. Each opens in the
+ * REST console prefilled rather than being run from here — these change cluster settings,
+ * and they should be read before they are sent.
+ */
+function suggestionList(c, list) {
   return h('div', { style: { display: 'grid', gap: '5px' } },
-    h('div', { style: { fontWeight: 620, fontSize: '12.5px', marginTop: '2px' } }, 'Suggested commands'),
     h('div.muted', { style: { fontSize: '11px' } },
       'Each opens in the REST console prefilled. Nothing is sent from here — read it first, ' +
       'and replace anything marked REPLACE.'),
-    ...b.suggestions.map((s) => h('div', {
+    ...list.map((s) => h('div', {
         style: { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '4px 0',
                  borderTop: '1px solid var(--border)' },
       },

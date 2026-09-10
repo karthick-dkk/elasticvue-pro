@@ -68,11 +68,47 @@ export function watermarks(settings) {
 }
 
 /**
+ * The two switches that decide whether Elasticsearch will move anything at all.
+ *
+ * Left turned off after maintenance — a common and easily forgotten step — a cluster stays
+ * skewed for ever no matter how uneven it gets, so they are worth reading before advising
+ * anybody to rebalance.
+ */
+export function allocationSettings(settings) {
+  const read = (key) => {
+    for (const scope of ['persistent', 'transient', 'defaults']) {
+      const s = (settings || {})[scope];
+      if (!s) continue;
+      const flat = s[key];
+      if (flat !== undefined) return { value: String(flat), source: scope };
+      const parts = key.split('.');
+      let cur = s;
+      for (const p of parts) { cur = cur && cur[p]; if (cur === undefined) break; }
+      if (cur !== undefined) return { value: String(cur), source: scope };
+    }
+    return null;
+  };
+  const alloc = read('cluster.routing.allocation.enable');
+  const rebal = read('cluster.routing.rebalance.enable');
+  return {
+    allocation: alloc ? alloc.value : 'all',
+    allocationSource: alloc ? alloc.source : 'assumed',
+    rebalance: rebal ? rebal.value : 'all',
+    rebalanceSource: rebal ? rebal.source : 'assumed',
+    // "all" is the only value that lets Elasticsearch move data on its own.
+    allocationOn: !alloc || alloc.value === 'all',
+    rebalanceOn: !rebal || rebal.value === 'all',
+    known: !!(alloc || rebal),
+  };
+}
+
+/**
  * @param data      the cluster's state.data entry
  * @param settings  the response of _cluster/settings?include_defaults=true
  */
 export function diskBalance(data = {}, settings = null) {
   const wm = watermarks(settings);
+  const alloc = allocationSettings(settings);
   const rows = ((data.disk && data.disk.nodes) || []).filter((r) => r.node && r.node !== 'UNASSIGNED');
 
   const nodes = rows.map((r) => {
@@ -89,7 +125,7 @@ export function diskBalance(data = {}, settings = null) {
   }).filter((n) => isFinite(n.pct));
 
   const base = {
-    watermarks: wm, nodes, dataNodes: nodes.length,
+    watermarks: wm, settings: alloc, nodes, dataNodes: nodes.length,
     unassigned: (data.disk && data.disk.unassignedShards) || 0,
     applicable: nodes.length > 1,
   };
@@ -114,6 +150,14 @@ export function diskBalance(data = {}, settings = null) {
 
   const reasons = [];
   let verdict = 'ok';
+
+  // Say this first: while either switch is off, nothing else in this panel can happen.
+  if (!alloc.allocationOn || !alloc.rebalanceOn) {
+    const off = [!alloc.allocationOn ? `allocation is "${alloc.allocation}"` : null,
+                 !alloc.rebalanceOn ? `rebalancing is "${alloc.rebalance}"` : null].filter(Boolean).join(' and ');
+    reasons.push(`${off} — Elasticsearch will not move shards on its own until that is set back to "all".`);
+    verdict = 'watch';
+  }
 
   if (aboveFlood.length) {
     verdict = 'critical';
@@ -152,7 +196,7 @@ export function diskBalance(data = {}, settings = null) {
     verdict, reasons,
     // Reallocation only helps when something is skewed AND there is somewhere to put it.
     reallocationHelps: !allFull && (spread >= SPREAD_WATCH || aboveHigh.length > 0 || aboveFlood.length > 0) && headroom,
-    suggestions: suggestions({ verdict, allFull, aboveFlood, aboveHigh, fullest, emptiest, spread, unassigned: base.unassigned, wm }),
+    suggestions: suggestions({ verdict, allFull, aboveFlood, aboveHigh, fullest, emptiest, spread, unassigned: base.unassigned, wm, alloc }),
   };
 }
 
@@ -160,7 +204,23 @@ export function diskBalance(data = {}, settings = null) {
  * The requests an operator would actually reach for, in the order they would reach for
  * them — diagnose first, then the reversible fix, then the one that costs money.
  */
-function suggestions({ verdict, allFull, aboveFlood, aboveHigh, fullest, emptiest, spread, unassigned, wm }) {
+/**
+ * The single action that matters most right now. Everything else in `suggestions` is
+ * context; this is the one to do first, and it is what the alert carries.
+ */
+export function primaryAction(b) {
+  if (!b.applicable) return null;
+  const s = b.suggestions || [];
+  const find = (re) => s.find((x) => re.test(x.title));
+  if (!b.settings.allocationOn || !b.settings.rebalanceOn) return find(/Re-enable allocation/);
+  if (b.aboveFlood.length) return find(/read-only block/);
+  if (b.allFull) return find(/oldest indices to delete/);
+  if (b.unassigned) return find(/why a shard is unassigned/);
+  if (b.reallocationHelps) return find(/Move one shard/);
+  return find(/where the data actually sits/) || null;
+}
+
+function suggestions({ verdict, allFull, aboveFlood, aboveHigh, fullest, emptiest, spread, unassigned, wm, alloc }) {
   const out = [];
   const add = (s) => out.push(s);
 
@@ -190,6 +250,15 @@ function suggestions({ verdict, allFull, aboveFlood, aboveHigh, fullest, empties
       why: 'Indices are left read-only after a flood-stage trip and do NOT recover on their own, even once disk is freed. Free space first, or this immediately re-trips.',
       method: 'PUT', path: '/_all/_settings', write: true,
       body: '{\n  "index.blocks.read_only_allow_delete": null\n}',
+    });
+  }
+
+  if (alloc && (!alloc.allocationOn || !alloc.rebalanceOn)) {
+    add({
+      title: 'Re-enable allocation and rebalancing',
+      why: `Currently allocation="${alloc.allocation}", rebalance="${alloc.rebalance}". Until both are "all", Elasticsearch will not move a shard however uneven the cluster gets.`,
+      method: 'PUT', path: '/_cluster/settings', write: true,
+      body: '{\n  "transient": {\n    "cluster.routing.allocation.enable": "all",\n    "cluster.routing.rebalance.enable": "all"\n  }\n}',
     });
   }
 

@@ -67,6 +67,7 @@ const routes = [
       'cluster.routing.allocation.disk.watermark.flood_stage': '95%',
       'cluster.routing.allocation.enable': 'all',
       'cluster.routing.rebalance.enable': 'all',
+      // flip either of these to 'none' to see the "left switched off" path
     },
   })],
   [(u) => u.startsWith('/_cat/nodes'), () => ([
