@@ -96,6 +96,12 @@ desktop operator has today. **This is what "deploy it" means at first.**
 becomes a permission rather than a toggle, and the guard consults the role. This is where
 "user only can do actions" becomes "these users can do these actions".
 
+It also closes the one real gap in phase 1: the write unlock is a single switch in the core
+process, shared by every signed-in user. Audit already records *who* sent each write, so
+the trail is correct; what is missing is refusing the write for a user who should not be
+allowed it. In phase 2 the guard takes the identity from the request and the role from
+Postgres, and the switch goes away.
+
 **Phase 3 — the roadmap items**, each of which has a natural home:
 
 | Item | Where it lands |

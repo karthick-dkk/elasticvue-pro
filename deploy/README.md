@@ -82,6 +82,12 @@ needs `X-Auth-User` to arrive from something it can trust.
 
 - **Roles.** Every authenticated user has the same rights as the desktop operator. RBAC is
   phase 2 and uses the `users.role` column the schema already has.
+- **A per-user write unlock.** *Allow writes* is a switch inside the core process, and in
+  phase 1 there is one core process for everyone — so once any signed-in user turns it on,
+  writes are permitted for every user until it is turned off or the container restarts.
+  Every write is still audited under the name of whoever sent it, so the record is right;
+  the *permission* is just shared. Phase 2 makes the unlock a per-user, per-role decision.
+  Until then, treat "who may sign in" as "who may write".
 - **Notes in Postgres.** The `acks` and `notes` tables exist; the UI still keeps them in the
   browser. Wiring the UI to the database is next, and until then two people do not see each
   other's notes.
