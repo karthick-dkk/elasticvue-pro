@@ -2,11 +2,10 @@
  * Capacity arithmetic: how much a cluster ingests per day, and what that means for the
  * disk it has and the retention it promises.
  *
- * The one judgement call is which daily figure to plan against. A plain 7-day mean is
- * misleading when the window happens to contain a quiet weekend or a collector outage —
- * sizing on it under-provisions. So the mean of the three heaviest days is computed too,
- * and when the 7-day mean falls more than 30% below it, the heavier figure is used and
- * the table says which basis it took.
+ * The daily figure is the mean of the THREE HEAVIEST of the last seven complete days.
+ * A plain seven-day mean under-provisions whenever the window catches a quiet weekend
+ * or a collector outage; taking the busiest three sizes against days that actually
+ * happen. Today is never counted — its index is still being written to.
  */
 
 const GB = 1024 ** 3;
@@ -58,26 +57,29 @@ export function dailyVolume(indices) {
     .sort((a, b) => (a.day < b.day ? 1 : -1));      // newest first
 
   const mean = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
-  const last7 = days.slice(0, 7).map((d) => d.bytes);
-  const top3 = [...days].sort((a, b) => b.bytes - a.bytes).slice(0, 3).map((d) => d.bytes);
 
-  const avg7 = mean(last7);
-  const avgTop3 = mean(top3);
+  // The window: the seven most recent complete days that have an index.
+  const window7 = days.slice(0, 7);
+  // Within that window, the three heaviest days are what the cluster must cope with.
+  const top3 = [...window7].sort((a, b) => b.bytes - a.bytes).slice(0, 3);
 
-  // "30% lower than the top 3" — the recent mean sits below 70% of the heavy-day mean.
-  const usedTop3 = avgTop3 > 0 && avg7 < avgTop3 * 0.7;
-  const perDay = usedTop3 ? avgTop3 : avg7;
+  const perDay = mean(top3.map((d) => d.bytes));
+  const avg7 = mean(window7.map((d) => d.bytes));   // kept for context, not for sizing
 
   return {
     days,
     daysCovered: days.length,
     oldestDay: days.length ? days[days.length - 1].day : null,
     newestDay: days.length ? days[0].day : null,
-    avg7, avgTop3, perDay,
-    sampleDays: last7.length,
-    basis: !days.length ? 'no dated indices'
-      : usedTop3 ? `top-3 day mean (7-day mean is ${((1 - avg7 / avgTop3) * 100).toFixed(0)}% lower)`
-      : `${last7.length}-day mean`,
+    perDay,
+    avg7,
+    windowDays: window7.length,
+    top3Days: top3.map((d) => d.day),
+    sampleDays: window7.length,
+    basis: !days.length
+      ? 'no dated indices'
+      : `mean of the ${top3.length} heaviest of the last ${window7.length} day${window7.length === 1 ? '' : 's'}` +
+        (top3.length ? ` (${top3.map((d) => d.day).join(', ')})` : ''),
   };
 }
 

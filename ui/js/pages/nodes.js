@@ -2,15 +2,32 @@
 
 import { h, mount } from '../lib/dom.js';
 import { bytes, num, pct, dur, toCsv, download } from '../lib/fmt.js';
-import { state, client, activeClusters } from '../core/state.js';
+import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { hbarList } from '../lib/charts.js';
-import { card, pill, statTile, table, empty } from './common.js';
+import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
+import { volumeReport, gb, days as fmtDays, yesNo } from '../core/volume.js';
+import { navigateTo } from '../core/intent.js';
 
 let host = null;
 const cache = new Map();
 
-export function render(el) { host = el; draw(); loadShards(); }
+export function render(el) {
+  host = el;
+  el.classList.add('dense');
+  draw();
+  loadShards();
+  loadIndices();   // the capacity panel is derived from the dated indices
+}
+
+/** Per-day ingest comes from the index list, which this page does not otherwise need. */
+async function loadIndices() {
+  for (const c of activeClusters()) {
+    if (state.indices.get(c.id)) continue;
+    try { await fetchIndices(c.id, '*'); } catch (_) { /* the panel will say it has no data */ }
+  }
+  draw();
+}
 export function onData() { if (host && host.isConnected) draw(); }
 
 async function loadShards() {
@@ -85,16 +102,18 @@ function block(c) {
       statTile('Pending tasks', d.health ? num(d.health.number_of_pending_tasks) : '–',
         d.health ? `max wait ${dur(d.health.task_max_waiting_in_queue_millis)}` : '')),
 
-    h('div.grid.c2', { style: { marginBottom: '14px' } },
-      card('Heap used by node', 'JVM heap percentage', nodes.length
+    h('div', { style: { marginBottom: '10px' } }, capacityCard(c, d)),
+
+    h('div.grid.c2', { style: { marginBottom: '10px' } },
+      collapsible('Heap used by node', 'JVM heap percentage', () => nodes.length
         ? hbarList(nodes.map((n) => ({ key: n.name, label: n.name, value: Number(n['heap.percent']) || 0,
             color: Number(n['heap.percent']) >= 85 ? 'var(--critical)' : Number(n['heap.percent']) >= 75 ? 'var(--warning)' : 'var(--series-1)' })),
             { format: (v) => `${v}%`, topN: 14, labelWidth: 150, showOther: false })
-        : empty('No node data')),
-      card('Disk used by node', 'from _cat/nodes', nodes.length
+        : empty('No node data'), { key: 'nodes-heap' }),
+      collapsible('Disk used by node', 'from _cat/nodes', () => (nodes.length
         ? hbarList(nodes.map((n) => ({ key: n.name, label: n.name, value: Number(n['disk.used']) || 0,
             sub: `of ${bytes(Number(n['disk.total']) || 0)}` })), { format: bytes, topN: 14, labelWidth: 150, showOther: false })
-        : empty('No node data'))),
+        : empty('No node data')), { key: 'nodes-disk' })),
 
     card('Nodes', `${nodes.length} node(s)`,
       table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true }, { label: 'CPU', num: true },
@@ -106,4 +125,60 @@ function block(c) {
           card('Shards not started', `${problem.length} shard(s)`,
             table(['Index', { label: 'Shard', num: true }, 'Type', 'State', 'Reason', 'Node'], shardTrs)))
       : null);
+}
+
+/* --------------------------------- capacity ---------------------------------- */
+
+/**
+ * The sizing figures, on the page where someone is already looking at disks.
+ *
+ * Same arithmetic as the Volume report — the mean of the three heaviest of the last
+ * seven complete days — so the two pages cannot disagree. The full report, and the
+ * repository measurement, stay one click away.
+ */
+function capacityCard(c, d) {
+  const r = volumeReport(c, d, state.indices.get(c.id) || [], null);
+  const v = r.vol;
+
+  const risk = (n) => (n === null ? 'inherit'
+    : n < 7 ? 'var(--critical)' : n < 21 ? 'var(--warning)' : 'inherit');
+
+  const rows = [
+    ['Per day indices size', gb(r.perDayGB), v.basis],
+    ['Per day + 30% buffer', gb(r.bufferedGB), 'the figure sizing is done against'],
+    ['Live retention policy', r.liveRetention ? r.liveRetention.label : 'not set',
+      r.liveRetention ? null : 'set liveRetention on the cluster to size against it'],
+    ['Snapshot retention policy', r.snapshotRetention ? r.snapshotRetention.label : 'not set',
+      r.snapshotRetention ? null : 'falls back to the SLM policy when set'],
+    ['Live storage', `${gb(r.liveTotalGB)}`,
+      r.livePct === null ? null : `${r.liveUsedGB.toFixed(0)} GB used · ${r.livePct.toFixed(1)}%`],
+    ['Free space lasts', fmtDays(r.liveSufficientDays), 'at the current daily rate'],
+    ['Required for the live policy', r.requiredLiveGB === null ? '–' : gb(r.requiredLiveGB),
+      r.liveRetention ? `storage is ${yesNo(r.liveRetentionMet)}` : null],
+    ['Required for 30 days', gb(r.required30GB)],
+    ['Required for 90 days', gb(r.required90GB)],
+    ['Live logs held', v.daysCovered ? `${v.daysCovered} days` : '–',
+      v.oldestDay ? `${v.oldestDay} → ${v.newestDay}` : 'no dated indices'],
+    ['Snapshots held', r.snapshotsDays ? `${r.snapshotsDays} days` : '–',
+      r.snapshotsFrom ? `${r.snapshotsFrom} → ${r.snapshotsTo}` : 'no snapshots'],
+  ];
+
+  const body = h('div', { style: { display: 'grid', gap: '8px' } },
+    h('div.grid.c4',
+      statTile('Per day', gb(r.perDayGB), v.daysCovered ? `top 3 of ${v.windowDays} days` : 'no dated indices'),
+      statTile('+30% buffer', gb(r.bufferedGB), 'planning figure'),
+      statTile('Free space lasts',
+        h('span', { style: { color: risk(r.liveSufficientDays) } }, fmtDays(r.liveSufficientDays)),
+        `${gb(r.liveFreeGB)} free`),
+      statTile('Within live policy',
+        r.liveRetentionMet === null ? '–' : yesNo(r.liveRetentionMet),
+        r.liveRetention ? `${r.liveRetention.label} needs ${gb(r.requiredLiveGB)}` : 'no policy set')),
+    h('div.tbl-wrap', h('table.tbl', h('tbody',
+      ...rows.map(([k, val, note]) => h('tr',
+        h('td', { style: { width: '34%' } }, k),
+        h('td', { style: { fontWeight: 620, fontVariantNumeric: 'tabular-nums', width: '22%' } }, val),
+        h('td.muted', { style: { fontSize: '11px' } }, note || '')))))));
+
+  return card('Capacity', 'per-day ingest, retention and what the storage must hold', body,
+    [h('button.btn.sm', { onclick: () => navigateTo('volume') }, 'Full volume report')]);
 }

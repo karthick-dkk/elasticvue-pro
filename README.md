@@ -169,13 +169,13 @@ listeners, unsigned binaries (verify `SHA256SUMS.txt` or build from source).
 ## Volume report
 
 Sizing a cluster needs one number — how much it ingests per day — and that number is easy to
-get wrong. A plain 7-day mean is misleading when the window happens to contain a quiet weekend
-or a collector outage, and sizing on it under-provisions.
+get wrong. A plain seven-day mean under-provisions whenever the window catches a quiet weekend
+or a collector outage.
 
-So the page computes both the 7-day mean and the mean of the three heaviest days, and **when
-the 7-day mean falls more than 30% below the top-3 mean it plans against the heavier figure**,
-saying which basis it took. Today's index is excluded throughout — it is still being written
-to, and counting it drags every average down.
+So the per-day figure is the **mean of the three heaviest of the last seven complete days**.
+Taking the busiest three sizes against days that actually happen, and the report names the
+days it used. Today's index is excluded throughout — it is still being written to, and
+counting it drags every average down.
 
 From that it derives, per cluster: the daily figure and a +30% planning buffer, live storage
 and how long the free space lasts at the current rate, what the stated retention actually
@@ -187,8 +187,13 @@ Repository size is not a number Elasticsearch reports cheaply, so it stays behin
 *Measure* button — one `_status` call per snapshot — and reads "not measured" until asked.
 Rows that cannot be known say so rather than showing a confident zero.
 
-Export is CSV, either layout: one row per parameter with a column per cluster (the report as
-it appears on screen), or one row per cluster for sorting and charting in a spreadsheet.
+Export is CSV, one row per cluster with every parameter as a column — the shape a spreadsheet
+wants for sorting and charting. The on-screen layout (one row per parameter, a column per
+cluster) is available too.
+
+The headline figures — per-day size, both retention policies, what the storage must hold and
+how long the free space lasts — also appear on the **Nodes & shards** page, computed by the
+same code so the two cannot disagree.
 
 ## Downloads
 

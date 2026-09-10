@@ -61,8 +61,14 @@ function draw() {
         `updated ${ago(state.lastRefresh)} · per-day volume from the dated indices, today excluded`),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
         h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'),
-        h('button.btn.sm', { onclick: () => exportWide(reports) }, 'Export CSV (one row per cluster)'),
-        h('button.btn.sm.primary', { onclick: () => exportTall(reports) }, 'Export CSV (report layout)'))),
+        h('button.btn.sm.primary', {
+          title: 'One row per cluster, every parameter as a column — the shape a spreadsheet wants',
+          onclick: () => exportWide(reports),
+        }, 'Export CSV'),
+        h('button.btn.sm', {
+          title: 'One row per parameter, a column per cluster — the report as it reads on screen',
+          onclick: () => exportTall(reports),
+        }, 'Export as report layout'))),
 
     fleetTable(reports),
 
@@ -137,7 +143,7 @@ function clusterCard(r) {
                             : 'No repository registered on this cluster',
         onclick: () => measureRepos(c),
       }, measuring ? 'Measuring…' : r.repoGB === null ? 'Measure repo size' : 'Re-measure'),
-      h('button.btn.sm', { onclick: () => exportTall([r]) }, 'Export this cluster'),
+      h('button.btn.sm', { onclick: () => exportWide([r]) }, 'Export this cluster'),
       h('button.btn.sm.ghost', { onclick: () => navigateTo('indices') }, 'Indices'),
     ]);
 }
@@ -192,19 +198,24 @@ function exportTall(reports) {
     return out;
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  download(`volume-resource-report-${stamp}.csv`, toCsv(rows), 'text/csv');
+  download(`volume-resource-report-by-parameter-${stamp}.csv`, toCsv(rows), 'text/csv');
 }
 
-/** One row per cluster — the shape a spreadsheet wants for sorting and charting. */
+/**
+ * One row per cluster, one column per parameter — sortable and chartable in a
+ * spreadsheet, and the default export.
+ */
 function exportWide(reports) {
   const rows = reports.map((r) => {
     const o = {};
     for (const [label, value] of reportRows(r)) o[label] = String(value ?? '');
-    o['Per day volume basis'] = r.vol.basis;
-    o['Days of data sampled'] = r.vol.daysCovered;
+    // How the daily figure was arrived at, so a number in a spreadsheet can be traced.
+    o['Per day basis'] = r.vol.basis;
+    o['Days sampled'] = r.vol.windowDays;
+    o['Days of data held'] = r.vol.daysCovered;
     o['Generated at'] = new Date().toISOString();
     return o;
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  download(`volume-resource-report-wide-${stamp}.csv`, toCsv(rows), 'text/csv');
+  download(`volume-resource-report-${stamp}.csv`, toCsv(rows), 'text/csv');
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+- Per-day ingest is now the **mean of the three heaviest of the last seven complete days**,
+  replacing the earlier "seven-day mean, falling back to the top three when it is 30% lower".
+  Simpler, and it sizes against days that actually happen; the report names the days it used.
+- The volume report's default export is one row per cluster with every parameter as a column
+  — the shape a spreadsheet wants. The on-screen layout is still available as a second button.
+- **Nodes & shards** carries the capacity figures too: per-day indices size, both retention
+  policies, live storage and how long the free space lasts, what the stated policy requires
+  and whether it is met, the 30/90-day requirements, and the windows of live and snapshot data
+  held. Same code as the volume report, so the two pages cannot disagree.
+
 ## 2.2.1 — 2026-09-09
 
 First tagged release of this work. 2.2.0 was built and committed but never tagged, and its
