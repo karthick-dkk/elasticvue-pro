@@ -15,6 +15,7 @@ import { bridge } from '../core/transport.js';
 import { rememberConfigPath, pickFilePath } from '../core/platform.js';
 import { bus } from '../core/state.js';
 import { modal, confirmDialog, field, text, select, val, checked } from './modal.js';
+import { parseRetention } from '../core/volume.js';
 
 let masterInMemory = null;      // master password for this session only (needed to seal new secrets)
 
@@ -175,6 +176,10 @@ export async function editCluster(existing = null) {
       field('Enabled', select('ce-enabled', c.enabled === false ? 'no' : 'yes', [['yes', 'yes'], ['no', 'no (kept in file, not polled)']]))),
     h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' } },
       field('Tags', text('ce-tags', (c.tags || []).join(', '), { placeholder: 'prod, onprem' })),
+      field('Live retention', text('ce-live', c.liveRetention || '', { placeholder: '30d' }),
+        'How long logs stay on the cluster. Used by the volume report. 30d, 3M, 90 days, 1y.'),
+      field('Snapshot retention', text('ce-snapret', c.snapshotRetention || '', { placeholder: '6M' }),
+        'How long snapshots are kept in the repository. Falls back to the SLM policy.'),
       field('Note', text('ce-note', c.note || ''))),
     h('details.disc', { open: cred === 'own' },
       h('summary', 'Credential for this cluster only (optional)'),
@@ -205,6 +210,12 @@ export async function editCluster(existing = null) {
           if (val('ce-enabled') === 'no') next.enabled = false; else delete next.enabled;
           const tags = val('ce-tags').split(',').map((t) => t.trim()).filter(Boolean); if (tags.length) next.tags = tags; else delete next.tags;
           const note = val('ce-note').trim(); if (note) next.note = note; else delete next.note;
+          for (const [id, key] of [['ce-live', 'liveRetention'], ['ce-snapret', 'snapshotRetention']]) {
+            const v = val(id).trim();
+            if (!v) { delete next[key]; continue; }
+            if (!parseRetention(v)) return ctx.msg(`${key}: use a form like 30d, 90 days, 3M, 6 months or 1y.`);
+            next[key] = v;
+          }
           const cu = val('ce-cu').trim(), cp = val('ce-cp');
           if (cu) {
             next.username = cu;

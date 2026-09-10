@@ -63,6 +63,11 @@ clusters:
   # reached through the Windows jump host — the name is resolved ON the jump host
   - name: acme-onprem
     url: https://172.23.40.118:9200
+    # Capacity planning, used by the Volume report page. Accepts 30d, 90 days, 3M,
+    # 6 months, 1y or a bare number of days. Omit them and the report says "not set"
+    # rather than assuming a number.
+    liveRetention: 30d
+    snapshotRetention: 6M
     via: jumpwin
     tags: [onprem, acme]
 

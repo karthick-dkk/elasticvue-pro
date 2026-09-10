@@ -28,6 +28,10 @@ export const DEFAULTS = {
   timeField: '@timestamp',
   diskWarnPercent: 80,
   diskCritPercent: 90,
+  // Capacity planning defaults, overridable per cluster. Empty means "not stated" —
+  // the volume report then says so rather than assuming a number.
+  liveRetention: '',
+  snapshotRetention: '',
   snapshotStaleHours: 26,
   maxLogRows: 200,
   // Certificate policy: auto (OS store, else trust-on-first-use with a prompt), system (strict), insecure.
@@ -135,6 +139,10 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       indexNameRegex: c.indexNameRegex || defaults.indexNameRegex,
       timeField: c.timeField || defaults.timeField,
       snapshotRepos: c.snapshotRepos || null,
+      // Capacity planning: how long logs are meant to stay on the cluster and in the
+      // repository. "30d", "90 days", "3M", "6 months", "1y" or a bare number of days.
+      liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
+      snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
       enabled: c.enabled !== false,
     };
   });

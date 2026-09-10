@@ -146,7 +146,7 @@ if (configPath) {
   console.log('render-check: no --config given — pages will draw their "no cluster" state only');
 }
 
-const PAGES = ['overview', 'alerts', 'indices', 'console', 'logs', 'snapshots', 'nodes', 'settings'];
+const PAGES = ['overview', 'alerts', 'indices', 'console', 'logs', 'snapshots', 'nodes', 'volume', 'settings'];
 const view = window.document.createElement('div');
 window.document.body.append(view);
 

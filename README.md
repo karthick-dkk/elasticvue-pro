@@ -31,7 +31,8 @@ Browser tools cannot do three things an operator behind a jump host needs:
 ## Features
 
 - **Clusters** — health, nodes, disk usage, ILM/SLM status, repositories, last snapshot; search by name, URL, tag, jump host, version or repository, and sort by health, disk, shards, version, last snapshot or open alerts
-- **Alerts** — every problem across the fleet on one page, filtered by level and cluster, each row linking to the page that answers it; the count sits on the nav tab
+- **Alerts** — every problem across the fleet on one page, filtered by level and cluster, each row linking to the page that answers it; the count sits on the nav tab. Alerts can be **acknowledged** and **annotated** — who saw it, what was found, which ticket — kept against the problem rather than its current value, so a note written at 86% disk is still there at 91%
+- **Volume report** — per-day ingest, what retention costs, and whether each cluster's storage matches the policy it promises; exportable for the whole fleet as CSV
 - **Indices** — daily `logstash-<client>-YYYY.MM.DD` indices with a client / date picker, sizes, health; open, close, delete, move a shard between nodes, change replicas and run maintenance, one index or a ticked selection at a time
 - **REST console** — every method (GET/HEAD/POST/PUT/PATCH/DELETE), request bar, **Query | Results** side by side, history with favourites, and ~60 grouped ready-made requests (ILM policies, disk watermarks, replica and shard counts, snapshots, diagnostics)
 - **Live logs** — tail a day's index with a time histogram
@@ -80,6 +81,8 @@ Created and edited in the app (Config page), or hand-written. JSON is what the a
 | `jump_hosts.<id>` | SSH host, port, user, `keyFile` (OpenSSH format; passphrase is asked in the app, never stored) |
 | `clusters[].via` | route through that jump host; the hostname is resolved **on the jump host** |
 | `clusters[].tls` / `defaults.tls` | `auto` (OS store, else ask & pin — default), `system` (strict), `insecure` (lab only) |
+| `clusters[].liveRetention` | how long logs stay on the cluster — `30d`, `90 days`, `3M`, `6 months`, `1y`. Drives the Volume report; omit it and the report says "not set" rather than assuming |
+| `clusters[].snapshotRetention` | how long snapshots are kept in the repository. Falls back to the SLM policy's `expire_after` |
 | `defaults.readOnly` | `true` (default) — the core sends only GET/HEAD and `_search`-family POSTs. A write still gets out if you tick *Allow writes* for the session *and* it is an action you took by hand; `false` allows writes from anywhere |
 
 Command line: `elasticvue-pro-<version>.exe --config C:\path\config_cluster.json` (or `ELASTICVUE_CONFIG`) pre-provisions the file, handy on a jump server.
@@ -162,6 +165,30 @@ the session is unlocked.
 See [SECURITY.md](SECURITY.md). Short version: read-only towards Elasticsearch, credentials
 never in plain text on disk, TLS and SSH host keys pinned on explicit consent, loopback-only
 listeners, unsigned binaries (verify `SHA256SUMS.txt` or build from source).
+
+## Volume report
+
+Sizing a cluster needs one number — how much it ingests per day — and that number is easy to
+get wrong. A plain 7-day mean is misleading when the window happens to contain a quiet weekend
+or a collector outage, and sizing on it under-provisions.
+
+So the page computes both the 7-day mean and the mean of the three heaviest days, and **when
+the 7-day mean falls more than 30% below the top-3 mean it plans against the heavier figure**,
+saying which basis it took. Today's index is excluded throughout — it is still being written
+to, and counting it drags every average down.
+
+From that it derives, per cluster: the daily figure and a +30% planning buffer, live storage
+and how long the free space lasts at the current rate, what the stated retention actually
+costs and whether the disk can hold it, the 30/90/365-day requirements, the window of days
+actually present on the cluster and in the repositories, and the same for the snapshot
+repository once its size has been measured.
+
+Repository size is not a number Elasticsearch reports cheaply, so it stays behind a
+*Measure* button — one `_status` call per snapshot — and reads "not measured" until asked.
+Rows that cannot be known say so rather than showing a confident zero.
+
+Export is CSV, either layout: one row per parameter with a column per cluster (the report as
+it appears on screen), or one row per cluster for sorting and charting in a spreadsheet.
 
 ## Downloads
 

@@ -20,6 +20,7 @@ const saveExample = () => saveTextAs('clusters.yaml', EXAMPLE_YAML);
 
 import * as pOverview from './pages/overview.js';
 import * as pAlerts from './pages/alerts.js';
+import * as pVolume from './pages/volume.js';
 import * as pIndices from './pages/indices.js';
 import * as pLogs from './pages/logs.js';
 import * as pSnapshots from './pages/snapshots.js';
@@ -35,7 +36,8 @@ const PAGES = [
   { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, key: '5' },
   { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  key: '6' },
   { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  key: '7' },
-  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  key: '8' },
+  { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  key: '8' },
+  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  key: '9' },
 ];
 
 const root = document.getElementById('root');
