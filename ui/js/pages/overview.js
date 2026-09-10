@@ -13,7 +13,8 @@ const expanded = new Set();
 
 /** Sort keys, each pulling one comparable value out of a {c, d, cl} row. */
 const SORTS = {
-  name:     { label: 'Name',          get: (r) => r.c.name.toLowerCase() },
+  name:     { label: 'Cluster name',  get: (r) => r.c.name.toLowerCase() },
+  size:     { label: 'Cluster size',  get: (r) => clusterSize(r) },
   health:   { label: 'Health',        get: (r) => healthRank(r) },
   disk:     { label: 'Disk used %',   get: (r) => (r.d.disk && isFinite(r.d.disk.percent) ? r.d.disk.percent : -1) },
   diskFree: { label: 'Disk free',     get: (r) => (r.d.disk ? (r.d.disk.total || 0) - (r.d.disk.used || 0) : -1) },
@@ -22,9 +23,24 @@ const SORTS = {
   unassign: { label: 'Unassigned',    get: (r) => (r.d.health && r.d.health.unassigned_shards) || 0 },
   version:  { label: 'Version',       get: (r) => versionKey(r) },
   snapshot: { label: 'Last snapshot', get: (r) => { const s = lastSnapshotOf(r.d); return s ? s.start : 0; } },
-  alerts:   { label: 'Alerts',        get: (r) => alertsByCluster().get(r.c.id) || 0 },
+  alerts:   { label: 'Open alerts',   get: (r) => alertsByCluster().get(r.c.id) || 0 },
 };
 
+/**
+ * How much data the cluster actually holds — the store size of its indices, which is
+ * what "size" means to an operator. Disk usage is a different question (it counts
+ * everything on the filesystem) and has its own sort.
+ */
+function clusterSize(r) {
+  const d = r.d;
+  if (d.disk && d.disk.indicesBytes) return d.disk.indicesBytes;
+  // Before allocation data arrives, fall back to the index list if that page has run.
+  const idx = state.indices.get(r.c.id);
+  if (idx && idx.length) return idx.reduce((s, x) => s + (x.size || 0), 0);
+  return -1;
+}
+
+// Sorted by cluster name, ascending, until the operator says otherwise.
 const ui = { text: '', sort: 'name', dir: 1, only: 'all' };
 
 /** offline worst, then red > yellow > green — so "sort by health" surfaces trouble. */
@@ -166,7 +182,7 @@ function tiles(rows) {
 }
 
 function summaryCard(rows, all) {
-  const headers = ['Cluster', 'Version', 'Health', 'Nodes', 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', ''];
+  const headers = ['Cluster', 'Version', 'Health', 'Nodes', { label: 'Size', num: true }, 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', ''];
   const byCluster = alertsByCluster();
   const trs = [];
   rows.forEach((r) => {
@@ -185,6 +201,8 @@ function summaryCard(rows, all) {
       h('td.mono', (d.info && d.info.version && d.info.version.number) || '–'),
       h('td', pill(stateLbl, d.reachable ? healthClass(d.health && d.health.status) : 'red')),
       h('td.num', d.health ? `${d.health.number_of_nodes} (${d.health.number_of_data_nodes} data)` : '–'),
+      h('td.num', { title: 'Store size of the indices on this cluster' },
+        clusterSize({ c, d }) >= 0 ? bytes(clusterSize({ c, d })) : h('span.muted', '–')),
       h('td', diskCell(d.disk)),
       h('td', d.ilm ? pill(d.ilm.operation_mode, d.ilm.operation_mode === 'RUNNING' ? (d.ilmErrorCount ? 'yellow' : 'green') : 'yellow') : h('span.muted', '–'),
         d.ilmErrorCount ? h('div.muted', { style: { fontSize: '11px' } }, `${d.ilmErrorCount} in error`) : null),
@@ -339,6 +357,7 @@ function exportSummary(rows) {
       cluster: c.name, url: c.url, version: (d.info && d.info.version && d.info.version.number) || '',
       health: (d.health && d.health.status) || 'offline',
       nodes: (d.health && d.health.number_of_nodes) || 0,
+      cluster_size_bytes: Math.max(0, clusterSize({ c, d })),
       disk_used_bytes: (d.disk && d.disk.used) || 0,
       disk_total_bytes: (d.disk && d.disk.total) || 0,
       disk_percent: d.disk && isFinite(d.disk.percent) ? d.disk.percent.toFixed(2) : '',

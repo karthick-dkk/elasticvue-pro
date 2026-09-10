@@ -3,7 +3,8 @@
 import { h, mount, $ } from '../lib/dom.js';
 import { ago, dt, toCsv, download, num } from '../lib/fmt.js';
 import { state, bus, alerts, clusters, activeClusters, client, fetchOverview, refreshAll } from '../core/state.js';
-import { card, pill, statTile, table, empty, connectionBanner } from './common.js';
+import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
+import { hbarList, legend } from '../lib/charts.js';
 import { navigateTo } from '../core/intent.js';
 import { rowMenu, ICON } from '../ui/menu.js';
 import { confirmDialog } from '../ui/modal.js';
@@ -13,7 +14,28 @@ import {
 } from '../core/acks.js';
 
 let host = null;
-const ui = { level: 'all', cluster: 'all', text: '', show: 'open', expanded: new Set() };
+const ui = { level: 'all', cluster: 'all', text: '', show: 'open', view: 'table', expanded: new Set() };
+
+/**
+ * What kind of problem this is, taken from the alert key rather than its wording — the
+ * title carries live numbers, the key does not.
+ */
+const KIND_LABEL = {
+  unreachable: 'Unreachable',
+  health: 'Cluster health',
+  disk: 'Disk usage',
+  ilm: 'ILM errors',
+  'slm-mode': 'SLM stopped',
+  'slm-fail': 'SLM run failed',
+  'slm-stale': 'Snapshot overdue',
+};
+
+function kindOf(a) {
+  const rest = String(a.key || '').split(':').slice(1).join(':');
+  const base = rest.split(':')[0] || 'other';
+  const full = rest.startsWith('slm-fail') ? 'slm-fail' : rest.startsWith('slm-stale') ? 'slm-stale' : base;
+  return KIND_LABEL[full] || full;
+}
 
 export function render(el) {
   host = el;
@@ -101,17 +123,32 @@ function draw() {
       })()),
       h('label.field', 'Search', h('input', { type: 'search', placeholder: 'title, detail or note…', value: ui.text,
         style: { minWidth: '220px' }, oninput: (e) => { ui.text = e.target.value; draw(); } })),
+      h('label.field', 'View', (() => {
+        const sel = h('select', { onchange: (e) => { ui.view = e.target.value; draw(); } },
+          h('option', { value: 'table' }, 'Table'),
+          h('option', { value: 'graph' }, 'Graph'),
+          h('option', { value: 'both' }, 'Graph + table'));
+        sel.value = ui.view; return sel;
+      })()),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'flex-end' } },
         h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
         h('button.btn.sm', { onclick: () => { ui.level = 'all'; ui.cluster = 'all'; ui.text = ''; ui.show = 'open'; draw(); } }, 'Clear'),
         h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'))),
 
-    h('div', { style: { marginTop: '14px' } },
-      all.length
-        ? card(`Alerts (${rows.length}${rows.length !== all.length ? ` of ${all.length}` : ''})`,
+    ui.view !== 'table' && all.length
+      ? h('div', { style: { marginTop: '10px' } }, graphView(rows, all))
+      : null,
+
+    all.length && ui.view !== 'graph'
+      ? h('div', { style: { marginTop: '10px' } },
+          card(`Alerts (${rows.length}${rows.length !== all.length ? ` of ${all.length}` : ''})`,
             `${crit.length} critical · ${warn.length} warning · ${acked.length} acknowledged`,
             alertTable(rows),
-            [h('button.btn.sm', { disabled: !all.length, onclick: () => exportAlerts(all) }, 'Export CSV')])
+            [h('button.btn.sm', { onclick: () => exportAlerts(all) }, 'Export CSV')]))
+      : null,
+
+    h('div', { style: { marginTop: '10px' } },
+      all.length ? null
         : card('Alerts', 'nothing to report',
             h('div', { style: { padding: '26px 0', textAlign: 'center' } },
               h('div', { style: { fontSize: '26px', marginBottom: '6px' } }, '✓'),
@@ -124,6 +161,66 @@ function draw() {
       ...activeClusters()
         .filter((c) => { const d = state.data.get(c.id); return d && !d.reachable && d.updatedAt; })
         .map((c) => connectionBanner(c, () => fetchOverview(c.id)))));
+}
+
+/* ---------------------------------- graph view -------------------------------- */
+
+/**
+ * Alerts as bars, so a fleet is read at a glance instead of scrolled.
+ *
+ * Two cuts: one bar per cluster — which client is in trouble — and one per kind of
+ * problem — whether it is the same fault everywhere. Both respect the filters above,
+ * and a bar is clickable: it narrows the page to that cluster.
+ */
+function graphView(rows, all) {
+  const worst = (list) => (list.some((a) => a.level === 'critical') ? 'var(--critical)' : 'var(--warning)');
+
+  const byCluster = new Map();
+  for (const a of rows) {
+    const name = a.cluster ? a.cluster.name : 'unknown';
+    if (!byCluster.has(name)) byCluster.set(name, { id: a.cluster && a.cluster.id, list: [] });
+    byCluster.get(name).list.push(a);
+  }
+
+  const clusterItems = [...byCluster.entries()].map(([name, v]) => {
+    const crit = v.list.filter((a) => a.level === 'critical').length;
+    const ackd = v.list.filter((a) => isAcked(a.key)).length;
+    return {
+      key: v.id || name, label: name, value: v.list.length, color: worst(v.list),
+      sub: [crit ? `${crit} critical` : null,
+            v.list.length - crit ? `${v.list.length - crit} warning` : null,
+            ackd ? `${ackd} acknowledged` : null].filter(Boolean).join(' · '),
+    };
+  });
+
+  const byKind = new Map();
+  for (const a of rows) {
+    const k = kindOf(a);
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k).push(a);
+  }
+  const kindItems = [...byKind.entries()].map(([label, list]) => ({
+    key: label, label, value: list.length, color: worst(list),
+    sub: [...new Set(list.map((a) => (a.cluster ? a.cluster.name : '?')))].slice(0, 4).join(', '),
+  }));
+
+  const scale = legend([
+    { label: 'has a critical alert', color: 'var(--critical)' },
+    { label: 'warnings only', color: 'var(--warning)' },
+  ]);
+
+  return h('div.grid.c2',
+    card('Alerts by cluster', `${clusterItems.length} cluster${clusterItems.length === 1 ? '' : 's'} · click a bar to filter`,
+      clusterItems.length
+        ? h('div', hbarList(clusterItems, {
+            format: (v) => String(v), topN: 24, labelWidth: 170, showOther: false,
+            onSelect: (r) => { ui.cluster = ui.cluster === r.key ? 'all' : r.key; draw(); },
+          }), scale)
+        : empty('Nothing matches the filter')),
+    card('Alerts by kind', 'the same fault across the fleet, or different ones',
+      kindItems.length
+        ? hbarList(kindItems, { format: (v) => String(v), topN: 16, labelWidth: 170, showOther: false })
+        : empty('Nothing matches the filter')));
 }
 
 /** Ask who is acknowledging, once per machine. */

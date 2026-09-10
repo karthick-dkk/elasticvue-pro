@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- **Clusters** sorts by cluster size — the store size of its indices, shown as its own
+  column — alongside the existing keys, and starts sorted by cluster name ascending.
+  Cluster size is in the CSV export too.
+- **Alerts** has a graph view: one bar per cluster, so a fleet is read at a glance instead
+  of scrolled, and one per kind of problem, which says whether it is the same fault
+  everywhere or different ones. Bars are coloured by the worst level present, clicking one
+  filters the page to that cluster, and both cuts respect the filters above. Table, Graph
+  and Graph + table are selectable.
 - Per-day ingest is now the **mean of the three heaviest of the last seven complete days**,
   replacing the earlier "seven-day mean, falling back to the top three when it is 30% lower".
   Simpler, and it sizes against days that actually happen; the report names the days it used.
