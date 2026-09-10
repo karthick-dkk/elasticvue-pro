@@ -234,6 +234,13 @@ The core counts every request the moment it goes out; a request the read-only gu
 never reached a socket and is not counted. It exists so "are we stressing Elasticsearch" is
 a number rather than a worry.
 
+For reference, measured with `tools/request-meter.mjs`: **one full refresh costs a cluster
+14 requests** — the `_cat` and `_cluster` GETs behind the Clusters, Alerts, Nodes, Snapshots
+and Volume pages, plus one snapshot listing per repository — and opening the Indices page
+adds one more. All of them are cheap metadata reads. Auto-refresh is **off by default**; if
+you turn it on at the default 30 s that is about 28 requests a minute per cluster. Re-run
+the meter after adding a fetch to any page, so the number stays true.
+
 ## Disk balance
 
 With more than one data node, the Nodes page says whether the data is spread evenly and —
