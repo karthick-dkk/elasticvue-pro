@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+- **Hosted deployment (phase 1).** `espro-bridge` gains a hosted mode: with `ESPRO_BIND` set
+  to a non-loopback address, every request must carry `X-Auth-User`, the identity a trusted
+  reverse proxy sets after authenticating; without it the request is refused. Every write
+  is audited as a JSON line on stdout — user, message type, cluster, method, path, outcome —
+  and reads are not. `deploy/` holds a compose stack: nginx (TLS, HTTP-basic auth gate,
+  sole published port), the core on an internal network as an unprivileged user, and
+  Postgres with the schema for users, acknowledgements, notes and audit ready for phase 2.
+  `tools/hosted-check.sh` proves the contract against the real binary and runs in CI. The
+  plan, phases and open decisions are in `docs/HOSTED-DEPLOYMENT-PLAN.md`.
 - **Deleting an index checks the snapshots first.** Every repository is listed and only a
   snapshot in state SUCCESS with no failure on that index counts as a copy — PARTIAL and
   IN_PROGRESS do not. The confirmation shows the verdict per index with the newest good

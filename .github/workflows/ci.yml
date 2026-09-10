@@ -50,6 +50,13 @@ jobs:
       # data in them, or every page just draws "No cluster selected" and proves nothing.
       - name: build the dev bridge
         run: cargo build -p espro-core --features bridge --bin espro-bridge
+
+      # Hosted mode is a security boundary: a request without the proxy's identity header
+      # must be refused, and every write must be audited under the user's name. Checked
+      # black-box against the real binary.
+      - name: hosted-mode contract
+        run: tools/hosted-check.sh
+
       - name: render every page against a mock cluster
         run: |
           npm install --no-save --no-fund --no-audit jsdom

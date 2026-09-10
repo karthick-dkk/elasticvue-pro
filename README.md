@@ -278,6 +278,20 @@ per index, never per field value, so a value's share of the day's documents is a
 that day's index size. The document counts beside them are exact, and the distinction is
 stated on screen.
 
+## Hosted on a server
+
+The same core and UI can run on a Linux server and be used from a browser — three
+containers, one exposed port, an authentication gate in front. See
+[deploy/README.md](deploy/README.md) for the install and
+[docs/HOSTED-DEPLOYMENT-PLAN.md](docs/HOSTED-DEPLOYMENT-PLAN.md) for the plan, the phases and
+the decisions behind them.
+
+The one thing to know before anything else: the core's HTTP mode trusts an identity header
+that the reverse proxy sets *after* authenticating, so the core must never be reachable
+except through that proxy. The compose file publishes only nginx on 443; do not add a port
+for the core. Every write is audited as a JSON line on stdout with the user's name — the
+record that answers "who deleted that index".
+
 ## Downloads
 
 Every [release](../../releases) carries a package per platform, built by CI on that platform.
