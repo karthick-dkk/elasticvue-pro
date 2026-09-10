@@ -95,44 +95,71 @@ button, input, select, textarea { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
 
 /* ---------------------------------- shell --------------------------------- */
-.app { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
-.side {
-  background: var(--surface-1); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
-}
-.brand { display: flex; align-items: center; gap: 9px; padding: 14px 14px 10px; }
-.brand img { width: 24px; height: 24px; border-radius: 6px; }
-.brand b { font-size: 14px; letter-spacing: -.01em; }
-.brand span { font-size: 10.5px; color: var(--text-muted); display: block; font-weight: 400; }
+/* Navigation sits across the top: a wide table gets the whole window, and the
+   nine pages read as one row of tabs instead of a column competing for width. */
+.app { display: flex; flex-direction: column; min-height: 100vh; }
 
-.nav { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.nav button {
-  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
-  padding: 8px 10px; border: 0; background: transparent; border-radius: var(--radius-sm);
-  cursor: pointer; color: var(--text-secondary); font-size: 13px;
+.header {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--surface-0) 92%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
 }
-.nav button:hover { background: var(--surface-2); color: var(--text-primary); }
-.nav button[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.nav .ico { width: 16px; text-align: center; opacity: .9; }
-.nav .kbd {
-  margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; line-height: 15px; opacity: .8;
-}
-.nav-sep { height: 1px; background: var(--border); margin: 8px 10px; }
-
-.side-foot { margin-top: auto; padding: 10px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
-.side-foot .row { display: flex; justify-content: space-between; gap: 6px; }
-
-.main { min-width: 0; display: flex; flex-direction: column; }
 
 .topbar {
-  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px;
-  padding: 10px 18px; background: color-mix(in srgb, var(--surface-0) 88%, transparent);
-  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); min-height: 52px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; min-height: 46px;
 }
-.topbar h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.topbar h1 { font-size: 14px; margin: 0; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
 .topbar .spacer { flex: 1; }
-.page { padding: 18px; max-width: 1600px; width: 100%; }
+
+.brand { display: flex; align-items: center; gap: 8px; padding: 0 8px 0 0; margin-right: 2px;
+         border-right: 1px solid var(--border); }
+.brand img { width: 22px; height: 22px; border-radius: 6px; }
+.brand b { font-size: 13.5px; letter-spacing: -.01em; white-space: nowrap; }
+.brand span { font-size: 10px; color: var(--text-muted); display: block; font-weight: 400; max-width: 130px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- horizontal tabs --- */
+.nav {
+  display: flex; align-items: stretch; gap: 2px; padding: 0 12px;
+  overflow-x: auto; scrollbar-width: thin;
+}
+.nav button {
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  padding: 7px 11px 8px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 12.5px;
+  font-family: inherit; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.nav button:hover { background: var(--surface-2); color: var(--text-primary); }
+.nav button[aria-current="page"] {
+  color: var(--accent); font-weight: 640; border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+.nav .ico { opacity: .9; }
+.nav .kbd {
+  font-family: var(--mono); font-size: 9.5px; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; line-height: 15px; opacity: .65;
+}
+.nav button[aria-current="page"] .kbd { opacity: .9; }
+/* A vertical rule before Config, where the divider used to be. */
+.nav-sep { width: 1px; background: var(--border); margin: 8px 7px; flex: none; }
+
+/* Status that used to live in the sidebar foot, now a strip under the tabs. */
+.status-strip {
+  display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center;
+  padding: 5px 16px; border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted); background: var(--surface-1);
+}
+.status-strip .row { display: inline-flex; gap: 5px; align-items: center; }
+.status-strip .row b { color: var(--text-secondary); font-weight: 600; }
+
+.main { min-width: 0; display: flex; flex-direction: column; flex: 1; }
+.page { padding: 16px; max-width: 1900px; width: 100%; }
+
+@media (max-width: 900px) {
+  .brand span { display: none; }
+  .topbar { flex-wrap: wrap; }
+}
 
 /* --------------------------------- controls -------------------------------- */
 .btn {
@@ -347,3 +374,38 @@ body.popup { width: 330px; background: var(--surface-1); }
 }
 .note b { color: var(--text-primary); font-weight: 600; }
 .note .when { color: var(--text-muted); font-size: 10.5px; margin-left: 5px; }
+
+/* ------------------------------ spreadsheet grid --------------------------- */
+/* The volume report read as a spreadsheet: one row per cluster, every parameter a
+   column, the cluster column and the header pinned while the rest scrolls. */
+.sheet-wrap { overflow: auto; max-height: 74vh; border: 1px solid var(--border); border-radius: var(--radius); }
+.sheet { border-collapse: separate; border-spacing: 0; font-size: 12px; width: max-content; min-width: 100%; }
+.sheet th, .sheet td {
+  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  padding: 5px 9px; white-space: nowrap;
+}
+.sheet thead th {
+  position: sticky; top: 0; z-index: 3; background: var(--surface-2);
+  font-weight: 620; font-size: 11px; color: var(--text-secondary);
+  text-align: left; vertical-align: bottom; border-bottom: 2px solid var(--border-strong);
+}
+.sheet thead th .unit { display: block; font-weight: 400; color: var(--text-muted); font-size: 10px; }
+.sheet tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-1) 55%, transparent); }
+.sheet tbody tr:hover td { background: var(--accent-soft); }
+/* first column pinned */
+.sheet th.stick, .sheet td.stick {
+  position: sticky; left: 0; z-index: 2; background: var(--surface-1);
+  border-right: 2px solid var(--border-strong); font-weight: 640;
+}
+.sheet thead th.stick { z-index: 4; background: var(--surface-2); }
+.sheet tbody tr:nth-child(even) td.stick { background: color-mix(in srgb, var(--surface-2) 70%, var(--surface-1)); }
+.sheet tbody tr:hover td.stick { background: var(--accent-soft); }
+.sheet td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.sheet td.yes { color: var(--good); font-weight: 620; }
+.sheet td.no  { color: var(--critical); font-weight: 620; }
+.sheet td.unknown { color: var(--text-muted); }
+.sheet .group-head th {
+  background: var(--surface-0); color: var(--text-muted); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .06em; text-align: center;
+  border-bottom: 1px solid var(--border);
+}

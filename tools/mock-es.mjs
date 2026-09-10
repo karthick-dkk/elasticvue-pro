@@ -81,6 +81,18 @@ const routes = [
     last_success: { time: Date.now() - 7200000, snapshot_name: 'daily-1' },
     next_execution_millis: Date.now() + 3600000 } })],
   [(u) => u.startsWith('/_ilm/status'), () => ({ operation_mode: 'RUNNING' })],
+  [(u) => u.startsWith('/_ilm/policy'), () => ({
+    'logs-retention': {
+      version: 3, modified_date_string: '2026-08-01T00:00:00Z',
+      policy: { phases: {
+        hot: { min_age: '0ms', actions: { rollover: { max_age: '1d' } } },
+        warm: { min_age: '7d', actions: { forcemerge: { max_num_segments: 1 } } },
+        delete: { min_age: '30d', actions: { delete: {} } },
+      } },
+    },
+  })],
+  [(u) => /_settings\?filter_path=\*\.settings\.index\.lifecycle\.name/.test(u), () =>
+    Object.fromEntries(INDICES.map((i) => [i.index, { settings: { index: { lifecycle: { name: 'logs-retention' } } } }]))],
   [(u) => u.includes('_ilm/explain'), () => ({ indices: { 'logstash-beta-2026.09.09': { step: 'ERROR' } } })],
   [(u) => u.startsWith('/_nodes/settings'), () => ({ nodes: { n1: { name: 'node-1',
     settings: { path: { repo: ['/mnt/backups'] } } } } })],

@@ -180,17 +180,15 @@ async function loadOnce(file) {
 /* ---------------------------------- shell ----------------------------------- */
 
 function renderShell() {
-  const side = h('aside.side',
-    h('div.brand', h('img', { src: 'icons/icon48.png', alt: '' }),
-      h('div', h('b', 'ElasticVue Pro'), h('span#cfg-name', ''))),
-    h('nav.nav#nav'),
-    h('div.side-foot#side-foot'));
-
-  const main = h('main.main',
+  // Everything chrome-like lives across the top, so a wide table gets the whole window.
+  const header = h('header.header',
     h('div.topbar#topbar'),
-    h('div.page#view'));
+    h('nav.nav#nav'),
+    h('div.status-strip#side-foot'));
 
-  mount(root, h('div.app', side, main));
+  const main = h('main.main', h('div.page#view'));
+
+  mount(root, h('div.app', header, main));
   renderNav();
   renderTopbar();
   renderSideFoot();
@@ -206,7 +204,7 @@ function renderNav() {
     if (p.id === 'settings') nav.append(h('div.nav-sep'));
     // The alert count belongs on the tab: it is the reason to go there.
     const badge = p.id === 'alerts' && a.length
-      ? h('span.pill', { class: crit ? 'red' : 'yellow', style: { marginLeft: 'auto', fontSize: '10px', padding: '0 5px' } }, String(a.length))
+      ? h('span.pill', { class: crit ? 'red' : 'yellow', style: { fontSize: '10px', padding: '0 5px' } }, String(a.length))
       : h('span.kbd', p.key);
     nav.append(h('button', {
       'aria-current': currentPage === p.id ? 'page' : null,
@@ -230,6 +228,8 @@ function renderTopbar() {
   sel.value = state.selected;
 
   mount(bar,
+    h('div.brand', h('img', { src: 'icons/icon48.png', alt: '' }),
+      h('div', h('b', 'ElasticVue Pro'), h('span#cfg-name', ''))),
     h('h1', page.label),
     h('label.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } }, sel),
     h('div.spacer'),
@@ -243,7 +243,7 @@ function renderTopbar() {
       }, need ? `Sign in (${need} cluster${need === 1 ? '' : 's'})` : `Re-enter credentials (${bad})`);
     })(),
     a.length
-      ? h('button.btn.sm', { class: crit ? 'danger' : '', onclick: () => go('overview'), title: 'Jump to alerts' },
+      ? h('button.btn.sm', { class: crit ? 'danger' : '', onclick: () => go('alerts'), title: 'Open the Alerts page' },
           `${a.length} alert${a.length > 1 ? 's' : ''}`)
       : h('span.pill.green', h('i.dot'), 'all healthy'),
     isSnapshotMode()
@@ -295,29 +295,33 @@ function tickStatus() {
     : '';
 }
 
+/** The status the sidebar foot used to carry, now a strip under the tabs. */
 function renderSideFoot() {
   const el = $('#side-foot');
   if (!el) return;
   const meta = state.config && state.config.fileMeta;
+  const row = (label, value, opts = {}) => h('span.row', opts, h('b', label), value);
+
   mount(el,
-    h('div.row', h('span', 'Config'), h('span.trunc', { title: meta ? (meta.path || meta.name) : '' }, meta ? meta.name : '—')),
-    h('div.row', h('span', 'Clusters'), h('span', String(clusters().length))),
-    h('div.row', h('span', 'Health'), h('span', worstHealth())),
-    h('div.row', h('span', 'Build'), h('span.mono', 'v' + (coreInfo.version || '?'))),
-    // one row per jump host: "jumpwin ● up" — never a wrapped comma list
+    row('Config', h('span.trunc', { style: { maxWidth: '260px' } }, meta ? meta.name : '—'),
+      { title: meta ? (meta.path || meta.name) : '' }),
+    row('Clusters', String(clusters().length)),
+    row('Health', worstHealth()),
+    row('Build', h('span.mono', 'v' + (coreInfo.version || '?'))),
+    // one per jump host: "jumpwin ● up"
     ...((coreInfo.tunnels || []).map((t) => {
       const st = (t.status && t.status.state) || 'idle';
       const color = st === 'up' ? 'var(--good)' : st === 'connecting' ? 'var(--warning)' : st === 'down' ? 'var(--critical)' : 'var(--text-muted)';
-      return h('div.row', { title: st === 'down' && t.status.error ? t.status.error : `${t.user}@${t.host}:${t.port}` },
-        h('span.trunc', `Tunnel ${t.id}`),
-        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' } },
-          h('i', { style: { width: '7px', height: '7px', borderRadius: '50%', background: color, display: 'inline-block' } }), st));
+      return row(`Tunnel ${t.id}`,
+        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+          h('i', { style: { width: '7px', height: '7px', borderRadius: '50%', background: color, display: 'inline-block' } }), st),
+        { title: st === 'down' && t.status.error ? t.status.error : `${t.user}@${t.host}:${t.port}` });
     })),
     isSnapshotMode()
-      ? h('div', { style: { marginTop: '4px', color: 'var(--accent)' } },
+      ? h('span.row', { style: { color: 'var(--accent)' } },
           'snapshot' + (state.snapshot && state.snapshot.host ? ' from ' + state.snapshot.host : ''))
       : null,
-    meta && meta.ephemeral ? h('div', { style: { marginTop: '4px', color: 'var(--warning)' } }, 'loaded once — not remembered') : null);
+    meta && meta.ephemeral ? h('span.row', { style: { color: 'var(--warning)' } }, 'loaded once — not remembered') : null);
   const nm = $('#cfg-name');
   if (nm) nm.textContent = meta ? meta.name : '';
 }

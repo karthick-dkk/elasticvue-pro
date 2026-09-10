@@ -6,11 +6,11 @@ import { bytes, num, ago, dt, toCsv, download } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { hbarList } from '../lib/charts.js';
-import { volumeReport, reportRows, dailyVolume, bytesToGB, gb, days as fmtDays, yesNo } from '../core/volume.js';
+import { volumeReport, reportRows, SHEET_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
 
 let host = null;
-const ui = { measuring: new Set() };
+const ui = { measuring: new Set(), view: 'sheet', sort: 'name', dir: 1 };
 /** Measured repository sizes, per cluster. Elasticsearch does not report this cheaply. */
 const repoBytes = new Map();
 
@@ -59,6 +59,12 @@ function draw() {
     h('div.toolbar',
       h('span.muted', { style: { fontSize: '11.5px' } },
         `updated ${ago(state.lastRefresh)} · per-day volume from the dated indices, today excluded`),
+      h('label.field', 'View', (() => {
+        const sel = h('select', { onchange: (e) => { ui.view = e.target.value; draw(); } },
+          h('option', { value: 'sheet' }, 'Spreadsheet — one row per cluster'),
+          h('option', { value: 'summary' }, 'Summary table'));
+        sel.value = ui.view; return sel;
+      })()),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
         h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'),
         h('button.btn.sm.primary', {
@@ -70,13 +76,15 @@ function draw() {
           onclick: () => exportTall(reports),
         }, 'Export as report layout'))),
 
-    fleetTable(reports),
+    ui.view === 'sheet' ? sheetView(reports) : fleetTable(reports),
 
     h('div', { style: { marginTop: '10px' } },
       collapsible('Daily volume by cluster', 'the figure each report is built on',
         () => volumeChart(reports), { key: 'vol-chart', open: true })),
 
-    ...reports.map((r) => h('div', { style: { marginTop: '10px' } }, clusterCard(r))));
+    ...reports.map((r) => h('div', { style: { marginTop: '10px' } },
+      collapsible(`Volume resource report — ${r.cluster.name}`, r.cluster.url,
+        () => clusterCardBody(r), { key: `vol-detail-${r.cluster.id}`, open: reports.length === 1 }))));
 }
 
 /* ------------------------------- fleet overview ------------------------------- */
@@ -117,7 +125,7 @@ function volumeChart(reports) {
 
 /* ------------------------------- per cluster ---------------------------------- */
 
-function clusterCard(r) {
+function clusterCardBody(r) {
   const c = r.cluster;
   const rows = reportRows(r).map(([label, value, note]) => h('tr',
     h('td', { style: { width: '46%' } }, label),
@@ -127,16 +135,15 @@ function clusterCard(r) {
   const measuring = ui.measuring.has(c.id);
   const repos = (state.data.get(c.id) || {}).repos || [];
 
-  return card(`Volume resource report — ${c.name}`, c.url,
-    h('div', { style: { display: 'grid', gap: '8px' } },
-      r.vol.daysCovered === 0
-        ? h('div.banner.warn', { style: { margin: 0 } },
-            h('div', h('div.ttl', 'No dated indices'),
-              h('div', 'Per-day volume is measured from indices whose name carries a date. This cluster has none ' +
-                       'that match the pattern, so every figure derived from it is 0. Check indexNameRegex for this cluster.')))
-        : null,
-      h('div.tbl-wrap', h('table.tbl', h('tbody', ...rows)))),
-    [
+  return h('div', { style: { display: 'grid', gap: '8px' } },
+    r.vol.daysCovered === 0
+      ? h('div.banner.warn', { style: { margin: 0 } },
+          h('div', h('div.ttl', 'No dated indices'),
+            h('div', 'Per-day volume is measured from indices whose name carries a date. This cluster has none ' +
+                     'that match the pattern, so every figure derived from it is 0. Check indexNameRegex for this cluster.')))
+      : null,
+    h('div.tbl-wrap', h('table.tbl', h('tbody', ...rows))),
+    h('div', { style: { display: 'flex', gap: '6px', paddingTop: '4px' } },
       h('button.btn.sm', {
         disabled: measuring || !repos.length,
         title: repos.length ? 'Sum the incremental bytes of every snapshot — one call per snapshot'
@@ -144,8 +151,56 @@ function clusterCard(r) {
         onclick: () => measureRepos(c),
       }, measuring ? 'Measuring…' : r.repoGB === null ? 'Measure repo size' : 'Re-measure'),
       h('button.btn.sm', { onclick: () => exportWide([r]) }, 'Export this cluster'),
-      h('button.btn.sm.ghost', { onclick: () => navigateTo('indices') }, 'Indices'),
-    ]);
+      h('button.btn.sm.ghost', { onclick: () => navigateTo('indices') }, 'Indices')));
+}
+
+/* ------------------------------ spreadsheet view ------------------------------ */
+
+/**
+ * One row per cluster, every parameter a column — read like a spreadsheet, with the
+ * cluster column and the header pinned so a wide row stays identifiable while scrolling.
+ * Column headers sort; YES/NO is coloured because that is what the eye goes to.
+ */
+function sheetView(reports) {
+  const col = SHEET_COLUMNS;
+  const sorted = [...reports].sort((a, b) => {
+    const c = col.find((x) => x.label === ui.sort) || col[0];
+    const av = c.get(a), bv = c.get(b);
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * ui.dir;
+    return String(av).localeCompare(String(bv)) * ui.dir;
+  });
+
+  // A banded row above the header naming what each block of columns is about.
+  const groups = [];
+  for (const c of col) {
+    const last = groups[groups.length - 1];
+    if (last && last.name === c.group) last.span++;
+    else groups.push({ name: c.group, span: 1 });
+  }
+
+  const head = h('thead',
+    h('tr.group-head', ...groups.map((g, i) => h('th', { colspan: g.span, class: i === 0 ? 'stick' : '' }, g.name))),
+    h('tr', ...col.map((c, i) => h('th', {
+      class: i === 0 ? 'stick' : '',
+      style: { cursor: 'pointer' },
+      title: 'Sort by this column',
+      onclick: () => { ui.dir = ui.sort === c.label ? -ui.dir : 1; ui.sort = c.label; draw(); },
+    }, c.label + (ui.sort === c.label ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''),
+       c.unit ? h('span.unit', c.unit) : null))));
+
+  const body = h('tbody', ...sorted.map((r) => h('tr', ...col.map((c, i) => {
+    const text = sheetCell(c, r);
+    const cls = [i === 0 ? 'stick' : '', c.kind === 'num' ? 'num' : '',
+                 c.kind === 'bool' ? (text === 'YES' ? 'yes' : text === 'NO' ? 'no' : 'unknown') : '']
+      .filter(Boolean).join('.');
+    return h(cls ? `td.${cls}` : 'td', { title: text.length > 24 ? text : null }, text);
+  }))));
+
+  return card('Volume resource report', `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,
+    h('div.sheet-wrap', h('table.sheet', head, body)),
+    [h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
 }
 
 /**
@@ -206,13 +261,12 @@ function exportTall(reports) {
  * spreadsheet, and the default export.
  */
 function exportWide(reports) {
+  // Same column definitions the grid uses, so the file and the screen cannot diverge.
   const rows = reports.map((r) => {
     const o = {};
-    for (const [label, value] of reportRows(r)) o[label] = String(value ?? '');
-    // How the daily figure was arrived at, so a number in a spreadsheet can be traced.
-    o['Per day basis'] = r.vol.basis;
-    o['Days sampled'] = r.vol.windowDays;
-    o['Days of data held'] = r.vol.daysCovered;
+    for (const c of SHEET_COLUMNS) {
+      o[c.unit ? `${c.group} — ${c.label} (${c.unit})` : `${c.group} — ${c.label}`] = sheetCell(c, r);
+    }
     o['Generated at'] = new Date().toISOString();
     return o;
   });

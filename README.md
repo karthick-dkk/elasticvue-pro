@@ -41,6 +41,7 @@ Browser tools cannot do three things an operator behind a jump host needs:
 - **Config in the UI** — add clusters, jump hosts, the shared credential and defaults; saved as `config_cluster.json`
 - **Security** — read-only guard in the core: a write needs both a session unlock *and* a request the operator asked for by hand, so nothing that refreshes on a timer can write; secrets in the file encrypted (AES-256-GCM, PBKDF2-SHA512 master password); optional Windows Credential Manager; TLS pinning; SSH host-key pinning
 - **Portable** — one folder, no installer, no admin rights; runs on the analyst PC and on the jump server itself
+- **Navigation across the top** — the nine pages are one row of tabs, so wide tables get the whole window
 - **Snapshot mode** — render everything from a JSON file collected elsewhere (esfleet / PowerShell collector) with no network access
 
 <p align="center"><img src="docs/screenshots/rest-console.png" alt="REST console" width="900"></p>
@@ -188,9 +189,17 @@ Repository size is not a number Elasticsearch reports cheaply, so it stays behin
 *Measure* button — one `_status` call per snapshot — and reads "not measured" until asked.
 Rows that cannot be known say so rather than showing a confident zero.
 
-Export is CSV, one row per cluster with every parameter as a column — the shape a spreadsheet
-wants for sorting and charting. The on-screen layout (one row per parameter, a column per
-cluster) is available too.
+The page reads as a spreadsheet: **one row per cluster**, every parameter a column, grouped
+by what it is about, with the cluster column and the header pinned so a wide row stays
+identifiable while scrolling. Any column sorts, YES/NO is coloured, and the CSV export uses
+the same column definitions so the file and the screen cannot diverge. A per-parameter
+summary view is available too.
+
+It also reports what the cluster **actually enforces**, next to what the config says it
+should: the **Applied ILM policy** (read from `_ilm/policy`, resolved to the policy the log
+indices are really attached to, with the age its delete phase removes them at) and the
+**Applied SLM policy** (its `expire_after`, schedule and counts). Where the two disagree the
+report says so, which is how retention drift gets noticed.
 
 The headline figures — per-day size, both retention policies, what the storage must hold and
 how long the free space lasts — also appear on the **Nodes & shards** page, computed by the

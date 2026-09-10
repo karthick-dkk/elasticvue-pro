@@ -177,7 +177,8 @@ async function settled(p) {
  * drift away from the other.
  */
 export function buildClusterData(id, prev, raw) {
-  const { root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths } = raw;
+  const { root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths,
+          ilmPolicies, ilmOfIndices } = raw;
   const out = { ...prev, id, loading: false, updatedAt: raw.updatedAt || Date.now() };
 
   out.reachable = root.ok || health.ok;
@@ -220,7 +221,69 @@ export function buildClusterData(id, prev, raw) {
     }));
   } else out.repos = prev.repos || [];
 
+  out.appliedIlm = appliedIlm(ilmPolicies, ilmOfIndices) || prev.appliedIlm || null;
+  out.appliedSlm = appliedSlm(out.slm) || prev.appliedSlm || null;
+
   return out;
+}
+
+/**
+ * The ILM policy the log indices are actually attached to, and the age at which it
+ * deletes them — the cluster's real live retention, whatever the config claims.
+ *
+ * Which policy is in force is answered by the indices themselves rather than guessed:
+ * a cluster can define a dozen policies and apply none of them.
+ */
+function appliedIlm(policiesRes, ofIndicesRes) {
+  if (!policiesRes || !policiesRes.ok) return null;
+  const policies = policiesRes.value || {};
+
+  // Count how many indices name each policy; the commonest one governs the logs.
+  const counts = new Map();
+  if (ofIndicesRes && ofIndicesRes.ok) {
+    for (const entry of Object.values(ofIndicesRes.value || {})) {
+      const name = entry && entry.settings && entry.settings.index
+        && entry.settings.index.lifecycle && entry.settings.index.lifecycle.name;
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    }
+  }
+  let name = null, indices = 0;
+  for (const [n, c] of counts) if (c > indices) { name = n; indices = c; }
+  // No index says so, but the cluster defines exactly one policy — that is the answer.
+  if (!name) {
+    const only = Object.keys(policies);
+    if (only.length === 1) name = only[0];
+  }
+  if (!name || !policies[name]) return name ? { name, indices, deleteAfter: null, phases: [] } : null;
+
+  const phases = (policies[name].policy && policies[name].policy.phases) || {};
+  const order = ['hot', 'warm', 'cold', 'frozen', 'delete'];
+  return {
+    name,
+    indices,
+    deleteAfter: (phases.delete && phases.delete.min_age) || null,
+    phases: order.filter((p) => phases[p]).map((p) => ({ phase: p, minAge: phases[p].min_age || '0ms' })),
+    modifiedDate: policies[name].modified_date_string || null,
+  };
+}
+
+/** The SLM policy actually configured, and the age at which it expires snapshots. */
+function appliedSlm(slmList) {
+  const list = slmList || [];
+  if (!list.length) return null;
+  // Prefer one that has actually run; a policy that never fired says little.
+  const chosen = list.find((p) => p.last_success) || list[0];
+  const pol = chosen.policy || {};
+  const ret = pol.retention || {};
+  return {
+    name: chosen.id,
+    repository: pol.repository || null,
+    schedule: pol.schedule || null,
+    expireAfter: ret.expire_after || null,
+    minCount: ret.min_count ?? null,
+    maxCount: ret.max_count ?? null,
+    policies: list.length,
+  };
 }
 
 export async function fetchOverview(id, { withSnapshots = true } = {}) {
@@ -228,14 +291,20 @@ export async function fetchOverview(id, { withSnapshots = true } = {}) {
   if (!cl) return null;
   const prev = state.data.get(id) || {};
 
-  const [root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths] = await Promise.all([
-    settled(cl.root()), settled(cl.health()), settled(cl.allocation()), settled(cl.nodes()),
-    settled(cl.repositories()), settled(cl.slmPolicies()), settled(cl.slmStatus()),
-    settled(cl.ilmStatus()), settled(cl.ilmErrors()),
-    settled(cl.json('GET', '/_nodes/settings?filter_path=nodes.*.settings.path.repo,nodes.*.name')),
-  ]);
+  const [root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies, ilmOfIndices] =
+    await Promise.all([
+      settled(cl.root()), settled(cl.health()), settled(cl.allocation()), settled(cl.nodes()),
+      settled(cl.repositories()), settled(cl.slmPolicies()), settled(cl.slmStatus()),
+      settled(cl.ilmStatus()), settled(cl.ilmErrors()),
+      settled(cl.json('GET', '/_nodes/settings?filter_path=nodes.*.settings.path.repo,nodes.*.name')),
+      // What the cluster actually enforces, as opposed to what the config says it should.
+      settled(cl.ilmPolicies()),
+      settled(cl.ilmPolicyOfIndices(cl.c.logIndexPattern || '*')),
+    ]);
 
-  const out = buildClusterData(id, prev, { root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths });
+  const out = buildClusterData(id, prev, {
+    root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies, ilmOfIndices,
+  });
   state.data.set(id, out);
   bus.emit('data', id);
 

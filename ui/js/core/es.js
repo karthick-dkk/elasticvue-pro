@@ -160,6 +160,17 @@ export class EsClient {
     return this.json('GET', `/_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(snap)}/_status`, null, { timeoutMs: 120000 });
   }
   slmPolicies() { return this.json('GET', '/_slm/policy'); }
+  /** Every ILM policy with its phases — the delete phase is the real live retention. */
+  ilmPolicies() { return this.json('GET', '/_ilm/policy'); }
+  /**
+   * Which ILM policy the log indices are actually attached to. filter_path keeps the
+   * response to one line per index instead of the whole settings block.
+   */
+  ilmPolicyOfIndices(pattern) {
+    return this.json('GET',
+      `/${encodeURIComponent(pattern)}/_settings?filter_path=*.settings.index.lifecycle.name` +
+      '&expand_wildcards=open&ignore_unavailable=true&allow_no_indices=true');
+  }
   slmStats() { return this.json('GET', '/_slm/stats'); }
   slmStatus() { return this.json('GET', '/_slm/status'); }
   ilmStatus() { return this.json('GET', '/_ilm/status'); }

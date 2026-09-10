@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+- **Navigation moved to the top.** The nine pages are a row of tabs under the title bar
+  instead of a 216px column down the left, so a wide table gets the whole window. The brand
+  and the status that lived in the sidebar foot — config file, cluster count, health, build,
+  jump-host tunnels — are now a strip under the tabs.
+- **The volume report reads as a spreadsheet**: one row per cluster, every parameter a
+  column grouped by what it is about, the cluster column and header pinned while the rest
+  scrolls, any column sortable, YES/NO coloured. The CSV export shares the same column
+  definitions, so the file and the screen cannot diverge. The per-parameter summary is still
+  available, and the per-cluster detail cards fold away.
+- **Applied ILM and SLM policies.** The report now shows what the cluster actually enforces
+  next to what the config says it should: the ILM policy the log indices are really attached
+  to and the age its delete phase removes them at, and the SLM policy's `expire_after`,
+  schedule and counts. Where config and cluster disagree the report says so — that is how
+  retention drift gets noticed. When the config states no retention, the applied policy is
+  used for sizing rather than leaving the figure blank.
+
 ## 2.2.2 — 2026-09-10
 
 ### Safer destructive actions
