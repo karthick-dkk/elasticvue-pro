@@ -176,10 +176,16 @@ export function volumeReport(cluster, data = {}, indices = [], repoBytes = null)
     snapshotRetentionMet: snap && repoGB !== null ? repoGB >= bufferedGB * snap.days : null,
     // How many days of data the repository currently holds, at the same daily rate.
     backupSufficientDays: repoGB === null ? null : div(repoGB, perDayGB),
+    // When the snapshots ran.
     snapshotsFrom: snapWindow.from,
     snapshotsTo: snapWindow.to,
     snapshotsDays: snapWindow.days,
     snapshotCount: snapWindow.count,
+    // Which days of logs they hold. Null when the repository listing did not name the
+    // indices, which is not the same as holding nothing.
+    snapshotDataFrom: snapWindow.dataFrom,
+    snapshotDataTo: snapWindow.dataTo,
+    snapshotDataDays: snapWindow.dataDays,
   };
 }
 
@@ -195,18 +201,29 @@ function slmRetention(data) {
 
 function snapshotWindow(data) {
   let from = null, to = null, count = 0;
+  let dataFrom = null, dataTo = null;
   for (const list of Object.values(data.snapshots || {})) {
     for (const s of list || []) {
       if (!s.start) continue;
       count++;
       if (from === null || s.start < from) from = s.start;
       if (to === null || s.start > to) to = s.start;
+      // Two different questions. `start` is when the snapshot ran; coverFrom/coverTo are
+      // the days of logs inside it, read from the dates in its index names. A snapshot
+      // taken this morning can hold ninety days of data, so the second is the one that
+      // says how far back the backup actually reaches.
+      if (s.coverFrom && (dataFrom === null || s.coverFrom < dataFrom)) dataFrom = s.coverFrom;
+      if (s.coverTo && (dataTo === null || s.coverTo > dataTo)) dataTo = s.coverTo;
     }
   }
   const day = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
   return {
     from: day(from), to: day(to), count,
     days: from && to ? Math.max(1, Math.round((to - from) / 86400000) + 1) : 0,
+    dataFrom, dataTo,
+    dataDays: dataFrom && dataTo
+      ? Math.round((Date.parse(`${dataTo}T00:00:00Z`) - Date.parse(`${dataFrom}T00:00:00Z`)) / 86400000) + 1
+      : 0,
   };
 }
 
@@ -295,13 +312,30 @@ export const SHEET_COLUMNS = [
     note: (r) => (r.repoGB === null ? 'measure the repository first' : null) },
   { group: 'Backups (snapshots)', label: 'Backup space for 365 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required365GB),
     note: () => 'upper bound — snapshots are incremental and usually smaller' },
-  { group: 'Backups (snapshots)', label: 'Days the backup covers', unit: 'days', kind: 'num',
+  { group: 'Backups (snapshots)', label: 'Days the backup size buys', unit: 'days', kind: 'num',
     get: (r) => floorOrNull(r.backupSufficientDays),
-    note: (r) => (r.repoGB === null ? 'measure the repository first' : 'days of data it currently holds') },
-  { group: 'Backups (snapshots)', label: 'Days of snapshots held', unit: 'days', kind: 'num', get: (r) => r.snapshotsDays || null,
+    note: (r) => (r.repoGB === null ? 'measure the repository first'
+                                    : 'repository size ÷ daily volume — an estimate, not a reading') },
+
+  // What is actually inside the snapshots, which is the question "how far back can I
+  // restore from" really asks. Read from the dates in the index names, not from when
+  // the snapshot ran.
+  { group: 'Backups (snapshots)', label: 'Oldest log day backed up', kind: 'text', get: (r) => r.snapshotDataFrom,
+    note: (r) => (r.snapshotDataFrom ? 'earliest day of logs held in any snapshot'
+                                     : 'the repository listing did not name the indices') },
+  { group: 'Backups (snapshots)', label: 'Newest log day backed up', kind: 'text', get: (r) => r.snapshotDataTo },
+  { group: 'Backups (snapshots)', label: 'Days of logs backed up', unit: 'days', kind: 'num',
+    get: (r) => r.snapshotDataDays || null,
+    note: (r) => (r.snapshotDataFrom ? `${r.snapshotDataFrom} → ${r.snapshotDataTo}, from the index names inside`
+                                     : 'unknown — the indices in these snapshots are not named or not dated') },
+
+  // When the snapshots ran. A different thing entirely: a snapshot taken today can hold
+  // a year of logs, so these two spans do not have to resemble each other.
+  { group: 'Backups (snapshots)', label: 'Days of snapshots kept', unit: 'days', kind: 'num', get: (r) => r.snapshotsDays || null,
     note: (r) => (r.snapshotsFrom ? `${r.snapshotsFrom} → ${r.snapshotsTo} · ${r.snapshotCount} snapshots` : 'no snapshots') },
-  { group: 'Backups (snapshots)', label: 'Oldest snapshot day', kind: 'text', get: (r) => r.snapshotsFrom },
-  { group: 'Backups (snapshots)', label: 'Newest snapshot day', kind: 'text', get: (r) => r.snapshotsTo },
+  { group: 'Backups (snapshots)', label: 'Oldest snapshot taken', kind: 'text', get: (r) => r.snapshotsFrom,
+    note: () => 'when it ran — not what is in it' },
+  { group: 'Backups (snapshots)', label: 'Newest snapshot taken', kind: 'text', get: (r) => r.snapshotsTo },
 ];
 
 function round1(v) { return v === null || v === undefined || !isFinite(v) ? null : Math.round(v * 10) / 10; }
