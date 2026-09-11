@@ -180,8 +180,19 @@ function sheetView(reports) {
     else groups.push({ name: c.group, span: 1 });
   }
 
+  // The frozen column is the first COLUMN, but the first group spans three of them.
+  // Pinning the whole group cell froze all three, so the band sat still while the
+  // columns under it scrolled. The band is split: one pinned cell exactly as wide as
+  // the frozen column, and the rest of that group scrolling with everything else.
+  const groupCells = [];
+  groups.forEach((g, gi) => {
+    if (gi > 0) { groupCells.push(h('th', { colspan: g.span }, g.name)); return; }
+    groupCells.push(h('th.stick', { colspan: 1 }, g.name));
+    if (g.span > 1) groupCells.push(h('th', { colspan: g.span - 1 }));
+  });
+
   const head = h('thead',
-    h('tr.group-head', ...groups.map((g, i) => h('th', { colspan: g.span, class: i === 0 ? 'stick' : '' }, g.name))),
+    h('tr.group-head', ...groupCells),
     h('tr', ...col.map((c, i) => h('th', {
       class: i === 0 ? 'stick' : '',
       style: { cursor: 'pointer' },

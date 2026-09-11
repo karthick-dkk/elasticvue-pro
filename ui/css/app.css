@@ -404,6 +404,10 @@ body.popup { width: 330px; background: var(--surface-1); }
   text-transform: uppercase; letter-spacing: .06em; text-align: center;
   border-bottom: 1px solid var(--border);
 }
+/* The pinned part of the first band reads as one band with the cell beside it: the
+   label is left-aligned over the frozen column, and the divider between the two halves
+   is dropped so it does not look like an extra group. */
+.sheet .group-head th.stick { text-align: left; border-right: 0; background: var(--surface-0); }
 
 /* --------------------------------- popover --------------------------------- */
 /* Anchored panel for things that were inline rows and should not be: the notes on an

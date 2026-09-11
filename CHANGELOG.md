@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Fixed: the **CLUSTER band in the volume report would not scroll**. The frozen column is
+  the first column, but that band spanned the first three, and pinning the whole band cell
+  froze all three — so it sat still while the columns beneath it moved. Every row of the
+  sheet now freezes exactly one column's width.
 - The volume report no longer carries "How that was measured" and "Days measured" as
   columns. The first was a sentence repeated down every row, which drowned the numbers on
   either side of it; the second is contained in that sentence. The explanation now hangs off
