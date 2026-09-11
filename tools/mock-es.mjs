@@ -46,7 +46,7 @@ const routes = [
   [(u) => u === '/', () => ({ cluster_name: 'mock', cluster_uuid: 'mock-uuid',
     version: { number: '8.13.4', lucene_version: '9.10.0' } })],
   [(u) => u.startsWith('/_cluster/health'), () => ({ status: 'yellow', number_of_nodes: 3,
-    number_of_data_nodes: 2, active_shards: 40, active_primary_shards: 20, unassigned_shards: 2,
+    number_of_data_nodes: 3, active_shards: 40, active_primary_shards: 20, unassigned_shards: 2,
     relocating_shards: 0, initializing_shards: 0, active_shards_percent_as_number: 95 })],
   // Deliberately skewed: node-1 heavy, node-3 nearly idle, so the disk-balance panel
   // has a real case to describe rather than a flat one.
@@ -70,15 +70,24 @@ const routes = [
       // flip either of these to 'none' to see the "left switched off" path
     },
   })],
+  // Must agree with _cat/allocation above and with _cluster/health below: three nodes,
+  // all data-bearing, and the same disk figures. They disagreed before — allocation said
+  // three nodes at 91/55/21%, nodes said two at 80/70% — so the Nodes page contradicted
+  // itself on one screen and every QA run had to re-establish that the fixture, not the
+  // app, was wrong.
   [(u) => u.startsWith('/_cat/nodes'), () => ([
     { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', 'node.role': 'dim', master: '*',
       'heap.percent': '61', 'ram.percent': '70', cpu: '12', load_1m: '1.2',
-      'disk.used': '80000000000', 'disk.avail': '20000000000', 'disk.total': '100000000000',
-      'disk.used_percent': '80', uptime: '10d' },
+      'disk.used': '91000000000', 'disk.avail': '9000000000', 'disk.total': '100000000000',
+      'disk.used_percent': '91', uptime: '10d' },
     { name: 'node-2', ip: '10.0.0.2', version: '8.13.4', 'node.role': 'dim', master: '-',
       'heap.percent': '55', 'ram.percent': '66', cpu: '9', load_1m: '0.8',
-      'disk.used': '70000000000', 'disk.avail': '30000000000', 'disk.total': '100000000000',
-      'disk.used_percent': '70', uptime: '10d' }])],
+      'disk.used': '55000000000', 'disk.avail': '45000000000', 'disk.total': '100000000000',
+      'disk.used_percent': '55', uptime: '10d' },
+    { name: 'node-3', ip: '10.0.0.3', version: '8.13.4', 'node.role': 'dim', master: '-',
+      'heap.percent': '38', 'ram.percent': '52', cpu: '4', load_1m: '0.3',
+      'disk.used': '21000000000', 'disk.avail': '79000000000', 'disk.total': '100000000000',
+      'disk.used_percent': '21', uptime: '10d' }])],
   [(u) => u.startsWith('/_cat/indices'), () => INDICES],
   [(u) => u.startsWith('/_cat/shards'), () => ([
     { index: 'logstash-acme-2026.09.09', shard: '0', prirep: 'p', state: 'STARTED', node: 'node-1', store: '2500000000' },
