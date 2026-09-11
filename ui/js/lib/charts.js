@@ -179,3 +179,67 @@ export function coverageStrip(days, opts = {}) {
 export function legend(entries) {
   return h('div.legend', ...entries.map((e) => h('span', h('i', { style: { background: e.color } }), e.label)));
 }
+
+/* ------------------------------ capacity chart -------------------------------- */
+
+/**
+ * "Does it fit?" — requirements drawn against the capacity that has to hold them.
+ *
+ * A column of numbers makes you do the comparison yourself; bars on a shared scale with
+ * the capacity marked make it one glance. A bar that overruns the marker is drawn in the
+ * critical colour and says by how much, because that is the whole question.
+ *
+ * @param capacity  { value, label } — the line everything is measured against
+ * @param needs     [{ label, value, sub }] — what has to fit inside it
+ * @param opts      { format, labelWidth, capacityUnknown }
+ */
+export function capacityChart(capacity, needs, opts = {}) {
+  const format = opts.format || bytes;
+  const cap = Number(capacity && capacity.value) || 0;
+  const rows = (needs || []).filter((n) => Number.isFinite(n.value) && n.value !== null);
+  if (!rows.length) return h('div.tbl-empty', 'Nothing to compare yet');
+
+  // The scale has to cover the capacity as well as the largest requirement, or a
+  // requirement that overruns would be drawn as though it fitted.
+  const max = Math.max(1, cap, ...rows.map((r) => r.value));
+  const pos = (v) => Math.min(100, (v / max) * 100);
+
+  const el = h('div.chart.cap-chart', { style: { display: 'grid', gap: '7px' } });
+
+  rows.forEach((r) => {
+    const fits = opts.capacityUnknown ? null : r.value <= cap;
+    const color = fits === null ? 'var(--series-1)' : fits ? 'var(--good)' : 'var(--critical)';
+    const over = fits === false ? r.value - cap : 0;
+
+    el.append(h('div.cap-row', {
+      style: { display: 'grid', gridTemplateColumns: `${opts.labelWidth || 170}px 1fr auto`,
+               alignItems: 'center', gap: '10px' },
+      title: r.sub || '',
+    },
+      h('span.trunc.cap-label', { style: { fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'right' }, title: r.label }, r.label),
+      // The track carries the capacity marker, so every bar is read against the same line.
+      h('span', { style: { position: 'relative', height: '16px', background: 'var(--surface-3)',
+                           borderRadius: '4px', display: 'block' } },
+        h('i', { style: { display: 'block', height: '100%', width: `${Math.max(1.5, pos(r.value))}%`,
+                          background: color, borderRadius: '4px' } }),
+        opts.capacityUnknown ? null : h('i', {
+          title: `${capacity.label || 'capacity'}: ${format(cap)}`,
+          style: { position: 'absolute', top: '-3px', bottom: '-3px', left: `${pos(cap)}%`,
+                   width: '2px', background: 'var(--text-primary)', opacity: '.7', borderRadius: '1px' },
+        })),
+      h('span', { style: { fontSize: '11.5px', fontVariantNumeric: 'tabular-nums', minWidth: '150px', textAlign: 'right', display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
+        h('span', format(r.value)),
+        h('span.cap-verdict', over > 0
+          ? h('span', { style: { color: 'var(--critical)', fontWeight: 640 } }, `short ${format(over)}`)
+          : fits === true ? h('span', { style: { color: 'var(--good)' } }, 'fits') : null))));
+  });
+
+  if (!opts.capacityUnknown) {
+    el.append(h('div.legend',
+      h('span', h('i', { style: { background: 'var(--text-primary)', opacity: '.7', width: '2px' } }),
+        `${capacity.label || 'capacity'} — ${format(cap)}`),
+      h('span', h('i', { style: { background: 'var(--good)' } }), 'fits'),
+      h('span', h('i', { style: { background: 'var(--critical)' } }), 'does not fit')));
+  }
+  return el;
+}

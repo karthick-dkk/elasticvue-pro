@@ -95,9 +95,13 @@ export function confirmDialog(title, body, opts = {}) {
       : null,
   ].filter(Boolean);
 
+  // Callers pass the action in lower case so it reads as a phrase ('delete the ticked
+  // ones'); a button is a label, not a sentence, so it starts with a capital.
+  const action = yes.charAt(0).toUpperCase() + yes.slice(1);
+
   return modal(title, null, nodes, (ctx) => [
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '8px' } },
-      h('button.btn', { onclick: () => ctx.done(false) }, `No, ${no.toLowerCase()}`),
+      h('button.btn', { onclick: () => ctx.done(false) }, no),
       h(`button.btn.${danger ? 'danger' : 'primary'}`, {
         onclick: () => {
           if (typeToConfirm && val('confirm-echo').trim() !== typeToConfirm) {
@@ -105,7 +109,7 @@ export function confirmDialog(title, body, opts = {}) {
           }
           ctx.done(true);
         },
-      }, `Yes, ${yes.toLowerCase()}`)),
+      }, action)),
   ], { width: '520px' }).then((v) => v === true);
 }
 

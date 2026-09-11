@@ -5,7 +5,7 @@ import { h, mount, $ } from '../lib/dom.js';
 import { bytes, num, ago, dt, toCsv, download } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
-import { hbarList } from '../lib/charts.js';
+import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
 import { volumeReport, reportRows, SHEET_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
 
@@ -78,9 +78,15 @@ function draw() {
 
     ui.view === 'sheet' ? sheetView(reports) : fleetTable(reports),
 
+    h('div.grid.c2', { style: { marginTop: '10px' } },
+      collapsible('Daily volume by cluster', 'the figure every other number is built on',
+        () => volumeChart(reports), { key: 'vol-chart', open: true }),
+      collapsible('How long the free disk lasts', 'at each cluster\'s current daily rate',
+        () => runwayChart(reports), { key: 'vol-runway', open: true })),
+
     h('div', { style: { marginTop: '10px' } },
-      collapsible('Daily volume by cluster', 'the figure each report is built on',
-        () => volumeChart(reports), { key: 'vol-chart', open: true })),
+      collapsible('Disk in use across the fleet', 'used against total, per cluster',
+        () => usageList(reports), { key: 'vol-usage', open: true })),
 
     ...reports.map((r) => h('div', { style: { marginTop: '10px' } },
       collapsible(`Volume resource report — ${r.cluster.name}`, r.cluster.url,
@@ -113,6 +119,82 @@ function fleetTable(reports) {
       trs, { emptyText: 'No clusters' }));
 }
 
+/**
+ * How long the free disk lasts, per cluster.
+ *
+ * The most actionable number on the page: it says which cluster needs attention first,
+ * and roughly when. Coloured against the same thresholds the alerts use.
+ */
+function runwayChart(reports) {
+  const items = reports
+    .filter((r) => r.liveSufficientDays !== null && isFinite(r.liveSufficientDays))
+    .map((r) => ({
+      key: r.cluster.id, label: r.cluster.name, value: Math.floor(r.liveSufficientDays),
+      color: r.liveSufficientDays < 14 ? 'var(--critical)'
+        : r.liveSufficientDays < 45 ? 'var(--warning)' : 'var(--good)',
+      sub: `${gb(r.liveFreeGB)} free at ${gb(r.perDayGB)}/day`,
+    }));
+  return items.length
+    ? h('div', hbarList(items, { format: (v) => `${v} days`, topN: 20, labelWidth: 150, showOther: false }),
+        legendFor([['var(--critical)', 'under 2 weeks'], ['var(--warning)', 'under 6 weeks'], ['var(--good)', 'comfortable']]))
+    : empty('No disk figures yet — the clusters have not reported allocation.');
+}
+
+/** Used against total for every cluster, so a full one stands out without reading digits. */
+function usageList(reports) {
+  const withDisk = reports.filter((r) => r.liveTotalGB > 0);
+  if (!withDisk.length) return empty('No disk figures yet.');
+  return h('div', { style: { display: 'grid', gap: '10px' } },
+    ...withDisk.map((r) => h('div', { style: { display: 'grid', gap: '3px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px' } },
+        h('b', r.cluster.name),
+        h('span.muted', `${gb(r.liveUsedGB)} of ${gb(r.liveTotalGB)} · ${gb(r.liveFreeGB)} free`)),
+      usageMeter(r.liveUsedGB, r.liveTotalGB, { label: '', thick: true,
+        warn: state.defaults.diskWarnPercent, crit: state.defaults.diskCritPercent }))));
+}
+
+function legendFor(pairs) {
+  return h('div.legend', ...pairs.map(([color, label]) => h('span', h('i', { style: { background: color } }), label)));
+}
+
+/**
+ * Everything the cluster's disk has to hold, against the disk it has. The capacity marker
+ * is the total; a bar past it is the amount of disk that would have to be bought.
+ */
+function liveFitChart(r) {
+  if (!(r.liveTotalGB > 0)) return empty('No allocation data for this cluster.');
+  const needs = [
+    { label: 'Used right now', value: r.liveUsedGB, sub: 'what the indices occupy today' },
+    r.requiredLiveGB
+      ? { label: `Retention policy (${r.liveRetention.label})`, value: r.requiredLiveGB,
+          sub: 'the stated policy at the buffered daily rate' }
+      : null,
+    { label: '30 days of logs', value: r.required30GB, sub: 'at the buffered daily rate' },
+    { label: '90 days of logs', value: r.required90GB, sub: 'at the buffered daily rate' },
+  ].filter(Boolean);
+  return capacityChart({ value: r.liveTotalGB, label: 'disk on this cluster' }, needs, { format: gb, labelWidth: 190 });
+}
+
+/**
+ * The same question for the repository. Its size is only known once measured, so until
+ * then the bars are drawn without a capacity line rather than against a guess.
+ */
+function backupFitChart(r) {
+  const needs = [
+    r.repoGB === null ? null : { label: 'Held in the repository now', value: r.repoGB, sub: 'sum of incremental snapshot bytes' },
+    r.snapshotRetention
+      ? { label: `Retention policy (${r.snapshotRetention.label})`, value: r.bufferedGB * r.snapshotRetention.days,
+          sub: 'upper bound — snapshots are incremental and usually smaller' }
+      : null,
+    { label: '365 days of backups', value: r.required365GB, sub: 'upper bound — snapshots are incremental' },
+  ].filter(Boolean);
+  if (!needs.length) return empty('Nothing to compare yet.');
+  return capacityChart(
+    { value: r.repoGB || 0, label: 'held in the repository now' },
+    needs,
+    { format: gb, labelWidth: 190, capacityUnknown: r.repoGB === null });
+}
+
 function volumeChart(reports) {
   const items = reports.filter((r) => r.perDayGB > 0).map((r) => ({
     key: r.cluster.id, label: r.cluster.name, value: r.perDayGB,
@@ -135,13 +217,21 @@ function clusterCardBody(r) {
   const measuring = ui.measuring.has(c.id);
   const repos = (state.data.get(c.id) || {}).repos || [];
 
-  return h('div', { style: { display: 'grid', gap: '8px' } },
+  return h('div', { style: { display: 'grid', gap: '10px' } },
     r.vol.daysCovered === 0
       ? h('div.banner.warn', { style: { margin: 0 } },
           h('div', h('div.ttl', 'No dated indices'),
             h('div', 'Per-day volume is measured from indices whose name carries a date. This cluster has none ' +
                      'that match the pattern, so every figure derived from it is 0. Check indexNameRegex for this cluster.')))
       : null,
+
+    // The comparison the table makes you do in your head, drawn.
+    h('div.grid.c2',
+      card('Will the logs fit on disk?', 'each requirement against the disk this cluster has',
+        liveFitChart(r)),
+      card('Will the backups fit?', r.repoGB === null ? 'repository size not measured yet' : 'against what the repository holds now',
+        backupFitChart(r))),
+
     h('div.tbl-wrap', h('table.tbl', h('tbody', ...rows))),
     h('div', { style: { display: 'flex', gap: '6px', paddingTop: '4px' } },
       h('button.btn.sm', {
