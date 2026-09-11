@@ -206,8 +206,8 @@ function sheetView(reports) {
     const cls = [i === 0 ? 'stick' : '', c.kind === 'num' ? 'num' : '',
                  c.kind === 'bool' ? (text === 'YES' ? 'yes' : text === 'NO' ? 'no' : 'unknown') : '']
       .filter(Boolean).join('.');
-    // A column can explain itself on hover; otherwise only truncated text needs a title.
-    const tip = c.title ? c.title(r) : text.length > 24 ? text : null;
+    // The explanation the card shows beside the value is the grid's hover text.
+    const tip = (c.note && c.note(r)) || (text.length > 24 ? text : null);
     return h(cls ? `td.${cls}` : 'td', { title: tip }, text);
   }))));
 

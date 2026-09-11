@@ -217,48 +217,19 @@ export const days = (v) => (v === null || v === undefined || !isFinite(v) ? '–
 export const yesNo = (v) => (v === null || v === undefined ? 'unknown' : v ? 'YES' : 'NO');
 
 /** The report as ordered label/value pairs — the shape the table and the CSV share. */
+/**
+ * The same report as label / value / explanation, for the per-cluster card.
+ *
+ * Derived from SHEET_COLUMNS rather than written out again: the card and the export used
+ * to be two lists that had drifted apart, so the screen and the file named the same
+ * numbers differently.
+ */
 export function reportRows(r) {
-  return [
-    ['Cluster', r.cluster.name],
-    ['ES URL', r.cluster.url],
-    ['Current Per Day Volume (GB)', gb(r.perDayGB), r.vol.basis],
-    ['Daily Volume + 30% Buffer (GB)', gb(r.bufferedGB)],
-    ['Current Live Storage (GB)', gb(r.liveTotalGB)],
-    ['Live Storage Used (%)', r.livePct === null ? '–' : `${r.livePct.toFixed(1)} %`],
-    ['Current Live Storage – Sufficient upto (days)', days(r.liveSufficientDays), 'at the current daily rate'],
-    ['Live Retention Policy', r.liveRetention ? r.liveRetention.label : 'not set',
-      r.liveRetentionSource ? `stated by ${r.liveRetentionSource}` : 'set liveRetention on the cluster'],
-    ['Applied ILM policy', r.appliedIlmLabel,
-      r.appliedIlm && r.appliedIlm.indices ? `on ${r.appliedIlm.indices} matching index/indices` : null],
-    ['Config matches applied ILM', r.livePolicyMatchesIlm === null ? 'not comparable' : yesNo(r.livePolicyMatchesIlm),
-      r.livePolicyMatchesIlm === false
-        ? `config says ${r.liveRetention ? r.liveRetention.label : '?'}, ILM deletes after ${r.appliedIlm.deleteAfter}`
-        : null],
-    ['Required Live storage is available (YES/NO)', yesNo(r.liveRetentionMet),
-      r.requiredLiveGB ? `needs ${gb(r.requiredLiveGB)}` : 'set liveRetention on the cluster'],
-    ['Required Live Storage for 30 Days (GB)', gb(r.required30GB)],
-    ['Required Live Storage for 90 Days (GB)', gb(r.required90GB)],
-    ['Live logs available', r.liveLogsFrom ? `${r.liveLogsDays} days` : '–',
-      r.liveLogsFrom ? `${r.liveLogsFrom} → ${r.liveLogsTo}` : 'no dated indices'],
-    ['Current Backup/Repo Storage (GB)', r.repoGB === null ? 'not measured' : gb(r.repoGB),
-      r.repoGB === null ? 'Elasticsearch does not report it — press Measure' : null],
-    ['Backup/Repo Storage & Type', r.repoSummary],
-    ['Repo/Snapshot Retention policy', r.snapshotRetention ? r.snapshotRetention.label : 'not set'],
-    ['Applied SLM policy', r.appliedSlmLabel,
-      r.appliedSlm && r.appliedSlm.schedule ? `schedule ${r.appliedSlm.schedule}` : null],
-    ['Config matches applied SLM', r.snapshotPolicyMatchesSlm === null ? 'not comparable' : yesNo(r.snapshotPolicyMatchesSlm),
-      r.snapshotPolicyMatchesSlm === false
-        ? `config says ${r.snapshotRetention ? r.snapshotRetention.label : '?'}, SLM expires after ${r.appliedSlm.expireAfter}`
-        : null],
-    ['Required Backup storage is available (YES/NO)', yesNo(r.snapshotRetentionMet),
-      r.repoGB === null ? 'measure the repository first' : null],
-    ['Required Backup/Repo Storage for 365 Days (GB)', gb(r.required365GB),
-      'upper bound — snapshots are incremental and usually smaller'],
-    ['Current Backup Storage – Sufficient upto (days)', days(r.backupSufficientDays),
-      r.repoGB === null ? 'measure the repository first' : 'days of data it currently holds'],
-    ['Snapshot logs available', r.snapshotsDays ? `${r.snapshotsDays} days` : '–',
-      r.snapshotsFrom ? `${r.snapshotsFrom} → ${r.snapshotsTo} · ${r.snapshotCount} snapshots` : 'no snapshots'],
-  ];
+  return SHEET_COLUMNS.map((c) => [
+    c.unit ? `${c.label} (${c.unit})` : c.label,
+    sheetCell(c, r),
+    c.note ? c.note(r) : null,
+  ]);
 }
 
 /**
@@ -267,44 +238,68 @@ export function reportRows(r) {
  * `get` returns a plain value; `kind` tells the view how to align and colour it, and
  * the CSV uses the same definitions so the screen and the file cannot diverge.
  */
+/**
+ * The report, defined once.
+ *
+ * The grid, the CSV and the per-cluster card are all rendered from this list, so a column
+ * cannot be renamed in one and not the others. `note` is the explanation shown beside the
+ * value on the card and as hover text in the grid; it never travels in the CSV, where a
+ * sentence per cell would drown the numbers.
+ */
 export const SHEET_COLUMNS = [
   { group: 'Cluster', label: 'Cluster name', kind: 'text', get: (r) => r.cluster.name },
   { group: 'Cluster', label: 'Elasticsearch URL', kind: 'text', get: (r) => r.cluster.url },
   { group: 'Cluster', label: 'Tags', kind: 'text', get: (r) => (r.cluster.tags || []).join(', ') },
 
-  // How the daily figure was arrived at is worth being able to check, but it is a
-  // sentence — repeated down a spreadsheet it drowns the numbers either side of it.
-  // It hangs off the figure it explains instead, as hover text.
   { group: 'How much comes in', label: 'Log volume per day', unit: 'GB', kind: 'num',
-    get: (r) => round1(r.perDayGB), title: (r) => r.vol.basis },
+    get: (r) => round1(r.perDayGB), note: (r) => r.vol.basis },
   { group: 'How much comes in', label: 'Per day + 30% buffer', unit: 'GB', kind: 'num',
-    get: (r) => round1(r.bufferedGB), title: () => 'The daily figure plus 30% headroom — what sizing is done against' },
+    get: (r) => round1(r.bufferedGB), note: () => 'the daily figure plus 30% headroom — what sizing is done against' },
 
   { group: 'Disk on the cluster', label: 'Disk total', unit: 'GB', kind: 'num', get: (r) => round1(r.liveTotalGB) },
   { group: 'Disk on the cluster', label: 'Disk used', unit: '%', kind: 'num', get: (r) => (r.livePct === null ? null : round1(r.livePct)) },
   { group: 'Disk on the cluster', label: 'Disk free', unit: 'GB', kind: 'num', get: (r) => round1(r.liveFreeGB) },
-  { group: 'Disk on the cluster', label: 'Free disk lasts', unit: 'days', kind: 'num', get: (r) => floorOrNull(r.liveSufficientDays) },
+  { group: 'Disk on the cluster', label: 'Free disk lasts', unit: 'days', kind: 'num',
+    get: (r) => floorOrNull(r.liveSufficientDays), note: () => 'at the current daily rate' },
 
-  { group: 'Logs kept on the cluster', label: 'Retention policy', kind: 'text', get: (r) => (r.liveRetention ? r.liveRetention.label : 'not set') },
-  { group: 'Logs kept on the cluster', label: 'ILM policy in force', kind: 'text', get: (r) => r.appliedIlmLabel },
-  { group: 'Logs kept on the cluster', label: 'Policy matches ILM?', kind: 'bool', get: (r) => r.livePolicyMatchesIlm },
+  { group: 'Logs kept on the cluster', label: 'Retention policy', kind: 'text',
+    get: (r) => (r.liveRetention ? r.liveRetention.label : 'not set'),
+    note: (r) => (r.liveRetentionSource ? `stated by ${r.liveRetentionSource}` : 'set liveRetention on the cluster') },
+  { group: 'Logs kept on the cluster', label: 'ILM policy in force', kind: 'text', get: (r) => r.appliedIlmLabel,
+    note: (r) => (r.appliedIlm && r.appliedIlm.indices ? `on ${r.appliedIlm.indices} matching index/indices` : null) },
+  { group: 'Logs kept on the cluster', label: 'Policy matches ILM?', kind: 'bool', get: (r) => r.livePolicyMatchesIlm,
+    note: (r) => (r.livePolicyMatchesIlm === false
+      ? `config says ${r.liveRetention ? r.liveRetention.label : '?'}, ILM deletes after ${r.appliedIlm.deleteAfter}` : null) },
   { group: 'Logs kept on the cluster', label: 'Disk needed for the policy', unit: 'GB', kind: 'num', get: (r) => round1(r.requiredLiveGB) },
-  { group: 'Logs kept on the cluster', label: 'Enough disk for the policy?', kind: 'bool', get: (r) => r.liveRetentionMet },
+  { group: 'Logs kept on the cluster', label: 'Enough disk for the policy?', kind: 'bool', get: (r) => r.liveRetentionMet,
+    note: (r) => (r.requiredLiveGB ? `needs ${gb(r.requiredLiveGB)}` : 'set liveRetention on the cluster') },
   { group: 'Logs kept on the cluster', label: 'Disk needed for 30 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required30GB) },
   { group: 'Logs kept on the cluster', label: 'Disk needed for 90 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required90GB) },
-  { group: 'Logs kept on the cluster', label: 'Days of logs held now', unit: 'days', kind: 'num', get: (r) => r.vol.daysCovered || null },
+  { group: 'Logs kept on the cluster', label: 'Days of logs held now', unit: 'days', kind: 'num',
+    get: (r) => r.vol.daysCovered || null,
+    note: (r) => (r.liveLogsFrom ? `${r.liveLogsFrom} → ${r.liveLogsTo}` : 'no dated indices') },
   { group: 'Logs kept on the cluster', label: 'Oldest log day', kind: 'text', get: (r) => r.liveLogsFrom },
   { group: 'Logs kept on the cluster', label: 'Newest log day', kind: 'text', get: (r) => r.liveLogsTo },
 
-  { group: 'Backups (snapshots)', label: 'Backup size now', unit: 'GB', kind: 'num', get: (r) => round1(r.repoGB) },
+  { group: 'Backups (snapshots)', label: 'Backup size now', unit: 'GB', kind: 'num', get: (r) => round1(r.repoGB),
+    note: (r) => (r.repoGB === null ? 'Elasticsearch does not report it — press Measure' : null) },
   { group: 'Backups (snapshots)', label: 'Where backups go', kind: 'text', get: (r) => r.repoSummary },
-  { group: 'Backups (snapshots)', label: 'Backup retention policy', kind: 'text', get: (r) => (r.snapshotRetention ? r.snapshotRetention.label : 'not set') },
-  { group: 'Backups (snapshots)', label: 'SLM policy in force', kind: 'text', get: (r) => r.appliedSlmLabel },
-  { group: 'Backups (snapshots)', label: 'Policy matches SLM?', kind: 'bool', get: (r) => r.snapshotPolicyMatchesSlm },
-  { group: 'Backups (snapshots)', label: 'Enough backup space?', kind: 'bool', get: (r) => r.snapshotRetentionMet },
-  { group: 'Backups (snapshots)', label: 'Backup space for 365 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required365GB) },
-  { group: 'Backups (snapshots)', label: 'Days the backup covers', unit: 'days', kind: 'num', get: (r) => floorOrNull(r.backupSufficientDays) },
-  { group: 'Backups (snapshots)', label: 'Days of snapshots held', unit: 'days', kind: 'num', get: (r) => r.snapshotsDays || null },
+  { group: 'Backups (snapshots)', label: 'Backup retention policy', kind: 'text',
+    get: (r) => (r.snapshotRetention ? r.snapshotRetention.label : 'not set') },
+  { group: 'Backups (snapshots)', label: 'SLM policy in force', kind: 'text', get: (r) => r.appliedSlmLabel,
+    note: (r) => (r.appliedSlm && r.appliedSlm.schedule ? `schedule ${r.appliedSlm.schedule}` : null) },
+  { group: 'Backups (snapshots)', label: 'Policy matches SLM?', kind: 'bool', get: (r) => r.snapshotPolicyMatchesSlm,
+    note: (r) => (r.snapshotPolicyMatchesSlm === false
+      ? `config says ${r.snapshotRetention ? r.snapshotRetention.label : '?'}, SLM expires after ${r.appliedSlm.expireAfter}` : null) },
+  { group: 'Backups (snapshots)', label: 'Enough backup space?', kind: 'bool', get: (r) => r.snapshotRetentionMet,
+    note: (r) => (r.repoGB === null ? 'measure the repository first' : null) },
+  { group: 'Backups (snapshots)', label: 'Backup space for 365 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required365GB),
+    note: () => 'upper bound — snapshots are incremental and usually smaller' },
+  { group: 'Backups (snapshots)', label: 'Days the backup covers', unit: 'days', kind: 'num',
+    get: (r) => floorOrNull(r.backupSufficientDays),
+    note: (r) => (r.repoGB === null ? 'measure the repository first' : 'days of data it currently holds') },
+  { group: 'Backups (snapshots)', label: 'Days of snapshots held', unit: 'days', kind: 'num', get: (r) => r.snapshotsDays || null,
+    note: (r) => (r.snapshotsFrom ? `${r.snapshotsFrom} → ${r.snapshotsTo} · ${r.snapshotCount} snapshots` : 'no snapshots') },
   { group: 'Backups (snapshots)', label: 'Oldest snapshot day', kind: 'text', get: (r) => r.snapshotsFrom },
   { group: 'Backups (snapshots)', label: 'Newest snapshot day', kind: 'text', get: (r) => r.snapshotsTo },
 ];
