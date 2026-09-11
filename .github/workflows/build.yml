@@ -79,7 +79,9 @@ jobs:
             macOS Gatekeeper: right-click → *Open*, or
             `xattr -dr com.apple.quarantine "/Applications/ElasticVue Pro.app"`.
           releaseDraft: false
-          prerelease: false
+          # A tag with a hyphen in it — v2.2.3-beta — is a pre-release. Marking it as one
+          # keeps it off the "Latest release" badge, which is the whole point of cutting it.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
 
       - uses: actions/upload-artifact@v4

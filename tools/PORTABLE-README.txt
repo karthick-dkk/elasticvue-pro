@@ -1,4 +1,4 @@
-ElasticVue Pro 2.2.2 - portable build for Windows x64
+ElasticVue Pro 2.2.3 - portable build for Windows x64
 =======================================================
 
 Nothing to install, no admin rights, nothing written outside this folder.

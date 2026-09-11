@@ -385,6 +385,21 @@ body.popup { width: 330px; background: var(--surface-1); }
   text-align: left; vertical-align: bottom; border-bottom: 2px solid var(--border-strong);
 }
 .sheet thead th .unit { display: block; font-weight: 400; color: var(--text-muted); font-size: 10px; }
+/* Each column explains itself, but only when asked. Thirty-odd permanent "i" marks would
+   be noise across a header that is already dense, so the mark appears on the column the
+   pointer is over — and stays while its panel is open, since the pointer has to leave the
+   header to reach it. Reserved width, so nothing shifts when it appears. */
+.sheet thead th .colinfo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin-left: 4px; padding: 0; vertical-align: -2px;
+  border: 1px solid var(--border-strong); border-radius: 50%; background: transparent;
+  color: var(--text-muted); font-size: 9px; font-weight: 700; font-style: italic;
+  line-height: 1; cursor: help; opacity: 0; transition: opacity .08s;
+}
+.sheet thead th:hover .colinfo, .sheet thead th .colinfo.on, .sheet thead th .colinfo:focus-visible { opacity: 1; }
+.sheet thead th .colinfo:hover, .sheet thead th .colinfo.on {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
 .sheet tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-1) 55%, transparent); }
 .sheet tbody tr:hover td { background: var(--accent-soft); }
 /* first column pinned */

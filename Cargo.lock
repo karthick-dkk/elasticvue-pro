@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "elasticvue-pro"
-version = "2.2.2"
+version = "2.2.3"
 dependencies = [
  "espro-core",
  "serde_json",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "espro-core"
-version = "2.2.2"
+version = "2.2.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "axum",

@@ -65,9 +65,9 @@ function clusterBlock(c) {
     h('div.grid.c4', { style: { marginBottom: '14px' } },
       statTile('Snapshots available', num(snaps.length), selected ? `in ${selected}` : 'no repository'),
       statTile('Newest snapshot taken', newest ? dt(newest.start).slice(0, 12) : '–', newest ? ago(newest.start) : ''),
-      // The two questions are different: when snapshots ran, and which days of logs they
-      // hold. A snapshot taken this morning can contain ninety days of daily indices.
-      statTile('Log data recoverable from', dataRange.from || '–',
+      // The two questions are different: when snapshots ran, and which days of indices
+      // they hold. A snapshot taken this morning can contain ninety days of daily indices.
+      statTile('Index data recoverable from', dataRange.from || '–',
         dataRange.from ? `through ${dataRange.to} · ${dataRange.days} days` : 'no dated indices in these snapshots'),
       statTile('Snapshot runs cover', oldest && newest ? `${Math.max(1, Math.round((newest.start - oldest.start) / 86400000))} days` : '–',
         cov.missing.length ? `${cov.missing.length} day(s) with no snapshot run` : 'a run every day in the window')),

@@ -1,6 +1,51 @@
 # Changelog
 
 ## Unreleased
+
+## 2.2.3-beta — 2026-09-11
+
+Pre-release. The product version inside the binaries is `2.2.3`: the Windows MSI target
+rejects a non-numeric pre-release identifier, so the beta lives in the tag and the
+GitHub release rather than in the version string.
+
+### The volume report, made readable
+- **Graphs and widgets on the volume report.** The page answered "how much storage do you
+  need" with thirty-odd numbers and left "does it fit?" as arithmetic for the reader. Five
+  widgets do it instead: *Daily volume by cluster*, *How long the free disk lasts* and
+  *Disk in use across the fleet* across the top, and per cluster *Will the indices fit on
+  disk?* and *Will the backups fit?*. The last two draw every requirement on one scale with
+  the capacity as a marker line — green and "fits" under it, red and "short 272.7 GB" over
+  it. The scale covers the capacity as well as the largest bar, or a requirement that
+  overruns would be drawn as though it fitted. All of them read the same report object the
+  table and the CSV read, so there is still one definition of every figure.
+- **Backup space reads as available / used / required.** Those three, in the order the
+  question gets asked, with the formula on each required figure — *(per day + 30%) × 365*.
+  Available comes from a new `clusters[].backupCapacity` (`2TB`, `500GB`, or a bare number
+  of GB): Elasticsearch has no API for a repository's total size, because a repository is a
+  mount point or a bucket. Without it the report leaves available, free and *Enough backup
+  space?* unset and says which setting to add, rather than guessing — and *Will the backups
+  fit?* draws no capacity line instead of drawing one against what the repository already
+  holds.
+- **Every column explains itself.** Hovering a column header raises a small **i** beside its
+  name; clicking it opens that column's explanation — where the daily figure comes from (the
+  three heaviest of the last seven complete days, today excluded), why every requirement is
+  buffered by 30%, whether the number is measured by Elasticsearch, stated in your config or
+  arrived at by arithmetic. The mark shows only on the column under the pointer, so a header
+  that is already dense does not gain thirty permanent marks, and the explanation you get is
+  for the column you are looking at. The text lives on the column definitions, so a column
+  cannot be added without one.
+- **The report says "indices", not "logs"**, since indices are what it measures. The
+  Snapshots page follows, with *Index data recoverable from*.
+- **When a snapshot ran is no longer confused with what is inside it.** The report's
+  *Oldest / Newest snapshot day* were the run dates, which answer nothing useful: a snapshot
+  taken this morning can hold ninety days of daily indices. Split into *Oldest / Newest index
+  day backed up* and *Days of indices backed up* — read from the dates in the index names —
+  beside *Oldest / Newest snapshot taken*, each labelled so the two cannot be read as one.
+  Where the repository listing does not name the indices the coverage reads "unknown"
+  rather than 0. The Nodes page splits its *Snapshots held* row the same way.
+- *Days the backup covers* is now *Days the backup size buys*: it is repository size ÷ daily
+  volume, an estimate, and it sat next to two real readings of a same-sounding thing.
+
 - Fixed: the **CLUSTER band in the volume report would not scroll**. The frozen column is
   the first column, but that band spanned the first three, and pinning the whole band cell
   froze all three — so it sat still while the columns beneath it moved. Every row of the
@@ -14,6 +59,18 @@
   "Config = ILM" and the rest are gone; no label now needs its group header beside it to be
   understood, and no two columns share a name — "Policy" and "Storage sufficient" each
   appeared twice, in different groups, meaning different things.
+
+### Fixed
+- **`toCsv` did not escape the header row.** Data cells were escaped and column names were
+  not, so a label containing a comma silently added a field to the first line and misaligned
+  the export against every data row.
+- **Confirmation dialogs said "No, no".** The buttons were built as *Yes, ‹action›* and
+  *No, ‹no›*, and the default for the second was "No". They now say the action once — **No**
+  and **Remove**.
+- **The volume report card and its CSV export disagreed on column names.** Two parallel
+  definitions had drifted; the card's rows are now derived from the same column list the
+  spreadsheet and the CSV use.
+### Also in this release
 - **Snapshots say which days of logs they hold**, not just when they ran. A snapshot taken
   this morning can contain ninety days of daily indices, and that span is what decides
   whether a given day can be restored. It is read from the dates in the index names, shown

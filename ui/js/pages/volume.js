@@ -292,9 +292,10 @@ function sheetView(reports) {
     h('tr', ...col.map((c, i) => h('th', {
       class: i === 0 ? 'stick' : '',
       style: { cursor: 'pointer' },
-      title: c.help ? `${c.label}${c.unit ? ` (${c.unit})` : ''}\n\n${c.help}\n\nClick to sort.` : 'Sort by this column',
+      title: 'Sort by this column',
       onclick: () => { ui.dir = ui.sort === c.label ? -ui.dir : 1; ui.sort = c.label; draw(); },
     }, c.label + (ui.sort === c.label ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''),
+       columnInfo(c),
        c.unit ? h('span.unit', c.unit) : null))));
 
   const body = h('tbody', ...sorted.map((r) => h('tr', ...col.map((c, i) => {
@@ -309,71 +310,44 @@ function sheetView(reports) {
 
   return card('Volume resource report', `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,
     h('div.sheet-wrap', h('table.sheet', head, body)),
-    [helpButton(), h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
+    [h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
 }
 
 /* ---------------------------------- what it all means ---------------------------- */
 
 /**
- * Every column, explained.
+ * A column, explained — the mark in its header and the panel it opens.
  *
- * The report is thirty-odd columns of arithmetic, and someone seeing it for the first
- * time has no way to tell a measurement from an estimate, or which of two similar names
- * means which. The explanations live on the column definitions, so a column cannot be
- * added without one and cannot be renamed here and not there.
+ * The report is thirty-odd columns of arithmetic, and someone seeing it for the first time
+ * has no way to tell a measurement from an estimate, or which of two similar names means
+ * which. One panel listing every column was not the answer: the explanation you want is
+ * for the column you are looking at, and reading it meant scrolling past thirty you were
+ * not. So the mark belongs to the column, and only shows on the one under the pointer.
+ *
+ * The text lives on the column definition, so a column cannot be added without one.
  */
-function helpButton() {
-  const btn = h('button.btn.sm.ghost', {
-    title: 'What do these columns mean?',
-    style: { fontWeight: '700', width: '26px', padding: '0' },
-    onclick: () => popover(btn, helpBody, {
-      title: 'How to read this report',
-      sub: `${SHEET_COLUMNS.length} columns`,
-      width: '440px',
-    }),
+function columnInfo(c) {
+  if (!c.help) return null;
+  const mark = h('button.colinfo', {
+    title: `What is "${c.label}"?`,
+    type: 'button',
+    onclick: (e) => {
+      // The header itself sorts. Explaining a column is not asking to sort by it.
+      e.stopPropagation();
+      mark.classList.add('on');
+      popover(mark, () => [
+        h('div', { style: { fontSize: '12px', lineHeight: '1.6' } }, c.help),
+        c.note ? h('div.muted', { style: { fontSize: '11px', paddingTop: '5px', borderTop: '1px solid var(--border)' } },
+          'Each cell also carries its own note on hover — what that particular number was built from.') : null,
+      ], {
+        title: c.label,
+        sub: c.unit ? `in ${c.unit}` : '',
+        width: '320px',
+        onClose: () => mark.classList.remove('on'),
+      });
+    },
   }, 'i');
-  return btn;
-}
-
-/** The two rules everything else is built on, then a line per column. */
-const HELP_PREAMBLE = [
-  ['Where the daily figure comes from',
-   'The last seven complete days of dated indices are measured, the three heaviest are averaged, and that is '
-   + '"indices size per day". Today is excluded — it is still being written to, so it would drag the average down. '
-   + 'The top three rather than all seven, so a quiet weekend does not make the estimate too small.'],
-  ['Why 30%',
-   'Sizing is done against the daily figure plus 30%. Every column whose name contains "needed" or "required" is '
-   + 'that buffered figure multiplied by a number of days — for example, backup space required for 365 days is '
-   + '(per day + 30%) × 365.'],
-  ['Measured, stated, or estimated',
-   'Disk figures come from Elasticsearch. Retention policies and the repository size come from your config file. '
-   + 'Anything called an estimate is arithmetic on the daily rate, not a reading — the column\'s own note says which.'],
-];
-
-function helpBody() {
-  const out = [];
-  for (const [title, text] of HELP_PREAMBLE) {
-    out.push(h('div', { style: { display: 'grid', gap: '2px' } },
-      h('b', { style: { fontSize: '12px' } }, title),
-      h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.5' } }, text)));
-  }
-
-  let group = null;
-  for (const c of SHEET_COLUMNS) {
-    if (c.group !== group) {
-      group = c.group;
-      out.push(h('div', {
-        style: { fontSize: '10.5px', letterSpacing: '.06em', textTransform: 'uppercase',
-                 color: 'var(--text-muted)', marginTop: '6px', paddingTop: '6px',
-                 borderTop: '1px solid var(--border)' },
-      }, group));
-    }
-    out.push(h('div', { style: { display: 'grid', gap: '1px' } },
-      h('div', { style: { fontSize: '12px', fontWeight: 600 } },
-        c.label, c.unit ? h('span.muted', { style: { fontWeight: 400 } }, ` (${c.unit})`) : null),
-      h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.5' } }, c.help || '—')));
-  }
-  return out;
+  return mark;
 }
 
 /**
