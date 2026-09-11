@@ -136,11 +136,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-soft);
 }
 .nav .ico { opacity: .9; }
-.nav .kbd {
-  font-family: var(--mono); font-size: 9.5px; color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; line-height: 15px; opacity: .65;
-}
-.nav button[aria-current="page"] .kbd { opacity: .9; }
 /* A vertical rule before Config, where the divider used to be. */
 .nav-sep { width: 1px; background: var(--border); margin: 8px 7px; flex: none; }
 
@@ -409,3 +404,36 @@ body.popup { width: 330px; background: var(--surface-1); }
   text-transform: uppercase; letter-spacing: .06em; text-align: center;
   border-bottom: 1px solid var(--border);
 }
+
+/* --------------------------------- popover --------------------------------- */
+/* Anchored panel for things that were inline rows and should not be: the notes on an
+   alert, for one. Same anchoring as the row menu, but it holds arbitrary content and
+   stays open while you type in it. */
+.pop {
+  position: fixed; z-index: 70; min-width: 300px; max-width: 460px;
+  background: var(--surface-1); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: 0 12px 34px rgba(0,0,0,.40);
+  display: flex; flex-direction: column; max-height: 70vh;
+}
+.pop > header {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 640;
+}
+.pop > header .sub { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+.pop > header button { margin-left: auto; }
+.pop > .body { padding: 9px 10px; overflow: auto; display: grid; gap: 7px; }
+.pop > .foot { padding: 8px 10px; border-top: 1px solid var(--border); display: flex; gap: 6px; }
+
+/* A short-lived confirmation, so an action that closes its own panel still says it
+   happened. Fades itself out; never needs dismissing. */
+.toast-wrap { position: fixed; z-index: 90; right: 16px; bottom: 16px; display: grid; gap: 8px; }
+.toast {
+  background: var(--surface-1); border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--good); border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0,0,0,.34); padding: 9px 12px; font-size: 12.5px;
+  min-width: 220px; max-width: 380px; animation: toast-in .16s ease-out;
+}
+.toast.warn { border-left-color: var(--warning); }
+.toast.err  { border-left-color: var(--critical); }
+.toast.out  { opacity: 0; transform: translateY(4px); transition: opacity .25s, transform .25s; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

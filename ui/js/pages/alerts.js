@@ -1,12 +1,12 @@
 /** Page — everything currently wrong across the fleet, in one place. */
 
-import { h, mount, $ } from '../lib/dom.js';
+import { h, mount, $, tooltip } from '../lib/dom.js';
 import { ago, dt, toCsv, download, num } from '../lib/fmt.js';
 import { state, bus, alerts, clusters, activeClusters, client, fetchOverview, refreshAll } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { hbarList, legend } from '../lib/charts.js';
 import { navigateTo } from '../core/intent.js';
-import { rowMenu, ICON } from '../ui/menu.js';
+import { rowMenu, ICON, popover, toast, closePopover } from '../ui/menu.js';
 import { confirmDialog } from '../ui/modal.js';
 import {
   loadAcks, loadCurrentUser, currentUser, setCurrentUser, ackFor, isAcked, noteCount,
@@ -14,7 +14,7 @@ import {
 } from '../core/acks.js';
 
 let host = null;
-const ui = { level: 'all', cluster: 'all', text: '', show: 'open', view: 'table', expanded: new Set() };
+const ui = { level: 'all', cluster: 'all', text: '', show: 'open', view: 'table' };
 
 /**
  * What kind of problem this is, taken from the alert key rather than its wording — the
@@ -121,7 +121,7 @@ function draw() {
           h('option', { value: 'all' }, `Everything (${all.length})`));
         sel.value = ui.show; return sel;
       })()),
-      h('label.field', 'Search', h('input', { type: 'search', placeholder: 'title, detail or note…', value: ui.text,
+      h('label.field', 'Search', h('input#alerts-search', { type: 'search', placeholder: 'title, detail or note…', value: ui.text,
         style: { minWidth: '220px' }, oninput: (e) => { ui.text = e.target.value; draw(); } })),
       h('label.field', 'View', (() => {
         const sel = h('select', { onchange: (e) => { ui.view = e.target.value; draw(); } },
@@ -247,53 +247,93 @@ async function doUnack(a) {
   draw();
 }
 
-/** The notes panel under an expanded row. */
-function notesPanel(a) {
-  const rec = ackFor(a.key);
-  const input = h('input', {
-    type: 'text', placeholder: 'Add a note — what was found, who is on it, ticket number…',
-    style: { flex: '1', minWidth: '240px' },
-    onkeydown: async (e) => {
-      if (e.key !== 'Enter' || !e.target.value.trim()) return;
-      await ensureUser();
-      await addNote(a.key, e.target.value);
-      e.target.value = '';
-      draw();
-    },
-  });
+/**
+ * Notes on one alert, in a panel anchored to the button that opened it.
+ *
+ * This used to be a row spliced into the table, which pushed everything below it down
+ * the page for the sake of two lines of text. Anchored, it costs no layout at all and
+ * dismisses itself on Escape or a click anywhere else.
+ */
+function openNotes(trigger, a) {
+  popover(trigger, (ctx) => {
+    const rec = ackFor(a.key);
+    const notes = (rec.notes || []).slice().sort((x, y) => x.ts - y.ts);
 
-  return h('div', { style: { display: 'grid', gap: '7px', padding: '4px 0 8px' } },
-    rec.acked
-      ? h('div.muted', { style: { fontSize: '11.5px' } },
-          `Acknowledged by ${rec.ackedBy || 'operator'} ${ago(rec.ackedAt)}`)
-      : null,
-    (rec.notes || []).length
-      ? h('div', ...rec.notes.slice().sort((x, y) => x.ts - y.ts).map((n) =>
-          h('div.note',
-            h('b', n.by || 'operator'), h('span.when', { title: dt(n.ts) }, ago(n.ts)),
-            h('div', n.text),
-            h('button.btn.sm.ghost', {
-              style: { padding: '0 5px', fontSize: '11px' },
-              title: 'Remove this note',
-              onclick: async () => {
-                if (await confirmDialog('Remove this note?', n.text, { yes: 'remove', danger: true })) {
-                  await removeNote(a.key, n.ts); draw();
-                }
-              },
-            }, ICON.delete))))
-      : h('div.muted', { style: { fontSize: '11.5px' } }, 'No notes yet.'),
-    h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-      input,
-      h('button.btn.sm', {
-        onclick: async (e) => {
-          const box = e.target.previousSibling;
-          if (!box.value.trim()) return;
-          await ensureUser();
-          await addNote(a.key, box.value);
-          box.value = '';
-          draw();
-        },
-      }, 'Add note')));
+    const input = h('input#note-input', {
+      type: 'text', placeholder: 'What was found, who is on it, ticket number…',
+      style: { flex: '1', minWidth: '190px' },
+      onkeydown: async (e) => {
+        if (e.key !== 'Enter' || !e.target.value.trim()) return;
+        await saveNote(a, e.target.value);
+        ctx.rebuild();
+      },
+    });
+
+    return h('div', { style: { display: 'grid', gap: '7px' } },
+      rec.acked
+        ? h('div.muted', { style: { fontSize: '11px' } },
+            `Acknowledged by ${rec.ackedBy || 'operator'} ${ago(rec.ackedAt)}`)
+        : null,
+      notes.length
+        ? h('div', { style: { display: 'grid', gap: '4px' } }, ...notes.map((n) =>
+            h('div.note',
+              h('b', n.by || 'operator'), h('span.when', { title: dt(n.ts) }, ago(n.ts)),
+              h('div', n.text),
+              h('button.btn.sm.ghost', {
+                style: { padding: '0 5px', fontSize: '11px' },
+                title: 'Remove this note',
+                onclick: async () => {
+                  if (await confirmDialog('Remove this note?', n.text, { yes: 'remove', danger: true })) {
+                    await removeNote(a.key, n.ts);
+                    ctx.rebuild();
+                    draw();
+                  }
+                },
+              }, ICON.delete))))
+        : h('div.muted', { style: { fontSize: '11.5px' } }, 'No notes yet.'),
+      h('div', { style: { display: 'flex', gap: '6px' } },
+        input,
+        h('button.btn.sm.primary', {
+          onclick: async () => {
+            const box = $('#note-input');
+            if (!box || !box.value.trim()) return;
+            await saveNote(a, box.value);
+            ctx.rebuild();
+          },
+        }, 'Add')));
+  }, {
+    title: `Notes — ${a.cluster ? a.cluster.name : ''}`,
+    sub: a.title,
+    width: '340px',
+    // The count on the button changes, so the row behind it has to be redrawn.
+    onClose: () => draw(),
+  });
+}
+
+async function saveNote(a, text) {
+  await ensureUser();
+  await addNote(a.key, text);
+  toast('Note added');
+}
+
+/** A read-only peek, so notes can be read without opening anything. */
+function notePeek(el, a) {
+  const notes = (ackFor(a.key).notes || []).slice().sort((x, y) => y.ts - x.ts);
+  if (!notes.length) return;
+  // Built once and reused: the shared tooltip re-parents whatever it is given, so a
+  // fresh node per mousemove would rebuild this on every pixel.
+  const tip = h('div', { style: { display: 'grid', gap: '4px', maxWidth: '320px' } },
+    ...notes.slice(0, 4).map((n) => h('div',
+      h('b', n.by || 'operator'), h('span.muted', { style: { marginLeft: '5px' } }, ago(n.ts)),
+      h('div', { style: { fontSize: '11.5px' } }, n.text))),
+    notes.length > 4 ? h('div.muted', { style: { fontSize: '11px' } }, `…and ${notes.length - 4} more`) : null,
+    h('div.muted', { style: { fontSize: '10.5px', marginTop: '2px' } }, 'click to add or remove'));
+  const show = (e) => tooltip.show(tip, e.clientX, e.clientY);
+  el.addEventListener('mouseenter', show);
+  el.addEventListener('mousemove', show);
+  el.addEventListener('mouseleave', () => tooltip.hide());
+  // Opening the panel must not leave the peek hanging over it.
+  el.addEventListener('click', () => tooltip.hide());
 }
 
 function alertTable(rows) {
@@ -303,7 +343,6 @@ function alertTable(rows) {
     const rec = ackFor(a.key);
     const acked = !!rec.acked;
     const notes = noteCount(a.key);
-    const open = ui.expanded.has(a.key);
 
     trs.push(h(`tr${acked ? '.ack-row' : ''}`,
       h('td', pill(a.level === 'critical' ? 'critical' : 'warning', a.level === 'critical' ? 'red' : 'yellow')),
@@ -314,25 +353,26 @@ function alertTable(rows) {
           `ack ${rec.ackedBy || 'operator'} · ${ago(rec.ackedAt)}`) : null),
       h('td.muted', { style: { fontSize: '12px', maxWidth: '360px', wordBreak: 'break-word' } }, a.detail || ''),
       h('td', acked ? pill('acknowledged', 'grey') : pill('open', a.level === 'critical' ? 'red' : 'yellow')),
-      h('td', h('button.btn.sm.ghost', {
-        title: notes ? `${notes} note(s)` : 'Add a note',
-        onclick: () => { open ? ui.expanded.delete(a.key) : ui.expanded.add(a.key); draw(); },
-      }, `💬 ${notes || ''}`.trim())),
+      h('td', (() => {
+        const btn = h('button.btn.sm.ghost', {
+          title: notes ? `${notes} note(s) — click to add or remove` : 'Add a note',
+          onclick: (e) => { e.stopPropagation(); openNotes(btn, a); },
+        }, `💬 ${notes || ''}`.trim());
+        notePeek(btn, a);          // hover reads them; click edits them
+        return btn;
+      })()),
       h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
         acked
           ? h('button.btn.sm', { title: 'Put it back on the open list', onclick: () => doUnack(a) }, 'Re-open')
           : h('button.btn.sm.primary', { title: 'Mark as seen — it stays until the condition clears', onclick: () => doAck(a) }, 'ACK'),
         rowMenu([
-          { label: open ? 'Hide notes' : 'Notes & comments…', icon: '💬',
-            onClick: () => { open ? ui.expanded.delete(a.key) : ui.expanded.add(a.key); draw(); } },
+          { label: 'Notes & comments…', icon: '💬',
+            onClick: (e) => openNotes(e.target.closest('button') || e.target, a) },
           { label: `Go to ${r.label}`, icon: ICON.console, onClick: () => navigateTo(r.page) },
           { sep: true },
           { hint: `key: ${a.key}` },
         ], { title: `Actions for ${a.title}` })))));
 
-    if (open) {
-      trs.push(h('tr', h('td', { colspan: 7, style: { background: 'var(--surface-2)' } }, notesPanel(a))));
-    }
   });
   return table(['Level', 'Cluster', 'Alert', 'Detail', 'State', 'Notes', ''], trs,
     { emptyText: ui.show === 'open' ? 'Nothing open — every alert here is acknowledged.' : 'No alert matches the filter' });

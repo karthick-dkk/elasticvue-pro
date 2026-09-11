@@ -29,15 +29,15 @@ import * as pConsole from './pages/console.js';
 import * as pSettings from './pages/settings.js';
 
 const PAGES = [
-  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  key: '1' },
-  { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  key: '2' },
-  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, key: '3' },
-  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, key: '4' },
-  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, key: '5' },
-  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  key: '6' },
-  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  key: '7' },
-  { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  key: '8' },
-  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  key: '9' },
+  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true },
+  { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true },
+  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false },
+  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false },
+  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false },
+  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true },
+  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true },
+  { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true },
+  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true },
 ];
 
 const root = document.getElementById('root');
@@ -202,10 +202,11 @@ function renderNav() {
   const crit = a.filter((x) => x.level === 'critical').length;
   PAGES.forEach((p) => {
     if (p.id === 'settings') nav.append(h('div.nav-sep'));
-    // The alert count belongs on the tab: it is the reason to go there.
+    // The alert count belongs on the tab: it is the reason to go there. Nothing else
+    // gets a badge — the tabs used to show a shortcut number that no longer exists.
     const badge = p.id === 'alerts' && a.length
       ? h('span.pill', { class: crit ? 'red' : 'yellow', style: { fontSize: '10px', padding: '0 5px' } }, String(a.length))
-      : h('span.kbd', p.key);
+      : null;
     nav.append(h('button', {
       'aria-current': currentPage === p.id ? 'page' : null,
       onclick: () => go(p.id),
@@ -421,10 +422,9 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const p = PAGES.find((x) => x.key === e.key);
-  if (p) { go(p.id); return; }
+  // Number keys used to jump between pages. They are gone: a stray digit moving the
+  // page out from under someone is worse than the shortcut was worth.
   if (e.key === 'r' && !isSnapshotMode()) refreshAll({ force: true });
-  if (e.key === '?') alert(['Keyboard shortcuts', '', ...PAGES.map((x) => `${x.key}  ${x.label}`), 'r  refresh now'].join('\n'));
 });
 
 // Reload config from disk when the file changed and the window regains focus.

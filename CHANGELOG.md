@@ -1,6 +1,20 @@
 # Changelog
 
 ## Unreleased
+- **Number-key page shortcuts are gone**, along with the small digit each tab carried. A
+  stray keypress moving the page out from under someone was worse than the shortcut was
+  worth. The Alerts tab keeps its open-alert count — that is a reason to go there, not a
+  shortcut.
+- Fixed: **typing in a search box lost the caret after every keystroke.** Filtering rebuilds
+  the region the box sits in, which destroyed and replaced the box mid-keystroke, so focus
+  fell to the body and the next character went nowhere — most obvious on backspace.
+  `mount()` now restores focus, the caret and any selection when the element it replaces is
+  the one that had them, which fixes every search box at once rather than one page at a time.
+- **Notes on an alert open in a panel anchored to the button**, instead of a row spliced
+  into the table that pushed everything below it down the page. Hovering the note count
+  peeks at them read-only; clicking opens the panel to add or remove. It closes on Escape or
+  a click anywhere else, and adding a note raises a short confirmation rather than an alert
+  box.
 - **Hosted deployment (phase 1).** `espro-bridge` gains a hosted mode: with `ESPRO_BIND` set
   to a non-loopback address, every request must carry `X-Auth-User`, the identity a trusted
   reverse proxy sets after authenticating; without it the request is refused. Every write

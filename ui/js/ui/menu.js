@@ -7,7 +7,7 @@
  * two-step — open the menu, then confirm.
  */
 
-import { h, clear } from '../lib/dom.js';
+import { h, mount } from '../lib/dom.js';
 
 let open = null;   // the popup currently on screen, if any
 
@@ -63,15 +63,7 @@ function show(trigger, items) {
   }
 
   document.body.append(el);
-
-  // Anchor under the trigger, flipped or nudged to stay on screen.
-  const r = trigger.getBoundingClientRect();
-  const m = el.getBoundingClientRect();
-  const left = Math.min(Math.max(8, r.right - m.width), window.innerWidth - m.width - 8);
-  const below = r.bottom + 4;
-  const top = below + m.height > window.innerHeight - 8 ? Math.max(8, r.top - m.height - 4) : below;
-  el.style.left = `${left}px`;
-  el.style.top = `${top}px`;
+  anchorTo(el, trigger);
 
   const away = (e) => { if (!el.contains(e.target) && e.target !== trigger) close(); };
   const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
@@ -100,3 +92,94 @@ export const ICON = {
   console: '↗',
   free: '⌫',
 };
+
+/** Position a floating panel under its trigger, flipped or nudged to stay on screen. */
+export function anchorTo(el, trigger) {
+  const r = trigger.getBoundingClientRect();
+  const m = el.getBoundingClientRect();
+  const left = Math.min(Math.max(8, r.right - m.width), window.innerWidth - m.width - 8);
+  const below = r.bottom + 4;
+  const top = below + m.height > window.innerHeight - 8 ? Math.max(8, r.top - m.height - 4) : below;
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
+/* --------------------------------- popover ---------------------------------- */
+
+let openPop = null;
+
+export function closePopover() {
+  if (!openPop) return;
+  const { el, away, key, onClose } = openPop;
+  el.remove();
+  document.removeEventListener('mousedown', away, true);
+  document.removeEventListener('keydown', key, true);
+  window.removeEventListener('resize', closePopover);
+  window.removeEventListener('scroll', closePopover, true);
+  openPop = null;
+  if (onClose) onClose();
+}
+
+/**
+ * A panel anchored to what you clicked, for content that does not deserve a row of its
+ * own — notes on an alert, say. Unlike the row menu it stays open while you interact
+ * with it, and closes on Escape, on a click outside, or when its own content asks to.
+ *
+ * @param trigger  the element to anchor under
+ * @param build    (ctx) => Node — ctx.close() dismisses, ctx.rebuild() redraws in place
+ * @param opts     { title, sub, width, onClose }
+ */
+export function popover(trigger, build, opts = {}) {
+  const already = openPop && openPop.trigger === trigger;
+  closePopover();
+  closeMenus();
+  if (already) return null;   // clicking the same trigger again closes it
+
+  const el = h('div.pop', opts.width ? { style: { minWidth: opts.width } } : null);
+  const body = h('div.body');
+  const ctx = {
+    close: closePopover,
+    rebuild: () => { mount(body, build(ctx)); anchorTo(el, trigger); },
+  };
+
+  el.append(
+    h('header', h('span', opts.title || ''),
+      opts.sub ? h('span.sub', opts.sub) : null,
+      h('button.btn.sm.ghost', { title: 'Close', onclick: closePopover }, '×')),
+    body,
+  );
+  mount(body, build(ctx));
+  document.body.append(el);
+  anchorTo(el, trigger);
+
+  const away = (e) => { if (!el.contains(e.target) && e.target !== trigger && !trigger.contains(e.target)) closePopover(); };
+  const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closePopover(); } };
+  document.addEventListener('mousedown', away, true);
+  document.addEventListener('keydown', key, true);
+  window.addEventListener('resize', closePopover);
+  window.addEventListener('scroll', closePopover, true);
+
+  openPop = { el, trigger, away, key, onClose: opts.onClose };
+  const first = el.querySelector('input,textarea');
+  if (first) setTimeout(() => first.focus(), 0);
+  return ctx;
+}
+
+/* ---------------------------------- toast ------------------------------------ */
+
+let toastWrap = null;
+
+/**
+ * A short confirmation that fades itself out. For actions that close the panel they were
+ * performed in, where an alert() would be an interruption and silence would be a doubt.
+ */
+export function toast(message, kind = 'ok', ms = 2600) {
+  if (!toastWrap) { toastWrap = h('div.toast-wrap'); document.body.append(toastWrap); }
+  const el = h(`div.toast${kind === 'ok' ? '' : `.${kind}`}`, message);
+  toastWrap.append(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }, ms);
+  return el;
+}

@@ -106,7 +106,7 @@ function toolbar(all, shown) {
 
   return h('div.toolbar', { style: { marginBottom: '14px' } },
     h('label.field', 'Search clusters',
-      h('input', { type: 'search', value: ui.text, style: { minWidth: '260px' },
+      h('input#clusters-search', { type: 'search', value: ui.text, style: { minWidth: '260px' },
         placeholder: 'name, URL, tag, jump host, version, repository…',
         oninput: (e) => { ui.text = e.target.value; draw(); } })),
     h('label.field', 'Sort by', sortSel),

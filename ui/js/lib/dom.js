@@ -47,7 +47,48 @@ export const svg = (tag, attrs = {}, ...kids) => {
 };
 
 export function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
-export function mount(el, ...kids) { clear(el); kids.flat().forEach((k) => k && el.append(k)); return el; }
+
+/**
+ * Replace an element's contents, keeping the keyboard where it was.
+ *
+ * Pages re-render a region as you type in it — a search box filters a table, and the
+ * table's container is rebuilt. If the box itself sits in that container it is destroyed
+ * and replaced mid-keystroke, so focus lands on the body and the next character goes
+ * nowhere. Restoring focus, the caret and any selection makes that invisible, and does
+ * nothing at all when the focused element was not inside the region being replaced.
+ *
+ * Matching is by id, which is what identifies "the same control" across a rebuild.
+ */
+export function mount(el, ...kids) {
+  const active = document.activeElement;
+  let restore = null;
+  if (active && active.id && el.contains(active) && active !== el) {
+    restore = { id: active.id };
+    // Only text-like controls carry a caret; number/date/checkbox throw on the attempt.
+    try {
+      if (typeof active.selectionStart === 'number') {
+        restore.start = active.selectionStart;
+        restore.end = active.selectionEnd;
+        restore.dir = active.selectionDirection || 'none';
+      }
+    } catch (_) { /* not a text control; focus alone is enough */ }
+  }
+
+  clear(el);
+  kids.flat().forEach((k) => k && el.append(k));
+
+  if (restore) {
+    const next = el.querySelector(`#${CSS.escape(restore.id)}`);
+    if (next && typeof next.focus === 'function') {
+      next.focus({ preventScroll: true });
+      if (restore.start !== undefined && typeof next.setSelectionRange === 'function') {
+        try { next.setSelectionRange(restore.start, restore.end, restore.dir); }
+        catch (_) { /* the replacement is a different kind of control */ }
+      }
+    }
+  }
+  return el;
+}
 
 /** Shared singleton tooltip. */
 let tipEl = null;

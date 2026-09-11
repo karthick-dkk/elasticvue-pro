@@ -369,7 +369,7 @@ function historyCard() {
   return card('History', `${history.length} saved · ${history.filter((x) => x.fav).length} favourites`,
     h('div', { style: { display: 'grid', gap: '8px' } },
       h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-        h('input', { type: 'search', placeholder: 'filter by path, method, body or cluster…', value: ui.filter, style: { flex: '1', maxWidth: '420px' },
+        h('input#c-histfilter', { type: 'search', placeholder: 'filter by path, method, body or cluster…', value: ui.filter, style: { flex: '1', maxWidth: '420px' },
           oninput: (e) => { ui.filter = e.target.value; drawHistory(); } }),
         h('button.btn.sm', { onclick: () => { ui.showFav = !ui.showFav; drawHistory(); },
           style: ui.showFav ? { color: 'var(--warning)', borderColor: 'var(--warning)' } : null }, '★ favourites only'),
