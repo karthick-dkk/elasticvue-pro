@@ -67,7 +67,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ElasticVue Pro __VERSION__
+          # __VERSION__ is the app version, which cannot carry a pre-release identifier
+          # (the MSI target rejects it). The tag can, so the tag names the release.
+          releaseName: ElasticVue Pro ${{ github.ref_name }}
           releaseBody: |
             Multi-cluster Elasticsearch dashboard — direct or through an SSH jump host.
 
