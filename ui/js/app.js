@@ -222,10 +222,16 @@ function renderTopbar() {
   const crit = a.filter((x) => x.level === 'critical').length;
   const theme = document.documentElement.getAttribute('data-theme') || 'system';
 
-  const sel = h('select#cluster-select', { onchange: (e) => { state.selected = e.target.value; go(currentPage); } });
+  const sel = h('select#cluster-select', { onchange: (e) => {
+    // An explicit choice replaces any remembered fleet-wide view, including one this
+    // page borrowed from it.
+    state.selected = e.target.value;
+    fleetView = e.target.value === 'all';
+    go(currentPage);
+  } });
   if (page.multi) sel.append(h('option', { value: 'all' }, `All clusters (${clusters().length})`));
   clusters().forEach((c) => sel.append(h('option', { value: c.id }, c.name)));
-  if (!page.multi && state.selected === 'all' && clusters()[0]) state.selected = clusters()[0].id;
+  resolveSelection(page);
   sel.value = state.selected;
 
   mount(bar,
@@ -335,11 +341,29 @@ function renderSideFoot() {
 
 /* ---------------------------------- router ---------------------------------- */
 
+/**
+ * Single-cluster pages need one cluster; fleet pages should not lose "All clusters".
+ *
+ * Indices, the REST console and Live logs cannot show a fleet, so they pick a cluster.
+ * They used to do that by overwriting state.selected, which quietly threw away the
+ * user's fleet-wide view: glance at Indices, go back to Clusters, and you are looking
+ * at one cluster with no idea why. The fleet view is remembered and restored instead.
+ */
+let fleetView = true;
+
+function resolveSelection(page) {
+  if (!page.multi) {
+    if (state.selected === 'all' && clusters()[0]) state.selected = clusters()[0].id;
+  } else if (fleetView && state.selected !== 'all') {
+    state.selected = 'all';
+  }
+}
+
 export function go(id) {
   const page = PAGES.find((p) => p.id === id) || PAGES[0];
   currentPage = page.id;
   location.hash = `#/${page.id}`;
-  if (!page.multi && state.selected === 'all' && clusters()[0]) state.selected = clusters()[0].id;
+  resolveSelection(page);
   renderNav();
   renderTopbar();
   const view = $('#view');
