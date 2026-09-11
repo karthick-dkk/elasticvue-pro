@@ -11,9 +11,36 @@ LISTEN=${LISTEN:-443}
 U=alice; PW='test-password-1'
 fail=0; ok(){ echo "  ✓ $1"; }; bad(){ echo "  ✗ $1"; fail=1; }
 
+# The certificate, the auth gate and the database password are all gitignored, so on a
+# fresh clone — and in CI — none of them exist. Make throwaway ones; never overwrite.
+./trial-setup.sh
+
+docker compose build core 2>&1 | tail -2
 docker compose up -d 2>&1 | tail -3
+
+# If a container did not start — a port already taken is the usual reason — then whatever
+# else happens to answer on $LISTEN would be tested instead, and an unrelated web server
+# returning 200 would be reported as "UI served over TLS". Check the stack is actually up
+# before believing anything it says.
+running=$(docker compose ps --services --filter status=running | sort | tr '\n' ' ')
+for svc in core db nginx; do
+  case " $running " in
+    *" $svc "*) ;;
+    *) echo "  ✗ service '$svc' is not running — the trial would be testing something else"
+       echo "    running: ${running:-none}"
+       docker compose ps -a --format '    {{.Service}}  {{.Status}}'
+       docker compose logs --tail 25 "$svc" 2>&1 | sed 's/^/    /'
+       exit 1;;
+  esac
+done
+
 echo "waiting for nginx…"
-for i in $(seq 1 40); do curl -sk -o /dev/null "https://127.0.0.1:$LISTEN/" 2>/dev/null && break; sleep 1; done
+for i in $(seq 1 40); do
+  # Our nginx, not merely something listening: the auth gate answers 401, and that is the
+  # first property under test anyway.
+  [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$LISTEN/" 2>/dev/null)" = 401 ] && break
+  sleep 1
+done
 echo
 echo "== 1. no credentials =="
 code=$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$LISTEN/")
@@ -45,13 +72,18 @@ echo "== 4. the core is not reachable except through nginx =="
 # `docker inspect` is the authority: a null host binding means the port is exposed
 # inside the network only. (`docker compose port` prints ":0" for the same state, and
 # `compose ps` shows the image's EXPOSE as "8765/tcp" — neither is a host mapping.)
-binding=$(docker inspect deploy-core-1 --format '{{index .NetworkSettings.Ports "8765/tcp"}}' 2>/dev/null || echo '?')
+# Ask compose which container is the core rather than assuming it is called
+# deploy-core-1: the project name comes from the directory, so a checkout elsewhere
+# names it something else and the check would silently pass against nothing.
+CORE_ID=$(docker compose ps -q core)
+binding=$(docker inspect "$CORE_ID" --format '{{index .NetworkSettings.Ports "8765/tcp"}}' 2>/dev/null || echo '?')
 [ "$binding" = "[]" ] || [ "$binding" = "<no value>" ] || [ -z "$binding" ] \
   && ok "core has no host port binding (docker inspect: 8765/tcp -> none)" \
   || bad "core has a host binding for 8765: $binding — it must not"
 # And from a fresh container outside the compose network, the core's address is unreachable.
 if docker run --rm --network none alpine:3 sh -c 'true' >/dev/null 2>&1; then
-  if docker run --rm alpine:3 sh -c 'wget -q -T 2 -O /dev/null http://deploy-core-1:8765/ 2>/dev/null'; then
+  CORE_NAME=$(docker inspect "$CORE_ID" --format '{{.Name}}' | sed 's|^/||')
+  if docker run --rm alpine:3 sh -c "wget -q -T 2 -O /dev/null http://$CORE_NAME:8765/ 2>/dev/null"; then
     bad "core reachable from a container outside the compose network"
   else ok "core unreachable from outside the compose network"; fi
 fi

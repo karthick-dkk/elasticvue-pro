@@ -70,6 +70,27 @@ jobs:
 
           node tools/render-check.mjs --config tools/render-fixture.json
 
+  # The Linux deployment is a Dockerfile and a compose stack, and nothing else in CI
+  # touches either — a broken build or a hole in the auth gate would have been found by
+  # whoever deployed it next. This builds the image and runs the trial, which asserts the
+  # four properties the deployment exists for: 401 without credentials, the UI and the
+  # bridge over TLS with them, a write audited under the signed-in user's name, and the
+  # core with no host port binding and unreachable from outside the compose network.
+  hosted:
+    name: hosted stack — image & compose trial
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the image and trial the stack
+        run: deploy/trial.sh
+      - name: what the containers logged
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml logs --tail 60
+      - name: stop
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v
+
   audit:
     name: dependency advisories
     runs-on: ubuntu-latest

@@ -1,6 +1,22 @@
 # Changelog
 
 ## Unreleased
+- **The hosted Linux stack is built and trialled in CI.** Nothing tested the Dockerfile or
+  the compose stack, so a broken image or a hole in the auth gate would have been found by
+  whoever deployed next. A job now builds the image and runs `deploy/trial.sh` on every
+  push.
+- `deploy/trial.sh` runs on a fresh clone. Every credential the stack needs is gitignored,
+  so there were none to run against; `trial-setup.sh` makes throwaway ones for whatever is
+  missing and never overwrites a file that exists.
+- Fixed: **the trial could pass against a service that was not ours.** If a container
+  failed to start — a port already in use is the usual cause — the checks ran against
+  whatever else answered on that port, and an unrelated web server returning 200 was
+  reported as "UI served over TLS". The trial now asserts every container is running
+  before it believes anything, and waits for the auth gate's own 401 rather than for any
+  response at all.
+- Fixed: the trial identified the core container by the hardcoded name `deploy-core-1`, so
+  in a checkout whose compose project is named anything else the port-binding check
+  inspected nothing and passed. It asks compose which container is the core.
 
 ## 2.2.3-beta — 2026-09-11
 

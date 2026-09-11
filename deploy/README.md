@@ -95,11 +95,25 @@ needs `X-Auth-User` to arrive from something it can trust.
 
 ## Trying it on one machine first
 
-`deploy/trial.sh` brings the stack up against a mock cluster and proves the four things
-the deployment exists for: no credentials → 401 at nginx; valid credentials → the UI and
-the bridge over TLS; a write appears in the core's audit log under the signed-in user's
-name; and the core has no host port binding and is unreachable from a container outside
-the compose network. Run it after any change to the compose file or nginx config.
+```bash
+deploy/trial.sh          # nothing to set up first
+```
+
+It builds the image, makes throwaway credentials for anything missing (`trial-setup.sh`:
+a self-signed certificate, one user `alice` / `test-password-1`, a random database
+password — it never overwrites a file that is already there), brings the stack up and
+proves the four things the deployment exists for: no credentials → 401 at nginx; valid
+credentials → the UI and the bridge over TLS; a write appears in the core's audit log
+under the signed-in user's name; and the core has no host port binding and is unreachable
+from a container outside the compose network.
+
+It aborts if any container failed to start — a port already taken is the usual reason.
+Without that check the trial would test whatever else answers on that port, and an
+unrelated web server returning 200 would be reported as "UI served over TLS".
+
+This runs in CI on every push, so a broken Dockerfile or a hole in the auth gate is found
+here rather than by whoever deploys next. Run it locally after any change to the compose
+file or the nginx config.
 
 Note that `docker compose ps` shows `8765/tcp` against the core. That is the image's
 `EXPOSE` metadata — the port is open *inside* the compose network — not a host mapping;
