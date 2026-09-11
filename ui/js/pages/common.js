@@ -32,12 +32,22 @@ export function collapsible(title, sub, bodyFn, opts = {}) {
   const body = h('div.body', { hidden: !isOpen }, isOpen ? bodyFn() : null);
   const chevron = h('span', { style: { display: 'inline-block', width: '11px', fontSize: '10px' } },
     isOpen ? '▾' : '▸');
+  // The hint used to read "click to fold" whichever way the panel was, so a folded card
+  // invited you to fold it again. It moves with the chevron, from one place, so the two
+  // cannot disagree.
+  const hint = h('span.muted', { style: { marginLeft: 'auto', fontSize: '11px' } },
+    isOpen ? 'click to fold' : 'click to open');
+
+  const show = (open) => {
+    body.hidden = !open;
+    chevron.textContent = open ? '▾' : '▸';
+    hint.textContent = open ? 'click to fold' : 'click to open';
+  };
 
   const toggle = () => {
     const next = body.hidden;                    // hidden now => we are opening it
     if (next && !body.firstChild) mount(body, bodyFn());   // build on first open
-    body.hidden = !next;
-    chevron.textContent = next ? '▾' : '▸';
+    show(next);
     foldState.set(key, next);
     idb.setKV(key, next).catch(() => {});
   };
@@ -47,14 +57,12 @@ export function collapsible(title, sub, bodyFn, opts = {}) {
     if (v === undefined || v === null || v === !body.hidden) return;
     foldState.set(key, v);
     if (v && !body.firstChild) mount(body, bodyFn());
-    body.hidden = !v;
-    chevron.textContent = v ? '▾' : '▸';
+    show(v);
   }).catch(() => {});
 
   return h('section.card',
     h('header', { style: { cursor: 'pointer', userSelect: 'none' }, onclick: toggle },
-      chevron, h('h2', title), sub ? h('span.sub', sub) : null,
-      h('span.muted', { style: { marginLeft: 'auto', fontSize: '11px' } }, 'click to fold')),
+      chevron, h('h2', title), sub ? h('span.sub', sub) : null, hint),
     body);
 }
 

@@ -193,6 +193,11 @@ label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; 
 .card > header .sub { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .card > .body { padding: 14px; }
 .grid { display: grid; gap: 14px; }
+/* A grid stretches its items to the tallest row by default. For a folded card that means
+   an empty bordered box as tall as whatever sits beside it, which reads as a chart that
+   failed to draw. Cards take their natural height; stat tiles (div.stat) still stretch,
+   which is what keeps a row of them even. */
+.grid > .card { align-self: start; }
 .grid.c2 { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
 .grid.c3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .grid.c4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
