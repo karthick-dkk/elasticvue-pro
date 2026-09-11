@@ -34,6 +34,11 @@ export const DEFAULTS = {
   // the volume report then says so rather than assuming a number.
   liveRetention: '',
   snapshotRetention: '',
+  // Total size of the snapshot repository. Elasticsearch has no API for it — a repository
+  // is a bucket or a mount point, and only the operator knows how big it is. "2TB",
+  // "500 GB" or a bare number of GB. Empty means the report says "not set" rather than
+  // guessing.
+  backupCapacity: '',
   // ECS fields the Indices page breaks daily volume down by, and watches for spikes.
   // Each must be aggregatable; a `.keyword` sub-field is tried automatically.
   volumeFields: ['tag1', 'src_hostname'],
@@ -149,6 +154,7 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       volumeFields: normFields(c.volumeFields || c.volume_fields || defaults.volumeFields),
       liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
       snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
+      backupCapacity: c.backupCapacity || c.backup_capacity || defaults.backupCapacity || '',
       enabled: c.enabled !== false,
     };
   });

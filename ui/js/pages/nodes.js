@@ -161,11 +161,11 @@ function capacityCard(c, d) {
       r.liveRetention ? `storage is ${yesNo(r.liveRetentionMet)}` : null],
     ['Required for 30 days', gb(r.required30GB)],
     ['Required for 90 days', gb(r.required90GB)],
-    ['Live logs held', v.daysCovered ? `${v.daysCovered} days` : '–',
+    ['Live indices held', v.daysCovered ? `${v.daysCovered} days` : '–',
       v.oldestDay ? `${v.oldestDay} → ${v.newestDay}` : 'no dated indices'],
     // Live logs above is a span of data; keep the backup rows the same kind of thing, and
     // say separately when the snapshots ran so the two are not read as one.
-    ['Logs backed up', r.snapshotDataDays ? `${r.snapshotDataDays} days` : '–',
+    ['Indices backed up', r.snapshotDataDays ? `${r.snapshotDataDays} days` : '–',
       r.snapshotDataFrom ? `${r.snapshotDataFrom} → ${r.snapshotDataTo}`
         : r.snapshotCount ? 'indices in the snapshots are not named or not dated' : 'no snapshots'],
     ['Snapshots taken', r.snapshotsDays ? `${r.snapshotsDays} days` : '–',

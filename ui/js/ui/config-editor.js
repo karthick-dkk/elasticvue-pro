@@ -15,7 +15,7 @@ import { bridge } from '../core/transport.js';
 import { rememberConfigPath, pickFilePath } from '../core/platform.js';
 import { bus } from '../core/state.js';
 import { modal, confirmDialog, field, text, select, val, checked } from './modal.js';
-import { parseRetention } from '../core/volume.js';
+import { parseRetention, parseSize } from '../core/volume.js';
 
 let masterInMemory = null;      // master password for this session only (needed to seal new secrets)
 
@@ -180,6 +180,9 @@ export async function editCluster(existing = null) {
         'How long logs stay on the cluster. Used by the volume report. 30d, 3M, 90 days, 1y.'),
       field('Snapshot retention', text('ce-snapret', c.snapshotRetention || '', { placeholder: '6M' }),
         'How long snapshots are kept in the repository. Falls back to the SLM policy.'),
+      field('Backup capacity', text('ce-backupcap', c.backupCapacity || '', { placeholder: '2TB' }),
+        'Total size of the snapshot repository. Elasticsearch cannot report it, so the volume report ' +
+        'says "not set" until you do. 2TB, 500GB, or a bare number of GB.'),
       field('Note', text('ce-note', c.note || ''))),
     h('details.disc', { open: cred === 'own' },
       h('summary', 'Credential for this cluster only (optional)'),
@@ -216,6 +219,10 @@ export async function editCluster(existing = null) {
             if (!parseRetention(v)) return ctx.msg(`${key}: use a form like 30d, 90 days, 3M, 6 months or 1y.`);
             next[key] = v;
           }
+          const cap = val('ce-backupcap').trim();
+          if (!cap) delete next.backupCapacity;
+          else if (!parseSize(cap)) return ctx.msg('backupCapacity: use a form like 2TB, 500GB or a bare number of GB.');
+          else next.backupCapacity = cap;
           const cu = val('ce-cu').trim(), cp = val('ce-cp');
           if (cu) {
             next.username = cu;

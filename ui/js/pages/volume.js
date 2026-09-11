@@ -8,6 +8,7 @@ import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
 import { volumeReport, reportRows, SHEET_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
+import { popover } from '../ui/menu.js';
 
 let host = null;
 const ui = { measuring: new Set(), view: 'sheet', sort: 'name', dir: 1 };
@@ -169,8 +170,8 @@ function liveFitChart(r) {
       ? { label: `Retention policy (${r.liveRetention.label})`, value: r.requiredLiveGB,
           sub: 'the stated policy at the buffered daily rate' }
       : null,
-    { label: '30 days of logs', value: r.required30GB, sub: 'at the buffered daily rate' },
-    { label: '90 days of logs', value: r.required90GB, sub: 'at the buffered daily rate' },
+    { label: '30 days of indices', value: r.required30GB, sub: 'at the buffered daily rate' },
+    { label: '90 days of indices', value: r.required90GB, sub: 'at the buffered daily rate' },
   ].filter(Boolean);
   return capacityChart({ value: r.liveTotalGB, label: 'disk on this cluster' }, needs, { format: gb, labelWidth: 190 });
 }
@@ -181,18 +182,20 @@ function liveFitChart(r) {
  */
 function backupFitChart(r) {
   const needs = [
-    r.repoGB === null ? null : { label: 'Held in the repository now', value: r.repoGB, sub: 'sum of incremental snapshot bytes' },
-    r.snapshotRetention
-      ? { label: `Retention policy (${r.snapshotRetention.label})`, value: r.bufferedGB * r.snapshotRetention.days,
-          sub: 'upper bound — snapshots are incremental and usually smaller' }
-      : null,
-    { label: '365 days of backups', value: r.required365GB, sub: 'upper bound — snapshots are incremental' },
+    r.repoGB === null ? null : { label: 'Used right now', value: r.repoGB, sub: 'sum of incremental snapshot bytes' },
+    r.requiredSnapshotGB === null
+      ? null
+      : { label: `Retention policy (${r.snapshotRetention.label})`, value: r.requiredSnapshotGB,
+          sub: `(per day + 30%) × ${r.snapshotRetention.days} days — an upper bound, snapshots are incremental` },
+    { label: '365 days of backups', value: r.required365GB, sub: '(per day + 30%) × 365 — an upper bound' },
   ].filter(Boolean);
   if (!needs.length) return empty('Nothing to compare yet.');
+  // The capacity is the repository's total size, which only the config knows. Without it
+  // the requirements are still worth seeing — just not against a line that was invented.
   return capacityChart(
-    { value: r.repoGB || 0, label: 'held in the repository now' },
+    { value: r.backupCapacityGB || 0, label: 'repository space' },
     needs,
-    { format: gb, labelWidth: 190, capacityUnknown: r.repoGB === null });
+    { format: gb, labelWidth: 190, capacityUnknown: r.backupCapacityGB === null });
 }
 
 function volumeChart(reports) {
@@ -227,9 +230,12 @@ function clusterCardBody(r) {
 
     // The comparison the table makes you do in your head, drawn.
     h('div.grid.c2',
-      card('Will the logs fit on disk?', 'each requirement against the disk this cluster has',
+      card('Will the indices fit on disk?', 'each requirement against the disk this cluster has',
         liveFitChart(r)),
-      card('Will the backups fit?', r.repoGB === null ? 'repository size not measured yet' : 'against what the repository holds now',
+      card('Will the backups fit?',
+        r.backupCapacityGB === null
+          ? 'set backupCapacity on this cluster to compare against the space you have'
+          : `against the ${r.backupCapacityLabel} the repository has`,
         backupFitChart(r))),
 
     h('div.tbl-wrap', h('table.tbl', h('tbody', ...rows))),
@@ -286,7 +292,7 @@ function sheetView(reports) {
     h('tr', ...col.map((c, i) => h('th', {
       class: i === 0 ? 'stick' : '',
       style: { cursor: 'pointer' },
-      title: 'Sort by this column',
+      title: c.help ? `${c.label}${c.unit ? ` (${c.unit})` : ''}\n\n${c.help}\n\nClick to sort.` : 'Sort by this column',
       onclick: () => { ui.dir = ui.sort === c.label ? -ui.dir : 1; ui.sort = c.label; draw(); },
     }, c.label + (ui.sort === c.label ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''),
        c.unit ? h('span.unit', c.unit) : null))));
@@ -303,7 +309,71 @@ function sheetView(reports) {
 
   return card('Volume resource report', `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,
     h('div.sheet-wrap', h('table.sheet', head, body)),
-    [h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
+    [helpButton(), h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
+}
+
+/* ---------------------------------- what it all means ---------------------------- */
+
+/**
+ * Every column, explained.
+ *
+ * The report is thirty-odd columns of arithmetic, and someone seeing it for the first
+ * time has no way to tell a measurement from an estimate, or which of two similar names
+ * means which. The explanations live on the column definitions, so a column cannot be
+ * added without one and cannot be renamed here and not there.
+ */
+function helpButton() {
+  const btn = h('button.btn.sm.ghost', {
+    title: 'What do these columns mean?',
+    style: { fontWeight: '700', width: '26px', padding: '0' },
+    onclick: () => popover(btn, helpBody, {
+      title: 'How to read this report',
+      sub: `${SHEET_COLUMNS.length} columns`,
+      width: '440px',
+    }),
+  }, 'i');
+  return btn;
+}
+
+/** The two rules everything else is built on, then a line per column. */
+const HELP_PREAMBLE = [
+  ['Where the daily figure comes from',
+   'The last seven complete days of dated indices are measured, the three heaviest are averaged, and that is '
+   + '"indices size per day". Today is excluded — it is still being written to, so it would drag the average down. '
+   + 'The top three rather than all seven, so a quiet weekend does not make the estimate too small.'],
+  ['Why 30%',
+   'Sizing is done against the daily figure plus 30%. Every column whose name contains "needed" or "required" is '
+   + 'that buffered figure multiplied by a number of days — for example, backup space required for 365 days is '
+   + '(per day + 30%) × 365.'],
+  ['Measured, stated, or estimated',
+   'Disk figures come from Elasticsearch. Retention policies and the repository size come from your config file. '
+   + 'Anything called an estimate is arithmetic on the daily rate, not a reading — the column\'s own note says which.'],
+];
+
+function helpBody() {
+  const out = [];
+  for (const [title, text] of HELP_PREAMBLE) {
+    out.push(h('div', { style: { display: 'grid', gap: '2px' } },
+      h('b', { style: { fontSize: '12px' } }, title),
+      h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.5' } }, text)));
+  }
+
+  let group = null;
+  for (const c of SHEET_COLUMNS) {
+    if (c.group !== group) {
+      group = c.group;
+      out.push(h('div', {
+        style: { fontSize: '10.5px', letterSpacing: '.06em', textTransform: 'uppercase',
+                 color: 'var(--text-muted)', marginTop: '6px', paddingTop: '6px',
+                 borderTop: '1px solid var(--border)' },
+      }, group));
+    }
+    out.push(h('div', { style: { display: 'grid', gap: '1px' } },
+      h('div', { style: { fontSize: '12px', fontWeight: 600 } },
+        c.label, c.unit ? h('span.muted', { style: { fontWeight: 400 } }, ` (${c.unit})`) : null),
+      h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.5' } }, c.help || '—')));
+  }
+  return out;
 }
 
 /**

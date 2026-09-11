@@ -92,7 +92,9 @@ export function csvEscape(v) {
 
 export function toCsv(rows, headers) {
   const cols = headers || Object.keys(rows[0] || {});
-  return [cols.join(','), ...rows.map((r) => cols.map((c) => csvEscape(r[c])).join(','))].join('\n');
+  // The header row needs escaping exactly as much as the data does: a column name with a
+  // comma in it silently adds a column to the first line and misaligns the whole file.
+  return [cols.map(csvEscape).join(','), ...rows.map((r) => cols.map((c) => csvEscape(r[c])).join(','))].join('\n');
 }
 
 export function download(name, text, mime = 'text/plain') {
