@@ -11,6 +11,7 @@ import { rowMenu, ICON } from '../ui/menu.js';
 import {
   createSnapshotDialog, snapshotDetailsDialog, restoreSnapshotDialog, deleteSnapshot,
   deleteIndicesDialog, createRepositoryDialog, deleteRepository, verifyRepository, cleanupRepository,
+  snapshotIndicesDialog,
 } from '../ui/snapshot-dialogs.js';
 
 /** Default to the handful an operator actually looks at; "Show more" widens it. */
@@ -47,6 +48,7 @@ function clusterBlock(c) {
   const snaps = (d.snapshots && d.snapshots[selected]) || [];
 
   const cov = coverage(snaps, ui.days);
+  const dataRange = recoverableRange(snaps);
   const oldest = snaps.length ? snaps[snaps.length - 1] : null;
   const newest = snaps.length ? snaps[0] : null;
 
@@ -62,10 +64,13 @@ function clusterBlock(c) {
 
     h('div.grid.c4', { style: { marginBottom: '14px' } },
       statTile('Snapshots available', num(snaps.length), selected ? `in ${selected}` : 'no repository'),
-      statTile('Oldest snapshot', oldest ? dt(oldest.start).slice(0, 12) : '–', oldest ? ago(oldest.start) : ''),
-      statTile('Newest snapshot', newest ? dt(newest.start).slice(0, 12) : '–', newest ? ago(newest.start) : ''),
-      statTile('Retention window', oldest && newest ? `${Math.max(1, Math.round((newest.start - oldest.start) / 86400000))} days` : '–',
-        cov.missing.length ? `${cov.missing.length} day(s) with no snapshot` : 'no gaps in the window')),
+      statTile('Newest snapshot taken', newest ? dt(newest.start).slice(0, 12) : '–', newest ? ago(newest.start) : ''),
+      // The two questions are different: when snapshots ran, and which days of logs they
+      // hold. A snapshot taken this morning can contain ninety days of daily indices.
+      statTile('Log data recoverable from', dataRange.from || '–',
+        dataRange.from ? `through ${dataRange.to} · ${dataRange.days} days` : 'no dated indices in these snapshots'),
+      statTile('Snapshot runs cover', oldest && newest ? `${Math.max(1, Math.round((newest.start - oldest.start) / 86400000))} days` : '–',
+        cov.missing.length ? `${cov.missing.length} day(s) with no snapshot run` : 'a run every day in the window')),
 
     collapsible('Repositories', repos.length ? `${repos.length} registered · add or manage` : 'none registered',
       () => h('div',
@@ -162,6 +167,24 @@ function repoTable(c, d, repos) {
 
 /* ------------------------------------ coverage ---------------------------------- */
 
+/**
+ * Across every snapshot in the repository, the span of log days they hold between them.
+ *
+ * Distinct from when the snapshots ran: this is what could actually be restored, read
+ * from the dates in the index names each snapshot carries.
+ */
+function recoverableRange(snaps) {
+  let from = null, to = null;
+  for (const s of snaps) {
+    if (s.coverFrom && (from === null || s.coverFrom < from)) from = s.coverFrom;
+    if (s.coverTo && (to === null || s.coverTo > to)) to = s.coverTo;
+  }
+  const days = from && to
+    ? Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1
+    : 0;
+  return { from, to, days };
+}
+
 function coverage(snaps, days) {
   const today = new Date();
   const start = new Date(today.getTime() - (days - 1) * 86400000);
@@ -247,7 +270,20 @@ function snapTable(c, repo, snaps) {
       h('td.nowrap', { style: { fontSize: '11.5px' } }, dt(s.start)),
       h('td.nowrap.muted', { style: { fontSize: '11.5px' } }, s.end ? dt(s.end) : '–'),
       h('td.num', typeof s.duration === 'string' ? s.duration : dur(s.duration)),
-      h('td.num', num(s.indices)),
+      // What is in it, not just how many: the button opens a searchable list.
+      h('td', h('button.btn.sm.ghost', {
+        style: { fontVariantNumeric: 'tabular-nums' },
+        title: 'Show the indices this snapshot holds, searchable',
+        onclick: () => snapshotIndicesDialog(c, repo, s),
+      }, `${num(s.indices)} ▸`)),
+      // The days of data inside the snapshot — a snapshot taken this morning can hold
+      // ninety days of daily indices, and that span is what says how far back it reaches.
+      h('td.nowrap', { style: { fontSize: '11.5px' } },
+        s.coverFrom
+          ? h('span', { title: `${s.coverDays} day(s) of dated indices` }, `${s.coverFrom} → ${s.coverTo}`)
+          : s.indexNames === null
+            ? h('span.muted', { title: 'This repository was read with _cat, which does not name the indices' }, 'unknown')
+            : h('span.muted', { title: 'No index in this snapshot carries a date in its name' }, '–')),
       h('td.num', `${num(s.successful)}/${num(s.total)}`),
       h('td.num', s.failed ? h('span.pill.red', h('i.dot'), num(s.failed)) : h('span.muted', '0')),
       h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
@@ -266,6 +302,7 @@ function snapTable(c, repo, snaps) {
             onClick: () => deleteSnapshot(c, repo, s.id, refresh) },
         ], { title: `Actions for ${s.id}` }))));
   });
-  return table(['Snapshot', 'Status', 'Started', 'Ended', 'Duration', 'Indices', 'Shards ok', 'Failed', ''], trs,
+  return table(['Snapshot', 'Status', 'Taken', 'Ended', 'Duration', 'Indices', 'Data inside covers',
+                'Shards ok', 'Failed', ''], trs,
     { emptyText: 'No snapshots in this repository' });
 }

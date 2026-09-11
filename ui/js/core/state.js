@@ -331,28 +331,41 @@ export async function fetchSnapshots(id) {
   d.snapshots = d.snapshots || {};
   for (const repo of d.repos) {
     try {
-      const rows = await cl.snapshotsCat(repo.name);
-      d.snapshots[repo.name] = rows.map((r) => ({
-        id: r.id,
-        status: r.status,
-        start: Number(r.start_epoch) * 1000,
-        end: Number(r.end_epoch) * 1000,
-        duration: r.duration,
-        indices: Number(r.indices) || 0,
-        successful: Number(r.successful_shards) || 0,
-        failed: Number(r.failed_shards) || 0,
-        total: Number(r.total_shards) || 0,
-      })).sort((a, b) => b.start - a.start);
+      // The verbose listing is one call per repository and carries the index names,
+      // which is what makes "which days of logs are actually in here" answerable.
+      // _cat/snapshots is cheaper but returns only a count, so it is the fallback.
+      const j = await cl.snapshots(repo.name, 500);
+      d.snapshots[repo.name] = (j.snapshots || []).map((s) => {
+        const names = s.indices || [];
+        return {
+          id: s.snapshot, status: s.state,
+          start: s.start_time_in_millis, end: s.end_time_in_millis,
+          duration: s.duration_in_millis,
+          indices: names.length,
+          indexNames: names,
+          ...coveredDays(names, cl.c.indexNameRegex),
+          successful: (s.shards || {}).successful || 0, failed: (s.shards || {}).failed || 0,
+          total: (s.shards || {}).total || 0,
+        };
+      }).sort((a, b) => b.start - a.start);
       repo.error = null;
     } catch (e) {
       try {
-        const j = await cl.snapshots(repo.name, 500);
-        d.snapshots[repo.name] = (j.snapshots || []).map((s) => ({
-          id: s.snapshot, status: s.state,
-          start: s.start_time_in_millis, end: s.end_time_in_millis,
-          duration: s.duration_in_millis, indices: (s.indices || []).length,
-          successful: (s.shards || {}).successful || 0, failed: (s.shards || {}).failed || 0,
-          total: (s.shards || {}).total || 0,
+        const rows = await cl.snapshotsCat(repo.name);
+        d.snapshots[repo.name] = rows.map((r) => ({
+          id: r.id,
+          status: r.status,
+          start: Number(r.start_epoch) * 1000,
+          end: Number(r.end_epoch) * 1000,
+          duration: r.duration,
+          indices: Number(r.indices) || 0,
+          // _cat does not name the indices, so the covered range is unknown rather
+          // than empty — the page says so instead of showing a misleading blank.
+          indexNames: null,
+          coverFrom: null, coverTo: null, coverDays: 0,
+          successful: Number(r.successful_shards) || 0,
+          failed: Number(r.failed_shards) || 0,
+          total: Number(r.total_shards) || 0,
         })).sort((a, b) => b.start - a.start);
         repo.error = null;
       } catch (e2) {
@@ -363,6 +376,28 @@ export async function fetchSnapshots(id) {
   }
   state.data.set(id, d);
   bus.emit('data', id);
+}
+
+/**
+ * Which days of data a snapshot actually holds, read from the dates in its index names.
+ *
+ * This is not the same question as when the snapshot ran: a snapshot taken this morning
+ * can contain ninety days of daily indices, and it is the span of those that says how
+ * far back the backup reaches.
+ */
+function coveredDays(names, reSrc) {
+  let from = null, to = null, dated = 0;
+  for (const n of names || []) {
+    const day = parseIndexName(n, reSrc).day;
+    if (!day) continue;
+    dated++;
+    if (from === null || day < from) from = day;
+    if (to === null || day > to) to = day;
+  }
+  const span = from && to
+    ? Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1
+    : 0;
+  return { coverFrom: from, coverTo: to, coverDays: span, datedIndices: dated };
 }
 
 export async function fetchIndices(id, pattern = '*') {

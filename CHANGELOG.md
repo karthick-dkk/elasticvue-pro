@@ -1,6 +1,18 @@
 # Changelog
 
 ## Unreleased
+- **Volume report columns are named in English.** "Per day", "Basis", "Lasts", "Holds",
+  "Config = ILM" and the rest are gone; no label now needs its group header beside it to be
+  understood, and no two columns share a name — "Policy" and "Storage sufficient" each
+  appeared twice, in different groups, meaning different things.
+- **Snapshots say which days of logs they hold**, not just when they ran. A snapshot taken
+  this morning can contain ninety days of daily indices, and that span is what decides
+  whether a given day can be restored. It is read from the dates in the index names, shown
+  per snapshot as *Data inside covers*, and summarised for the repository as *Log data
+  recoverable from*. Where a repository can only be read with `_cat`, which does not name
+  the indices, the range reads "unknown" rather than blank.
+- **An indices column on each snapshot**: the count is a button, and it opens the list of
+  indices that snapshot holds with a search box and CSV export.
 - **Number-key page shortcuts are gone**, along with the small digit each tab carried. A
   stray keypress moving the page out from under someone was worse than the shortcut was
   worth. The Alerts tab keeps its open-alert count — that is a reason to go there, not a

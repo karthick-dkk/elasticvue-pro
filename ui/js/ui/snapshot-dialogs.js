@@ -7,7 +7,7 @@
  */
 
 import { h, mount, $ } from '../lib/dom.js';
-import { bytes, num, dt, dur, ago } from '../lib/fmt.js';
+import { bytes, num, dt, dur, ago, toCsv, download } from '../lib/fmt.js';
 import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
 import { ensureWrites } from '../core/writes.js';
 import { client } from '../core/state.js';
@@ -483,4 +483,74 @@ export async function cleanupRepository(cluster, name, { onChanged } = {}) {
   } catch (e) {
     alert(`Cleanup failed: ${e.message}`);
   }
+}
+
+/* ---------------------- what is inside one snapshot ------------------------- */
+
+/**
+ * The indices a snapshot holds, searchable.
+ *
+ * A snapshot's name tells you when it ran; this tells you what is in it — which is the
+ * question actually asked when someone wants to know whether a given day can be restored.
+ * The list comes from the snapshot listing already in memory, so opening this costs
+ * nothing; only a repository read with `_cat` (no index names) has to ask the cluster.
+ */
+export async function snapshotIndicesDialog(cluster, repo, snap) {
+  let names = snap.indexNames;
+
+  // The _cat fallback does not name the indices. Fetch just this snapshot's detail.
+  if (!names) {
+    try {
+      const j = await client(cluster.id).snapshotDetail(repo, snap.id);
+      names = ((j.snapshots || [])[0] || {}).indices || [];
+    } catch (e) {
+      alert(`Could not read the index list: ${e.message}`);
+      return;
+    }
+  }
+
+  const sorted = [...names].sort();
+  const state = { filter: '' };
+  const listBox = h('div', {
+    style: { maxHeight: '340px', overflow: 'auto', border: '1px solid var(--border)',
+             borderRadius: '6px', padding: '6px' },
+  });
+  const count = h('span.muted', { style: { fontSize: '11.5px' } }, '');
+
+  const visible = () => {
+    const f = state.filter.trim().toLowerCase();
+    return f ? sorted.filter((n) => n.toLowerCase().includes(f)) : sorted;
+  };
+  const drawList = () => {
+    const rows = visible();
+    mount(count, `${num(rows.length)} of ${num(sorted.length)} indices`);
+    mount(listBox, rows.length
+      ? h('div', ...rows.map((n) => h('div', {
+          style: { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '1px 0' },
+        }, h('span.mono', { style: { fontSize: '11.5px', wordBreak: 'break-all' } }, n))))
+      : h('div.muted', { style: { fontSize: '12px', padding: '8px' } }, 'No index matches that text.'));
+  };
+  drawList();
+
+  const body = [
+    h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '12px' } },
+      h('span', h('b', 'Taken'), ' ', dt(snap.start)),
+      h('span', h('b', 'State'), ' ', snap.status),
+      snap.coverFrom
+        ? h('span', h('b', 'Data covers'), ` ${snap.coverFrom} → ${snap.coverTo} (${snap.coverDays} days)`)
+        : h('span.muted', 'no dated indices in this snapshot')),
+    h('input', { type: 'search', placeholder: 'filter these indices…', style: { width: '100%' },
+      oninput: (e) => { state.filter = e.target.value; drawList(); } }),
+    listBox,
+    count,
+  ];
+
+  return modal(`Indices in ${snap.id}`, `${repo} · ${cluster.name}`, body, (ctx) => [
+    h('button.btn.sm', {
+      onclick: () => download(`indices-in-${snap.id}.csv`,
+        toCsv(sorted.map((n) => ({ snapshot: snap.id, repository: repo, index: n }))), 'text/csv'),
+    }, 'Export CSV'),
+    h('div', { style: { marginLeft: 'auto' } },
+      h('button.btn', { onclick: () => ctx.done(null) }, 'Close')),
+  ], { width: '620px' });
 }
