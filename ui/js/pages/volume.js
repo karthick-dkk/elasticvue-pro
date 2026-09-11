@@ -195,7 +195,9 @@ function sheetView(reports) {
     const cls = [i === 0 ? 'stick' : '', c.kind === 'num' ? 'num' : '',
                  c.kind === 'bool' ? (text === 'YES' ? 'yes' : text === 'NO' ? 'no' : 'unknown') : '']
       .filter(Boolean).join('.');
-    return h(cls ? `td.${cls}` : 'td', { title: text.length > 24 ? text : null }, text);
+    // A column can explain itself on hover; otherwise only truncated text needs a title.
+    const tip = c.title ? c.title(r) : text.length > 24 ? text : null;
+    return h(cls ? `td.${cls}` : 'td', { title: tip }, text);
   }))));
 
   return card('Volume resource report', `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,

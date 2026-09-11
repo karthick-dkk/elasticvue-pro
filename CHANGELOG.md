@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- The volume report no longer carries "How that was measured" and "Days measured" as
+  columns. The first was a sentence repeated down every row, which drowned the numbers on
+  either side of it; the second is contained in that sentence. The explanation now hangs off
+  the figure it explains, as hover text on the per-day value, so it can still be checked
+  without taking up the grid.
 - **Volume report columns are named in English.** "Per day", "Basis", "Lasts", "Holds",
   "Config = ILM" and the rest are gone; no label now needs its group header beside it to be
   understood, and no two columns share a name — "Policy" and "Storage sufficient" each

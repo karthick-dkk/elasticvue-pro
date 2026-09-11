@@ -272,10 +272,13 @@ export const SHEET_COLUMNS = [
   { group: 'Cluster', label: 'Elasticsearch URL', kind: 'text', get: (r) => r.cluster.url },
   { group: 'Cluster', label: 'Tags', kind: 'text', get: (r) => (r.cluster.tags || []).join(', ') },
 
-  { group: 'How much comes in', label: 'Log volume per day', unit: 'GB', kind: 'num', get: (r) => round1(r.perDayGB) },
-  { group: 'How much comes in', label: 'Per day + 30% buffer', unit: 'GB', kind: 'num', get: (r) => round1(r.bufferedGB) },
-  { group: 'How much comes in', label: 'How that was measured', kind: 'text', get: (r) => r.vol.basis },
-  { group: 'How much comes in', label: 'Days measured', kind: 'num', get: (r) => r.vol.windowDays },
+  // How the daily figure was arrived at is worth being able to check, but it is a
+  // sentence — repeated down a spreadsheet it drowns the numbers either side of it.
+  // It hangs off the figure it explains instead, as hover text.
+  { group: 'How much comes in', label: 'Log volume per day', unit: 'GB', kind: 'num',
+    get: (r) => round1(r.perDayGB), title: (r) => r.vol.basis },
+  { group: 'How much comes in', label: 'Per day + 30% buffer', unit: 'GB', kind: 'num',
+    get: (r) => round1(r.bufferedGB), title: () => 'The daily figure plus 30% headroom — what sizing is done against' },
 
   { group: 'Disk on the cluster', label: 'Disk total', unit: 'GB', kind: 'num', get: (r) => round1(r.liveTotalGB) },
   { group: 'Disk on the cluster', label: 'Disk used', unit: '%', kind: 'num', get: (r) => (r.livePct === null ? null : round1(r.livePct)) },
