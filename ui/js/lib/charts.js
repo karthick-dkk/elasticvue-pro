@@ -74,12 +74,16 @@ export function hbarList(items, opts = {}) {
 
 /* --------------------------------- usage meter -------------------------------- */
 export function usageMeter(used, total, opts = {}) {
+  // `used` and `total` are whatever unit the caller works in, so the caller says how to
+  // print them. Defaulting to bytes kept the old signature working, but it silently
+  // rendered GB figures as bytes — 155.5 GB came out as "156 B".
+  const format = opts.format || bytes;
   const p = total > 0 ? (used / total) * 100 : 0;
   const color = p >= (opts.crit ?? 90) ? STATUS.critical : p >= (opts.warn ?? 80) ? STATUS.warning : STATUS.good;
   const el = h('div', { style: { display: 'grid', gap: '4px' } },
     h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '11.5px' } },
       h('span.sec', opts.label || 'Disk'),
-      h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, `${bytes(used)} / ${bytes(total)} · ${pct(p)}`)),
+      h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, `${format(used)} / ${format(total)} · ${pct(p)}`)),
     h('div.bar-mini', { style: { height: opts.thick ? '10px' : '6px' } },
       h('i', { style: { width: `${Math.min(100, Math.max(1.5, p))}%`, background: color } }))
   );

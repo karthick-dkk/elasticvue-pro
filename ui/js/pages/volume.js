@@ -150,7 +150,7 @@ function usageList(reports) {
       h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px' } },
         h('b', r.cluster.name),
         h('span.muted', `${gb(r.liveUsedGB)} of ${gb(r.liveTotalGB)} · ${gb(r.liveFreeGB)} free`)),
-      usageMeter(r.liveUsedGB, r.liveTotalGB, { label: '', thick: true,
+      usageMeter(r.liveUsedGB, r.liveTotalGB, { label: '', thick: true, format: gb,
         warn: state.defaults.diskWarnPercent, crit: state.defaults.diskCritPercent }))));
 }
 
