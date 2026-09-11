@@ -85,6 +85,11 @@ export function diskClass(p, warn = 80, crit = 90) {
   return 'green';
 }
 
+/** `1 day`, `2 days` — a count with a noun that agrees with it. */
+export function plural(n, noun, plur) {
+  return `${n} ${n === 1 ? noun : plur || `${noun}s`}`;
+}
+
 export function csvEscape(v) {
   const s = v === null || v === undefined ? '' : String(v);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;

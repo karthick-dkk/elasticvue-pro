@@ -262,7 +262,7 @@ function snapshotWindow(data) {
   const day = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
   return {
     from: day(from), to: day(to), count,
-    days: from && to ? Math.max(1, Math.round((to - from) / 86400000) + 1) : 0,
+    days: spanDays(from, to),
     dataFrom, dataTo,
     dataDays: dataFrom && dataTo
       ? Math.round((Date.parse(`${dataTo}T00:00:00Z`) - Date.parse(`${dataFrom}T00:00:00Z`)) / 86400000) + 1
@@ -271,6 +271,18 @@ function snapshotWindow(data) {
 }
 
 /* --------------------------------- presentation -------------------------------- */
+
+/**
+ * How many days a range covers, counting both ends.
+ *
+ * Snapshots taken on the 10th and the 11th cover two days, not one. Exported because
+ * the Snapshots page asks the same question about the same snapshots, and a second
+ * implementation of it drifted: the report said 2 days while that page said 1.
+ */
+export function spanDays(fromMs, toMs) {
+  if (!fromMs || !toMs) return 0;
+  return Math.max(1, Math.round((toMs - fromMs) / 86400000) + 1);
+}
 
 export const gb = (v) => (v === null || v === undefined || !isFinite(v) ? '–' : `${v.toFixed(1)} GB`);
 export const days = (v) => (v === null || v === undefined || !isFinite(v) ? '–' : `${Math.floor(v)} days`);

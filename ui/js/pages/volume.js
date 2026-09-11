@@ -2,7 +2,7 @@
  *  the retention it promises. Exportable for the whole fleet. */
 
 import { h, mount, $ } from '../lib/dom.js';
-import { bytes, num, ago, dt, toCsv, download } from '../lib/fmt.js';
+import { bytes, num, ago, dt, toCsv, download, plural } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
@@ -51,7 +51,7 @@ function draw() {
   mount(host,
     h('div.grid.c4', { style: { marginBottom: '10px' } },
       statTile('Fleet ingest', `${totalPerDay.toFixed(1)} GB`, 'per day, all clusters'),
-      statTile('Live storage', `${totalLive.toFixed(0)} GB`, `${num(list.length)} clusters`),
+      statTile('Live storage', `${totalLive.toFixed(0)} GB`, plural(list.length, 'cluster')),
       statTile('Runs out first', shortest ? `${Math.floor(shortest.liveSufficientDays)} d` : '–',
         shortest ? shortest.cluster.name : 'no disk data'),
       statTile('Retention at risk', String(failing),

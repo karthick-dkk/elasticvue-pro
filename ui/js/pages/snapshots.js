@@ -1,7 +1,8 @@
 /** Page 5 — snapshots, SLM policies and repositories: what exists, and managing it. */
 
 import { h, mount, $ } from '../lib/dom.js';
-import { num, dt, dur, ago, bytes, eachDay, ymdDots, toCsv, download } from '../lib/fmt.js';
+import { spanDays } from '../core/volume.js';
+import { num, dt, dur, ago, bytes, eachDay, ymdDots, toCsv, download, plural } from '../lib/fmt.js';
 import { state, client, activeClusters, fetchSnapshots, fetchOverview } from '../core/state.js';
 import { coverageStrip } from '../lib/charts.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
@@ -69,7 +70,7 @@ function clusterBlock(c) {
       // they hold. A snapshot taken this morning can contain ninety days of daily indices.
       statTile('Index data recoverable from', dataRange.from || '–',
         dataRange.from ? `through ${dataRange.to} · ${dataRange.days} days` : 'no dated indices in these snapshots'),
-      statTile('Snapshot runs cover', oldest && newest ? `${Math.max(1, Math.round((newest.start - oldest.start) / 86400000))} days` : '–',
+      statTile('Snapshot runs cover', oldest && newest ? plural(spanDays(oldest.start, newest.start), 'day') : '–',
         cov.missing.length ? `${cov.missing.length} day(s) with no snapshot run` : 'a run every day in the window')),
 
     collapsible('Repositories', repos.length ? `${repos.length} registered · add or manage` : 'none registered',
