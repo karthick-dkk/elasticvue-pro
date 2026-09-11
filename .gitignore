@@ -28,3 +28,4 @@ pins.json
 .DS_Store
 .idea/
 .vscode/
+.gstack/
