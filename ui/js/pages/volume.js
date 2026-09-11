@@ -409,10 +409,16 @@ function exportTall(reports) {
  */
 function exportWide(reports) {
   // Same column definitions the grid uses, so the file and the screen cannot diverge.
+  //
+  // The header is the column's own name and nothing else. It used to carry the group as a
+  // prefix joined by an em dash — "Backups (snapshots) — Backup space used (GB)" — which
+  // made every header long, and the dash arrives mangled in a spreadsheet that reads the
+  // file as anything but UTF-8. The group is a heading for the screen; a CSV is flat, and
+  // all 36 labels are unique on their own.
   const rows = reports.map((r) => {
     const o = {};
     for (const c of SHEET_COLUMNS) {
-      o[c.unit ? `${c.group} — ${c.label} (${c.unit})` : `${c.group} — ${c.label}`] = sheetCell(c, r);
+      o[c.unit ? `${c.label} (${c.unit})` : c.label] = sheetCell(c, r);
     }
     o['Generated at'] = new Date().toISOString();
     return o;
