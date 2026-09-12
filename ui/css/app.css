@@ -179,6 +179,12 @@ input[type="number"], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-bottom: 14px; }
+/* Inputs, selects and buttons come out 31, 29 and 25px tall. Bottom-aligned in a row that
+   stacks a label above each one, those three heights push the labels to three different
+   baselines and the filter row reads as ragged. One height, so the labels line up. */
+.toolbar label.field > input,
+.toolbar label.field > select,
+.toolbar label.field > button { height: 30px; }
 
 /* ---------------------------------- cards ---------------------------------- */
 .card {
