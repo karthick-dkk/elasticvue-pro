@@ -330,13 +330,16 @@ function diskCard(rows) {
   const items = rows.filter((r) => r.d.disk).map((r) => ({
     key: r.c.id, label: r.c.name, value: r.d.disk.used,
     sub: `${pct(r.d.disk.percent)} of ${bytes(r.d.disk.total)}`,
+    // Same thresholds and the same meaning as the DISK USAGE meter in the table above,
+    // so the same colours. This used to fall back to --series-1 (a categorical chart hue)
+    // for "normal", which put green in the table and blue in the chart for one measure.
     color: r.d.disk.percent >= state.defaults.diskCritPercent ? 'var(--critical)'
-      : r.d.disk.percent >= state.defaults.diskWarnPercent ? 'var(--warning)' : 'var(--series-1)',
+      : r.d.disk.percent >= state.defaults.diskWarnPercent ? 'var(--warning)' : 'var(--good)',
   }));
   const body = items.length
     ? h('div', hbarList(items, { format: bytes, topN: 14, labelWidth: 140 }),
         h('div.legend',
-          h('span', h('i', { style: { background: 'var(--series-1)' } }), 'normal'),
+          h('span', h('i', { style: { background: 'var(--good)' } }), 'normal'),
           h('span', h('i', { style: { background: 'var(--warning)' } }), `≥ ${state.defaults.diskWarnPercent}% used`),
           h('span', h('i', { style: { background: 'var(--critical)' } }), `≥ ${state.defaults.diskCritPercent}% used`)))
     : empty('No allocation data');
