@@ -234,7 +234,11 @@ table.tbl th.sortable { cursor: pointer; user-select: none; }
 table.tbl th.sortable:hover { color: var(--text-primary); }
 table.tbl td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
 table.tbl tbody tr:hover td { background: var(--surface-2); }
-table.tbl td.num, table.tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* A number and its unit are one token. Left to wrap, a narrow column breaks "143 GB"
+   into "143" over "GB", and "3 (3 data)" into "3 (3" over "data)" — the value and what
+   it measures end up on different lines. Numeric cells never wrap; the table already
+   scrolls inside .tbl-wrap if a column needs the room. */
+table.tbl td.num, table.tbl th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 .tbl-empty { padding: 26px; text-align: center; color: var(--text-muted); }
 
