@@ -412,10 +412,18 @@ body.popup { width: 330px; background: var(--surface-1); }
    header to reach it. Reserved width, so nothing shifts when it appears. */
 .sheet thead th .colinfo {
   display: inline-flex; align-items: center; justify-content: center;
+  position: relative;
   width: 13px; height: 13px; margin-left: 4px; padding: 0; vertical-align: -2px;
   border: 1px solid var(--border-strong); border-radius: 50%; background: transparent;
   color: var(--text-muted); font-size: 9px; font-weight: 700; font-style: italic;
   line-height: 1; cursor: help; opacity: 0; transition: opacity .08s;
+}
+/* The mark stays 13px so it does not crowd a dense header, but a 13px hit target fails
+   WCAG 2.2 SC 2.5.8 (24x24) and it is the only route to per-column help in a 36-column
+   sheet. An invisible overlay gives it a real target without changing the layout. */
+.sheet thead th .colinfo::after {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  width: 24px; height: 24px; transform: translate(-50%, -50%);
 }
 .sheet thead th:hover .colinfo, .sheet thead th .colinfo.on, .sheet thead th .colinfo:focus-visible { opacity: 1; }
 .sheet thead th .colinfo:hover, .sheet thead th .colinfo.on {
@@ -477,3 +485,15 @@ body.popup { width: 330px; background: var(--surface-1); }
 .toast.err  { border-left-color: var(--critical); }
 .toast.out  { opacity: 0; transform: translateY(4px); transition: opacity .25s, transform .25s; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Reduced motion. The spinner is an infinite rotation that runs through every refresh
+   cycle, which is exactly the kind of movement this query exists to stop. Transitions
+   become instant rather than disappearing, so state changes still register. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
