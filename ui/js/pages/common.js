@@ -1,5 +1,5 @@
 /** Shared page pieces. */
-import { h, mount } from '../lib/dom.js';
+import { h, mount, activatable } from '../lib/dom.js';
 import { healthClass, diskClass, bytes, pct, ago, dt } from '../lib/fmt.js';
 import { state, client, refreshAll } from '../core/state.js';
 import { idb } from '../lib/idb.js';
@@ -38,10 +38,13 @@ export function collapsible(title, sub, bodyFn, opts = {}) {
   const hint = h('span.muted', { style: { marginLeft: 'auto', fontSize: '11px' } },
     isOpen ? 'click to fold' : 'click to open');
 
+  let head;
   const show = (open) => {
     body.hidden = !open;
     chevron.textContent = open ? '▾' : '▸';
     hint.textContent = open ? 'click to fold' : 'click to open';
+    // Sighted users get the chevron and the hint; a screen reader gets this.
+    head.setAttribute('aria-expanded', String(open));
   };
 
   const toggle = () => {
@@ -60,10 +63,13 @@ export function collapsible(title, sub, bodyFn, opts = {}) {
     show(v);
   }).catch(() => {});
 
-  return h('section.card',
-    h('header', { style: { cursor: 'pointer', userSelect: 'none' }, onclick: toggle },
-      chevron, h('h2', title), sub ? h('span.sub', sub) : null, hint),
-    body);
+  head = h('header', {
+    style: { cursor: 'pointer', userSelect: 'none' },
+    'aria-expanded': String(isOpen),
+    ...activatable(toggle),
+  }, chevron, h('h2', title), sub ? h('span.sub', sub) : null, hint);
+
+  return h('section.card', head, body);
 }
 
 export function pill(text, cls) {

@@ -6,7 +6,7 @@
  * one cluster holds many sources.
  */
 
-import { h, mount, $, clear } from '../lib/dom.js';
+import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { bytes, num, compact, dt, ago, toCsv, download } from '../lib/fmt.js';
 import { state, client, fetchIndices, activeClusters } from '../core/state.js';
 import { hbarList } from '../lib/charts.js';
@@ -294,8 +294,17 @@ function perDay(rows) {
 }
 
 function th(label, key, numeric) {
-  return h('th', { class: `${numeric ? 'num ' : ''}sortable`, onclick: () => { ui.dir = ui.sort === key ? -ui.dir : -1; ui.sort = key; redrawTable(); } },
-    label + (ui.sort === key ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''));
+  const sort = () => { ui.dir = ui.sort === key ? -ui.dir : -1; ui.sort = key; redrawTable(); };
+  const active = ui.sort === key;
+  return h('th', {
+    // mount() restores focus across a rebuild by id, and sorting rebuilds the whole table.
+    // Without an id a keyboard user is thrown back to the top of the page on every sort.
+    id: `idx-th-${key}`,
+    class: `${numeric ? 'num ' : ''}sortable`,
+    // role stays columnheader; aria-sort is what tells a screen reader the direction.
+    'aria-sort': active ? (ui.dir === 1 ? 'ascending' : 'descending') : 'none',
+    ...activatable(sort, { role: null }),
+  }, label + (active ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''));
 }
 
 function redrawTable() {

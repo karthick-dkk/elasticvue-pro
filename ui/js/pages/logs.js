@@ -5,7 +5,7 @@
  * cluster with its own Elasticsearch URL.
  */
 
-import { h, mount, $, clear } from '../lib/dom.js';
+import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } from '../lib/fmt.js';
 import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
@@ -204,7 +204,12 @@ function hitRows() {
       : /warn/i.test(String(lvl)) ? 'yellow' : /info|notice/i.test(String(lvl)) ? 'green' : 'grey';
     const open = ui.expanded.has(hit._id + i);
     return [
-      h('tr', { style: { cursor: 'pointer' }, onclick: () => { const k = hit._id + i; ui.expanded.has(k) ? ui.expanded.delete(k) : ui.expanded.add(k); mount($('#log-rows'), ...hitRows()); } },
+      h('tr', {
+        id: `log-row-${hit._id}-${i}`,   // so mount() can restore focus after expanding
+        style: { cursor: 'pointer' },
+        'aria-expanded': String(open),
+        ...activatable(() => { const k = hit._id + i; ui.expanded.has(k) ? ui.expanded.delete(k) : ui.expanded.add(k); mount($('#log-rows'), ...hitRows()); }),
+      },
         h('td.mono.nowrap', { style: { fontSize: '11.5px' } }, ts ? dt(new Date(ts).getTime()) : '–'),
         h('td', lvl ? h(`span.pill.${lvlCls}`, h('i.dot'), String(lvl)) : h('span.muted', '–')),
         h('td.mono.trunc', { style: { fontSize: '11.5px', maxWidth: '160px' }, title: String(hostName ?? '') }, String(hostName ?? '–')),

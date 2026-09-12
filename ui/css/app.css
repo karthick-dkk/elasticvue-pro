@@ -170,6 +170,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; white-space: nowrap;
 }
 .btn:hover { background: var(--surface-2); }
+/* Pressed. On a dashboard where a click starts a multi-second call, the press-down frame is
+   the only instant feedback there is, and nothing in the app had one. */
+.btn:not(.primary):not(.danger):active, .nav button:active, .menu-pop button:active { background: var(--surface-3); }
+.btn.primary:active { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.btn.danger:active  { background: color-mix(in srgb, var(--critical) 14%, transparent); }
+
+/* One focus ring, for everything that can be reached by keyboard. Inputs keep their own
+   border+shadow treatment above; everything else gets an outline, which follows the
+   element's border-radius and works on a `tr` and a `th` where box-shadow does not.
+   Before this, the focus appearance of every button in the app was whatever the browser
+   happened to draw. */
+.btn:focus-visible,
+.nav button:focus-visible,
+.menu-pop button:focus-visible,
+.card > header:focus-visible,
+table.tbl th.sortable:focus-visible,
+table.tbl tbody tr:focus-visible,
+.sheet thead th:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
@@ -203,6 +224,8 @@ label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; 
   border-bottom: 1px solid var(--border); background: var(--surface-1);
 }
 .card > header h2 { font-size: 13px; margin: 0; font-weight: 650; }
+/* A collapsible card's header is clickable, so it has to look like it under the pointer. */
+.card > header[role="button"]:hover { background: var(--surface-2); }
 .card > header .sub { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .card > .body { padding: 14px; }
 .grid { display: grid; gap: 14px; }

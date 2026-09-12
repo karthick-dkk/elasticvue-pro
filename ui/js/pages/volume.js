@@ -1,7 +1,7 @@
 /** Page — capacity: what each cluster ingests per day, and whether its storage matches
  *  the retention it promises. Exportable for the whole fleet. */
 
-import { h, mount, $ } from '../lib/dom.js';
+import { h, mount, $, activatable } from '../lib/dom.js';
 import { bytes, num, ago, dt, toCsv, download, plural } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
@@ -290,10 +290,12 @@ function sheetView(reports) {
   const head = h('thead',
     h('tr.group-head', ...groupCells),
     h('tr', ...col.map((c, i) => h('th', {
+      id: `vol-th-${i}`,          // so mount() can restore focus after a re-sort
       class: i === 0 ? 'stick' : '',
       style: { cursor: 'pointer' },
       title: 'Sort by this column',
-      onclick: () => { ui.dir = ui.sort === c.label ? -ui.dir : 1; ui.sort = c.label; draw(); },
+      'aria-sort': ui.sort === c.label ? (ui.dir === 1 ? 'ascending' : 'descending') : 'none',
+      ...activatable(() => { ui.dir = ui.sort === c.label ? -ui.dir : 1; ui.sort = c.label; draw(); }, { role: null }),
     }, c.label + (ui.sort === c.label ? (ui.dir === 1 ? ' ▲' : ' ▼') : ''),
        columnInfo(c),
        c.unit ? h('span.unit', c.unit) : null))));

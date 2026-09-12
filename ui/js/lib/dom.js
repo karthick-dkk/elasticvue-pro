@@ -49,6 +49,30 @@ export const svg = (tag, attrs = {}, ...kids) => {
 export function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
 /**
+ * Make a non-button element answer a keyboard the way a button does.
+ *
+ * A div, a `th` or a `tr` carrying an onclick is invisible to anyone not holding a mouse:
+ * it takes no focus and responds to no key. This returns the attributes that give it a tab
+ * stop, a role, and Enter/Space handling — spread into the element's attrs so the call site
+ * keeps its own class, style and title.
+ *
+ * Pass `role: null` for elements whose native role already says what they are — a sortable
+ * `th` is a columnheader, and overwriting that with "button" loses more than it gains.
+ */
+export function activatable(onActivate, opts = {}) {
+  return {
+    tabindex: 0,
+    role: opts.role === undefined ? 'button' : opts.role,
+    onclick: onActivate,
+    onkeydown: (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      e.preventDefault();          // Space scrolls the page; a control that answers it must not
+      onActivate(e);
+    },
+  };
+}
+
+/**
  * Replace an element's contents, keeping the keyboard where it was.
  *
  * Pages re-render a region as you type in it — a search box filters a table, and the

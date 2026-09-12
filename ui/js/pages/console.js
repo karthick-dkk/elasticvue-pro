@@ -1,6 +1,6 @@
 /** Page 3 — REST console with a persisted query history (Elasticvue-style). */
 
-import { h, mount, $, clear } from '../lib/dom.js';
+import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { bytes, num, dur, ago, dt, download } from '../lib/fmt.js';
 import { state, client, activeClusters } from '../core/state.js';
 import { idb } from '../lib/idb.js';
@@ -351,7 +351,12 @@ function historyCard() {
     items = items.filter((x) => (x.path + ' ' + x.method + ' ' + (x.body || '') + ' ' + (x.cluster || '')).toLowerCase().includes(t));
   }
   const load = (x) => { ui.method = x.method; ui.path = x.path; ui.body = x.body || ''; ui.res = null; draw(); window.scrollTo({ top: 0 }); };
-  const rows = items.slice(0, 300).map((x) => h('tr', { style: { cursor: 'pointer' }, onclick: (e) => { if (e.target.closest('button')) return; load(x); } },
+  const rows = items.slice(0, 300).map((x) => h('tr', {
+    style: { cursor: 'pointer' },
+    title: 'Load this request into the editor',
+    // The star is its own button inside the row; a click on it must not also load the row.
+    ...activatable((e) => { if (e.target.closest && e.target.closest('button')) return; load(x); }),
+  },
     h('td', h('button.btn.sm.ghost', { title: x.fav ? 'Unstar' : 'Star', style: { padding: '0 4px', color: x.fav ? 'var(--warning)' : 'var(--text-muted)' },
       onclick: async () => { x.fav = x.fav ? 0 : 1; await idb.putQuery(x); drawHistory(); } }, x.fav ? '★' : '☆')),
     h('td.muted', { style: { fontSize: '11px', whiteSpace: 'nowrap' }, title: dt(x.ts) }, ago(x.ts)),
