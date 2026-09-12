@@ -26,9 +26,14 @@
   /* sequential blue ramp */
   --seq-100: #cde2fb; --seq-250: #86b6ef; --seq-400: #3987e5; --seq-550: #1c5cab; --seq-700: #0d366b;
 
-  /* status - fixed, never themed */
+  /* Status FILLS - the colour of the thing itself: bars, dots, borders. Tuned to read on
+     a dark surface, not themed. */
   --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
   --good-bg: #e6f5e6; --warning-bg: #fdf3dc; --critical-bg: #fae6e6; --serious-bg: #fceee7;
+  /* Status INKS - the same status rendered as TEXT on its own -bg. A fill colour and a
+     text colour have different jobs, and #fab219 on #fdf3dc is 1.48:1 - a warning pill
+     nobody can read. Inks are themed, because ink must contrast with what it sits on. */
+  --good-ink: #0a7a0a; --warning-ink: #8a5300; --serious-ink: #a03c14; --critical-ink: #b02525;
 
   --grid: #e6e5e1;
   --shadow: 0 1px 2px rgba(11,11,11,.06), 0 8px 24px rgba(11,11,11,.06);
@@ -57,6 +62,7 @@
     --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
     --good-bg: #122a12; --warning-bg: #3a2f10; --critical-bg: #3a1717; --serious-bg: #3a2418;
+    --good-ink: var(--good); --warning-ink: #f5c451; --serious-ink: var(--serious); --critical-ink: #ef6a6a;
     --grid: #2b2b29;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
   }
@@ -79,6 +85,7 @@
   --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
   --good-bg: #122a12; --warning-bg: #3a2f10; --critical-bg: #3a1717; --serious-bg: #3a2418;
+  --good-ink: var(--good); --warning-ink: #f5c451; --serious-ink: var(--serious); --critical-ink: #ef6a6a;
   --grid: #2b2b29;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
 }
@@ -221,12 +228,11 @@ label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; 
   white-space: nowrap;
 }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-.pill.green  { color: var(--good);     background: var(--good-bg);     border-color: color-mix(in srgb, var(--good) 35%, transparent); }
-.pill.yellow { color: var(--warning);  background: var(--warning-bg);  border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
-.pill.orange { color: var(--serious);  background: var(--serious-bg);  border-color: color-mix(in srgb, var(--serious) 45%, transparent); }
-.pill.red    { color: var(--critical); background: var(--critical-bg); border-color: color-mix(in srgb, var(--critical) 35%, transparent); }
+.pill.green  { color: var(--good-ink);     background: var(--good-bg);     border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.yellow { color: var(--warning-ink);  background: var(--warning-bg);  border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.pill.orange { color: var(--serious-ink);  background: var(--serious-bg);  border-color: color-mix(in srgb, var(--serious) 45%, transparent); }
+.pill.red    { color: var(--critical-ink); background: var(--critical-bg); border-color: color-mix(in srgb, var(--critical) 35%, transparent); }
 .pill.grey   { color: var(--text-secondary); background: var(--surface-2); border-color: var(--border); }
-:root[data-theme="dark"] .pill.yellow, :root:not([data-theme="light"]) .pill.yellow { color: #f5c451; }
 
 /* --------------------------------- tables ---------------------------------- */
 .tbl-wrap { overflow-x: auto; }
@@ -426,8 +432,8 @@ body.popup { width: 330px; background: var(--surface-1); }
 .sheet tbody tr:nth-child(even) td.stick { background: color-mix(in srgb, var(--surface-2) 70%, var(--surface-1)); }
 .sheet tbody tr:hover td.stick { background: var(--accent-soft); }
 .sheet td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.sheet td.yes { color: var(--good); font-weight: 620; }
-.sheet td.no  { color: var(--critical); font-weight: 620; }
+.sheet td.yes { color: var(--good-ink); font-weight: 620; }
+.sheet td.no  { color: var(--critical-ink); font-weight: 620; }
 .sheet td.unknown { color: var(--text-muted); }
 .sheet .group-head th {
   background: var(--surface-0); color: var(--text-muted); font-size: 10px;
