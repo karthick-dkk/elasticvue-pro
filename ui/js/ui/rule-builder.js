@@ -21,8 +21,9 @@ import { modal, field, text, select } from './modal.js';
 import { state, activeClusters } from '../core/state.js';
 import { pill, empty } from '../pages/common.js';
 import {
-  FIELDS, OP_LABEL, ACTIONS, TRIGGERS, blankRule, validateRule, describeRule,
-  matchIndices, evaluateUserRule, webhookSupport,
+  FIELDS, CLUSTER_FIELDS, SCOPES, OP_LABEL, ACTIONS, TRIGGERS, blankRule, validateRule,
+  describeRule, matchIndices, evaluateUserRule, webhookSupport, clusterFacts,
+  testPreconditions, diskPressurePreset,
 } from '../core/user-rules.js';
 
 /** Recompute previews a beat after the last keystroke, not on every one. */
@@ -45,6 +46,8 @@ export async function ruleBuilder(existing) {
   const actionHost = h('div');
   const summaryHost = h('div');
   const condHost = h('div', { style: { display: 'grid', gap: '6px' } });
+  const whenHost = h('div', { style: { display: 'grid', gap: '6px' } });
+  const stateHost = h('div');
 
   const refresh = debounce(async () => {
     mount(summaryHost, h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.55' } },
@@ -72,7 +75,8 @@ export async function ruleBuilder(existing) {
       mount(matchHost, h('div.banner.err', { style: { margin: 0 } }, `Preview failed: ${e.message || e}`));
     }
     try {
-      const p = await evaluateUserRule({ ...rule, enabled: true }, { cluster: previewCluster, indices });
+      const data = state.data.get(previewCluster.id) || {};
+      const p = await evaluateUserRule({ ...rule, enabled: true }, { cluster: previewCluster, data, indices });
       mount(actionHost, actionPreview(p, rule));
     } catch (e) {
       mount(actionHost, h('div.banner.err', { style: { margin: 0 } }, `Preview failed: ${e.message || e}`));
@@ -92,6 +96,72 @@ export async function ruleBuilder(existing) {
           : null));
     const allSel = condHost.querySelector('#rb-all');
     if (allSel) allSel.onchange = (e) => { rule.match.all = e.target.value === 'true'; drawConditions(); refresh(); };
+  }
+
+  /**
+   * "When the cluster..." — the state that has to hold before any index is looked at.
+   *
+   * Optional, and empty by default: most rules are about indices alone. It exists because
+   * "delete the oldest day when the disk is over 80% and ILM has stopped" is a sentence
+   * about a cluster with a clause about indices, and the index conditions cannot say it.
+   */
+  function drawWhen() {
+    mount(whenHost,
+      ...(rule.when || []).map((c, i) => whenRow(c, i)),
+      h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+        h('button.btn.sm', {
+          onclick: () => { rule.when.push({ field: 'diskPercent', op: 'greaterThan', value: 80 }); drawWhen(); refresh(); },
+        }, '+ cluster condition'),
+        (rule.when || []).length
+          ? h('span.muted', { style: { fontSize: '11px' } }, 'all of these must hold')
+          : h('span.muted', { style: { fontSize: '11px' } }, 'optional — leave empty to run against any cluster state')));
+    drawState();
+  }
+
+  /** What those conditions are being judged against right now, so a false one is explicable. */
+  function drawState() {
+    if (!previewCluster || !(rule.when || []).length) return mount(stateHost, null);
+    const data = state.data.get(previewCluster.id) || {};
+    const indices = state.indices.get(previewCluster.id) || [];
+    const f = clusterFacts(previewCluster, data, indices);
+    const res = testPreconditions(rule, previewCluster, data, indices);
+    mount(stateHost, h('div', { style: { marginTop: '6px', fontSize: '11.5px' } },
+      h('span.muted', `${previewCluster.name} right now: `),
+      h('span', `disk ${f.diskPercent === null ? '–' : `${f.diskPercent.toFixed(1)}%`}`),
+      h('span.muted', ' · '), h('span', `ILM ${f.ilmState || '–'}`),
+      h('span.muted', ' · '), h('span', `SLM ${f.slmState || '–'}`),
+      h('span.muted', ' · '), h('span', `retention fits: ${f.retentionFits === null ? 'unknown' : f.retentionFits ? 'yes' : 'no'}`),
+      h('div', { style: { marginTop: '4px' } },
+        res.ok ? pill('the cluster is in this state', 'green')
+               : pill(`not in this state — ${res.failed.map((x) => `${x.label} ${x.why}`).join(', ')}`, 'yellow'))));
+  }
+
+  function whenRow(c, i) {
+    const f = CLUSTER_FIELDS[c.field] || CLUSTER_FIELDS.diskPercent;
+    const fieldSel = select(`rb-wf${i}`, c.field, Object.entries(CLUSTER_FIELDS).map(([k, v]) => [k, v.label]));
+    fieldSel.onchange = (e) => {
+      c.field = e.target.value;
+      const nf = CLUSTER_FIELDS[c.field];
+      c.op = nf.ops[0];
+      c.value = nf.value === 'choice' ? nf.choices[0] : nf.value === 'number' ? 80 : '7d';
+      drawWhen(); refresh();
+    };
+    const opSel = select(`rb-wo${i}`, c.op, f.ops.map((o) => [o, OP_LABEL[o] || o]));
+    opSel.onchange = (e) => { c.op = e.target.value; refresh(); drawState(); };
+    let valueInput;
+    if (f.value === 'choice') {
+      valueInput = select(`rb-wv${i}`, c.value, f.choices.map((x) => [x, x]));
+      valueInput.onchange = (e) => { c.value = e.target.value; refresh(); drawState(); };
+    } else {
+      valueInput = text(`rb-wv${i}`, c.value, { placeholder: f.value === 'duration' ? '7d' : '80' });
+      valueInput.oninput = (e) => { c.value = e.target.value; refresh(); drawState(); };
+    }
+    return h('div', { style: { display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr auto', gap: '6px', alignItems: 'center' } },
+      fieldSel, opSel, valueInput,
+      h('button.btn.sm.ghost', {
+        title: 'Remove this cluster condition',
+        onclick: () => { rule.when.splice(i, 1); drawWhen(); refresh(); },
+      }, '×'));
   }
 
   function conditionRow(c, i) {
@@ -199,6 +269,14 @@ export async function ruleBuilder(existing) {
     Object.entries(ACTIONS).map(([k, v]) => [k, v.label]));
   actionSel.onchange = (e) => { rule.action = e.target.value; refresh(); };
 
+  const scopeSelector = select('rb-scopekind', (rule.scope || {}).kind || 'all',
+    Object.entries(SCOPES).map(([k, v]) => [k, v.label]));
+  const scopeCount = text('rb-scopecount', (rule.scope || {}).count || 2, { style: { width: '70px' } });
+  scopeCount.oninput = (e) => { rule.scope.count = Number(e.target.value) || 0; refresh(); };
+  const scopeCountWrap = h('span', { style: { marginLeft: '6px' } }, scopeCount);
+  const syncScope = () => { scopeCountWrap.hidden = rule.scope.kind !== 'oldestDays'; };
+  scopeSelector.onchange = (e) => { rule.scope.kind = e.target.value; syncScope(); refresh(); };
+
   const alertBox = h('input', { id: 'rb-alert', type: 'checkbox', checked: rule.notify.alert });
   alertBox.onchange = (e) => { rule.notify.alert = e.target.checked; refresh(); };
   const levelSel = select('rb-level', rule.notify.level, [['warning', 'warning'], ['critical', 'critical']]);
@@ -208,10 +286,20 @@ export async function ruleBuilder(existing) {
   const hook = webhookSupport();
 
   const body = [
+    existing ? null : h('div', { style: { marginBottom: '8px' } },
+      h('button.btn.sm', {
+        title: 'Fills in the disk-pressure case: over 80%, ILM stopped, SLM still running, '
+             + 'retention no longer fits — delete the oldest day of backed-up logstash indices',
+        onclick: () => { Object.assign(rule, { ...diskPressurePreset(), id: rule.id }); redrawAll(); },
+      }, 'Start from a template: free space when ILM has stopped')),
     field('Name', nameInput, 'What this automation is for, in your words.'),
     field('Applies to', scopeSel),
 
-    step(1, 'Condition Match', 'which indices this is about', condHost),
+    step(1, 'Condition Match', 'the situation, then the indices',
+      h('div.muted', { style: { fontSize: '11px', marginBottom: '4px' } }, 'When the cluster…'),
+      whenHost, stateHost,
+      h('div.muted', { style: { fontSize: '11px', margin: '10px 0 4px' } }, '…and these indices match'),
+      condHost),
 
     step(2, 'Expected output', 'what matches right now',
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' } },
@@ -221,7 +309,8 @@ export async function ruleBuilder(existing) {
     step(3, 'Trigger Rule', 'when that is worth acting on',
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
         triggerSel, countWrap,
-        h('span.muted', { style: { fontSize: '11px' } }, 'then'), actionSel)),
+        h('span.muted', { style: { fontSize: '11px' } }, 'then'), actionSel,
+        h('span.muted', { style: { fontSize: '11px' } }, 'for'), scopeSelector, scopeCountWrap)),
 
     step(4, 'Expected output', 'what the action would do', actionHost),
 
@@ -237,8 +326,23 @@ export async function ruleBuilder(existing) {
       summaryHost),
   ];
 
+  /** The template rewrites every field, so every control has to be repainted from the rule. */
+  function redrawAll() {
+    nameInput.value = rule.name;
+    actionSel.value = rule.action;
+    triggerSel.value = rule.trigger.when;
+    scopeSelector.value = rule.scope.kind;
+    scopeCount.value = rule.scope.count;
+    alertBox.checked = rule.notify.alert;
+    levelSel.value = rule.notify.level;
+    hookInput.value = rule.notify.webhook;
+    drawWhen(); drawConditions(); syncCount(); syncScope(); refresh();
+  }
+
+  drawWhen();
   drawConditions();
   syncCount();
+  syncScope();
   refresh();
 
   const saved = await modal(existing ? 'Edit automation' : 'New automation',

@@ -19,7 +19,7 @@
  */
 
 import { state } from './state.js';
-import { parseRetention, parseSize } from './volume.js';
+import { parseRetention, parseSize, volumeReport } from './volume.js';
 import { verifyIndicesInSnapshots, coverageLabel } from './snapshot-verify.js';
 
 /* ------------------------------- the vocabulary -------------------------------- */
@@ -34,6 +34,28 @@ export const FIELDS = {
   status:   { label: 'Open or closed',    ops: ['is'],                          value: 'choice', choices: ['open', 'close'] },
   health:   { label: 'Index health',      ops: ['is', 'isNot'],                 value: 'choice', choices: ['green', 'yellow', 'red'] },
   backedUp: { label: 'In a good snapshot', ops: ['is'],                         value: 'choice', choices: ['yes', 'no'] },
+};
+
+/**
+ * Conditions about the cluster, not an index.
+ *
+ * "Delete the oldest day when the disk is over 80%, ILM has stopped, SLM is still running
+ * and the retention policy no longer fits" is a sentence about a cluster with a clause
+ * about indices. The index conditions alone cannot say it.
+ */
+export const CLUSTER_FIELDS = {
+  diskPercent:     { label: 'Live storage used', ops: ['greaterThan', 'lessThan'], value: 'number', unit: '%' },
+  ilmState:        { label: 'ILM',               ops: ['is', 'isNot'], value: 'choice', choices: ['RUNNING', 'STOPPED'] },
+  slmState:        { label: 'SLM',               ops: ['is', 'isNot'], value: 'choice', choices: ['RUNNING', 'STOPPED'] },
+  retentionFits:   { label: 'Disk covers the retention policy', ops: ['is'], value: 'choice', choices: ['yes', 'no'] },
+  lastSnapshotAge: { label: 'Newest snapshot is older than', ops: ['olderThan'], value: 'duration' },
+};
+
+/** How much of the match to act on. Daily indices are deleted a day at a time. */
+export const SCOPES = {
+  all:        { label: 'everything that matches' },
+  oldestDay:  { label: 'the oldest day only' },
+  oldestDays: { label: 'the oldest N days' },
 };
 
 export const OP_LABEL = {
@@ -63,10 +85,43 @@ export function blankRule() {
     name: '',
     enabled: true,
     clusters: ['*'],
+    when: [],
     match: { conditions: [{ field: 'day', op: 'olderThan', value: '30d' }], all: true },
+    scope: { kind: 'all', count: 2 },
     trigger: { when: 'any', count: 5 },
     action: 'notify',
     notify: { alert: true, level: 'warning', webhook: '' },
+  };
+}
+
+/**
+ * The disk-pressure case, ready to edit.
+ *
+ * Reads as: the disk is over 80%, ILM has stopped so nothing is ageing out on its own, SLM
+ * is still running so backups are being taken, and the stated retention no longer fits the
+ * disk. In that state, delete the oldest day of logstash indices — but only the ones a
+ * successful snapshot holds and that are not red.
+ */
+export function diskPressurePreset() {
+  return {
+    ...blankRule(),
+    name: 'Free space when ILM has stopped',
+    when: [
+      { field: 'diskPercent', op: 'greaterThan', value: 80 },
+      { field: 'ilmState', op: 'is', value: 'STOPPED' },
+      { field: 'slmState', op: 'is', value: 'RUNNING' },
+      { field: 'retentionFits', op: 'is', value: 'no' },
+    ],
+    match: {
+      conditions: [
+        { field: 'name', op: 'startsWith', value: 'logstash-' },
+        { field: 'backedUp', op: 'is', value: 'yes' },
+      ],
+      all: true,
+    },
+    scope: { kind: 'oldestDay', count: 1 },
+    action: 'propose-delete',
+    notify: { alert: true, level: 'critical', webhook: '' },
   };
 }
 
@@ -89,6 +144,17 @@ export function validateRule(rule) {
     } else if (f.value === 'number' && !isFinite(Number(c.value))) {
       errs.push(`"${f.label}" needs a number.`);
     }
+  }
+  for (const c of rule.when || []) {
+    const f = CLUSTER_FIELDS[c.field];
+    if (!f) { errs.push(`Unknown cluster condition "${c.field}".`); continue; }
+    if (!f.ops.includes(c.op)) errs.push(`"${f.label}" cannot use "${c.op}".`);
+    if (c.value === '' || c.value === undefined || c.value === null) errs.push(`"${f.label}" needs a value.`);
+    else if (f.value === 'number' && !isFinite(Number(c.value))) errs.push(`"${f.label}" needs a number.`);
+    else if (f.value === 'duration' && !parseRetention(c.value)) errs.push(`"${c.value}" is not a duration.`);
+  }
+  if ((rule.scope || {}).kind === 'oldestDays' && !(Number(rule.scope.count) > 0)) {
+    errs.push('"the oldest N days" needs a count above zero.');
   }
   if (rule.trigger.when === 'atLeast' && !(Number(rule.trigger.count) > 0)) {
     errs.push('"only when this many match" needs a count above zero.');
@@ -115,7 +181,92 @@ export function describeRule(rule) {
     : 'as soon as anything matches';
   const how = [rule.notify.alert ? `raise a ${rule.notify.level} alert` : null,
                rule.notify.webhook ? 'post to the webhook' : null].filter(Boolean).join(' and ');
-  return `For indices where ${conds.join(join)}, ${when}, ${(ACTIONS[rule.action] || {}).label.toLowerCase()} and ${how}.`;
+  const pre = (rule.when || []).map((c) => {
+    const f = CLUSTER_FIELDS[c.field] || { label: c.field };
+    return `${f.label.toLowerCase()} ${OP_LABEL[c.op] || c.op} ${c.value}${f.unit || ''}`;
+  });
+  const scope = (rule.scope || {}).kind === 'oldestDay' ? ', taking the oldest day only'
+    : (rule.scope || {}).kind === 'oldestDays' ? `, taking the oldest ${rule.scope.count} days` : '';
+  const head = pre.length ? `When ${pre.join(' and ')}: for` : 'For';
+  return `${head} indices where ${conds.join(join)}${scope}, ${when}, `
+       + `${(ACTIONS[rule.action] || {}).label.toLowerCase()} and ${how}.`;
+}
+
+/* ---------------------------- cluster preconditions ----------------------------- */
+
+/** Newest successful snapshot across every repository, in ms, or 0 if there is none. */
+function newestSnapshotAt(data) {
+  let best = 0;
+  for (const list of Object.values(data.snapshots || {})) {
+    for (const sn of list || []) {
+      if (String(sn.status || '').toUpperCase() === 'SUCCESS' && sn.start > best) best = sn.start;
+    }
+  }
+  return best;
+}
+
+/** The cluster-level facts a precondition can read. */
+export function clusterFacts(cluster, data, indices) {
+  const rep = volumeReport(cluster, data, indices || [], null);
+  return {
+    diskPercent: data.disk && isFinite(data.disk.percent) ? data.disk.percent : null,
+    ilmState: (data.ilm && data.ilm.operation_mode) || null,
+    slmState: (data.slmStatus && data.slmStatus.operation_mode) || null,
+    // null when no retention is stated: unknown, which must not read as "no".
+    retentionFits: rep.liveRetentionMet,
+    lastSnapshotAt: newestSnapshotAt(data),
+  };
+}
+
+function testClusterCondition(c, f) {
+  switch (c.field) {
+    case 'diskPercent': {
+      if (f.diskPercent === null) return false;          // unmeasured is never a match
+      const n = Number(c.value);
+      return c.op === 'greaterThan' ? f.diskPercent > n : f.diskPercent < n;
+    }
+    case 'ilmState':
+      if (!f.ilmState) return false;
+      return c.op === 'is' ? f.ilmState === c.value : f.ilmState !== c.value;
+    case 'slmState':
+      if (!f.slmState) return false;
+      return c.op === 'is' ? f.slmState === c.value : f.slmState !== c.value;
+    case 'retentionFits':
+      if (f.retentionFits === null || f.retentionFits === undefined) return false;
+      return c.value === 'yes' ? f.retentionFits === true : f.retentionFits === false;
+    case 'lastSnapshotAge': {
+      const ret = parseRetention(c.value);
+      if (!ret || !f.lastSnapshotAt) return false;
+      return Date.now() - f.lastSnapshotAt > ret.days * 86400000;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Every precondition must hold. They are an AND on purpose: a precondition list describes
+ * one situation, and "or" would make a destructive rule fire in a state you did not picture.
+ *
+ * @returns {{ok:boolean, failed:Array<{label:string, why:string}>}}
+ */
+export function testPreconditions(rule, cluster, data, indices) {
+  const conds = rule.when || [];
+  if (!conds.length) return { ok: true, failed: [] };
+  const f = clusterFacts(cluster, data, indices);
+  const failed = [];
+  for (const c of conds) {
+    if (testClusterCondition(c, f)) continue;
+    const spec = CLUSTER_FIELDS[c.field] || { label: c.field };
+    const actual = c.field === 'diskPercent' ? (f.diskPercent === null ? 'not measured' : `${f.diskPercent.toFixed(1)}%`)
+      : c.field === 'ilmState' ? (f.ilmState || 'unknown')
+      : c.field === 'slmState' ? (f.slmState || 'unknown')
+      : c.field === 'retentionFits' ? (f.retentionFits === null ? 'no retention stated' : f.retentionFits ? 'yes' : 'no')
+      : c.field === 'lastSnapshotAge' ? (f.lastSnapshotAt ? new Date(f.lastSnapshotAt).toISOString().slice(0, 10) : 'no successful snapshot')
+      : 'unknown';
+    failed.push({ label: spec.label, why: `is ${actual}` });
+  }
+  return { ok: failed.length === 0, failed };
 }
 
 /* --------------------------------- matching ------------------------------------ */
@@ -187,6 +338,23 @@ export async function matchIndices(rule, cluster, indices, { coverage = null } =
   return { matched: indices.filter(test), total: indices.length, coverage: cov, unreadable };
 }
 
+/**
+ * Narrow a match to the oldest day, or the oldest N days.
+ *
+ * Daily indices are deleted a day at a time: half a day is a half-answered query, and an
+ * index with no date in its name has no place in an ordering by date, so it is dropped
+ * rather than guessed at.
+ */
+export function applyScope(rule, matched) {
+  const kind = (rule.scope && rule.scope.kind) || 'all';
+  if (kind === 'all') return { picked: matched, days: null };
+  const dated = matched.filter((i) => i.day);
+  if (!dated.length) return { picked: [], days: [] };
+  const n = kind === 'oldestDay' ? 1 : Math.max(1, Number(rule.scope.count) || 1);
+  const days = [...new Set(dated.map((i) => i.day))].sort().slice(0, n);
+  return { picked: dated.filter((i) => days.includes(i.day)), days };
+}
+
 /* -------------------------------- evaluation ----------------------------------- */
 
 /**
@@ -196,14 +364,24 @@ export async function matchIndices(rule, cluster, indices, { coverage = null } =
  * never reaches a target that is the newest dated index, already closed, or whose snapshot
  * coverage could not be proved — whatever the conditions say.
  */
-export async function evaluateUserRule(rule, { cluster, indices }) {
+export async function evaluateUserRule(rule, { cluster, data = {}, indices }) {
   if (!rule.enabled) return null;
   if (!(rule.clusters || ['*']).includes('*') && !rule.clusters.includes(cluster.id)) return null;
   const errs = validateRule(rule);
   if (errs.length) return { skipped: `rule is incomplete: ${errs[0]}` };
   if (!indices.length) return { skipped: 'no index list loaded for this cluster yet' };
 
-  const { matched, unreadable } = await matchIndices(rule, cluster, indices);
+  // The cluster has to be in the situation the rule describes before any index is looked at.
+  const pre = testPreconditions(rule, cluster, data, indices);
+  if (!pre.ok) {
+    return { skipped: `the cluster is not in that state — ${pre.failed.map((f) => `${f.label} ${f.why}`).join(', ')}` };
+  }
+
+  const all = await matchIndices(rule, cluster, indices);
+  const unreadable = all.unreadable;
+  const { picked, days } = applyScope(rule, all.matched);
+  const matched = picked;
+  const scopeNote = days && days.length ? ` · oldest ${days.length === 1 ? 'day' : `${days.length} days`}: ${days.join(', ')}` : '';
   const spec = ACTIONS[rule.action];
 
   if (spec.destructive && unreadable.length) {
@@ -233,6 +411,10 @@ export async function evaluateUserRule(rule, { cluster, indices }) {
     for (const i of matched) {
       if (i.day && i.day === newest) {
         blocked.push({ name: i.index, reason: 'newest dated index — still being written to', cls: 'yellow', size: i.size });
+      } else if (i.health === 'red') {
+        // A red index may be mid-recovery, and a snapshot of it is not a guarantee the
+        // live copy is the one that was captured. Not a decision to make automatically.
+        blocked.push({ name: i.index, reason: 'index is red — not healthy enough to delete automatically', cls: 'red', size: i.size });
       } else if (i.status === 'close' && rule.action === 'propose-close') {
         blocked.push({ name: i.index, reason: 'already closed', cls: 'grey', size: i.size });
       } else if (rule.action === 'propose-delete') {
@@ -256,7 +438,7 @@ export async function evaluateUserRule(rule, { cluster, indices }) {
     targets,
     blocked,
     note: describeRule(rule),
-    evidence: `${matched.length} of ${indices.length} indices matched`,
+    evidence: `${all.matched.length} of ${indices.length} indices matched${scopeNote}`,
     freed: spec.destructive ? targets.reduce((s, t) => s + (t.size || 0), 0) : 0,
   };
 }
