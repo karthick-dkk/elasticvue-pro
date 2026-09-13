@@ -15,6 +15,7 @@ import { tryVaultCredential } from './ui/credential-dialog.js';
 import { createNewConfig, editCluster, unlockSealed } from './ui/config-editor.js';
 import { applyLoadedConfig } from './ui/load-config.js';
 import { authState, loginScreen, signOut } from './ui/login.js';
+import { aboutMini } from './ui/about.js';
 import { onSessionLost } from './core/transport.js';
 
 let coreInfo = { version: '?' };
@@ -148,7 +149,10 @@ function renderSetup(res) {
     h('div', { style: { marginTop: '14px' } }, securityNote()),
     h('div.muted#core-line', { style: { marginTop: '12px', fontSize: '11px' } },
       coreInfo && coreInfo.desktop ? `core v${coreInfo.version} · ${coreInfo.vault ? 'OS vault available' : 'no OS vault'} · trust store: ${coreInfo.dataDir || 'memory'}`
-        : 'core not reachable — is this the app or the dev bridge?')
+        : 'core not reachable — is this the app or the dev bridge?'),
+    // The setup screen is where somebody lands before there is any config, so it is also
+    // where they are most likely to want the repository or a way to ask for help.
+    h('div.credits', { style: { marginTop: '6px', fontSize: '11px' } }, aboutMini(coreInfo.version))
   );
   mount(root, box);
 }
@@ -377,7 +381,11 @@ function renderSideFoot() {
       ? h('span.row', { style: { color: 'var(--accent)' } },
           'snapshot' + (state.snapshot && state.snapshot.host ? ' from ' + state.snapshot.host : ''))
       : null,
-    meta && meta.ephemeral ? h('span.row', { style: { color: 'var(--warning)' } }, 'loaded once — not remembered') : null);
+    meta && meta.ephemeral ? h('span.row', { style: { color: 'var(--warning)' } }, 'loaded once — not remembered') : null,
+    // Pushed to the far end: the strip's left side is live state someone is watching, and
+    // the credits must not sit among it competing for the same glance.
+    h('span.strip-spacer'),
+    aboutMini(coreInfo.version));
   const nm = $('#cfg-name');
   if (nm) nm.textContent = meta ? meta.name : '';
 }
