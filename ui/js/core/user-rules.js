@@ -127,7 +127,28 @@ export function diskPressurePreset() {
 
 /* --------------------------------- validation ---------------------------------- */
 
+/**
+ * A rule with its optional sections present.
+ *
+ * Rules live in clusters.yaml, so one can be hand-written, half-written, or left behind by
+ * an older version of the builder. describeRule() and validateRule() both run on whatever
+ * the file contains — before anything has had the chance to reject it — so neither may
+ * assume the builder produced it. A missing section becomes an empty one, and
+ * validateRule() then reports it as the error it is instead of throwing.
+ */
+function withDefaults(rule) {
+  const r = rule || {};
+  return {
+    ...r,
+    match: r.match || { conditions: [], all: true },
+    scope: r.scope || { kind: 'all' },
+    trigger: r.trigger || { when: 'any', count: 0 },
+    notify: r.notify || { alert: false, webhook: '' },
+  };
+}
+
 export function validateRule(rule) {
+  rule = withDefaults(rule);
   const errs = [];
   if (!rule.name || !rule.name.trim()) errs.push('Give the automation a name.');
   if (!(rule.match.conditions || []).length) errs.push('Add at least one condition.');
@@ -171,6 +192,7 @@ export function validateRule(rule) {
 
 /** Plain-English restatement, so you can read back what you built. */
 export function describeRule(rule) {
+  rule = withDefaults(rule);
   const conds = (rule.match.conditions || []).map((c) => {
     const f = FIELDS[c.field] || { label: c.field };
     return `${f.label.toLowerCase()} ${OP_LABEL[c.op] || c.op} ${c.value}`;
@@ -180,7 +202,8 @@ export function describeRule(rule) {
     ? `when at least ${rule.trigger.count} match`
     : 'as soon as anything matches';
   const how = [rule.notify.alert ? `raise a ${rule.notify.level} alert` : null,
-               rule.notify.webhook ? 'post to the webhook' : null].filter(Boolean).join(' and ');
+               rule.notify.webhook ? 'post to the webhook' : null]
+    .filter(Boolean).join(' and ') || 'notify nobody';
   const pre = (rule.when || []).map((c) => {
     const f = CLUSTER_FIELDS[c.field] || { label: c.field };
     return `${f.label.toLowerCase()} ${OP_LABEL[c.op] || c.op} ${c.value}${f.unit || ''}`;
@@ -188,8 +211,9 @@ export function describeRule(rule) {
   const scope = (rule.scope || {}).kind === 'oldestDay' ? ', taking the oldest day only'
     : (rule.scope || {}).kind === 'oldestDays' ? `, taking the oldest ${rule.scope.count} days` : '';
   const head = pre.length ? `When ${pre.join(' and ')}: for` : 'For';
+  const act = (ACTIONS[rule.action] || {}).label || rule.action || 'do nothing';
   return `${head} indices where ${conds.join(join)}${scope}, ${when}, `
-       + `${(ACTIONS[rule.action] || {}).label.toLowerCase()} and ${how}.`;
+       + `${act.toLowerCase()} and ${how}.`;
 }
 
 /* ---------------------------- cluster preconditions ----------------------------- */
@@ -365,6 +389,10 @@ export function applyScope(rule, matched) {
  * coverage could not be proved — whatever the conditions say.
  */
 export async function evaluateUserRule(rule, { cluster, data = {}, indices }) {
+  // Normalised once, here, because everything below — needsCoverage(), matchIndices() and
+  // applyScope() — reads rule.match/.trigger/.scope directly. validateRule() normalises its
+  // own copy, so passing validation is no promise that the caller's object has the sections.
+  rule = withDefaults(rule);
   if (!rule.enabled) return null;
   if (!(rule.clusters || ['*']).includes('*') && !rule.clusters.includes(cluster.id)) return null;
   const errs = validateRule(rule);

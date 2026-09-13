@@ -186,6 +186,23 @@ export const RULES = [
 ];
 
 /**
+ * One malformed rule must not take out the list.
+ *
+ * Rules are stored in clusters.yaml and can be edited by hand, so activeRules() may be
+ * handed something the builder would never have produced. Losing every rule — and with it
+ * the whole Automation page — because one of them is half-written is the worse failure.
+ * evaluateUserRule() already validates and skips; this covers the description, which runs
+ * first and so crashed first.
+ */
+function safeDescribe(u) {
+  try {
+    return describeRule(u);
+  } catch (e) {
+    return `This automation could not be read (${e.message || e}). Edit or remove it.`;
+  }
+}
+
+/**
  * A user-written rule, wearing the same shape as a built-in one.
  *
  * Everything downstream — the runner, the proposal list, the page — then treats the two
@@ -195,7 +212,7 @@ function asRule(u) {
   return {
     id: `user:${u.id}`,
     title: u.name || '(unnamed automation)',
-    why: describeRule(u),
+    why: safeDescribe(u),
     action: u.action === 'propose-delete' ? 'delete'
       : u.action === 'propose-close' ? 'close' : 'notify',
     severity: u.notify && u.notify.level === 'critical' ? 'critical' : 'normal',
