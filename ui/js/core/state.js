@@ -6,6 +6,7 @@ import { EsClient, primeWorker, setBadge, requestStats } from './es.js';
 import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
 import { diskBalance, balanceHeadline, primaryAction } from './disk-balance.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
+import { automationAlerts } from './automation.js';
 
 class Emitter {
   constructor() { this.map = new Map(); }
@@ -527,6 +528,10 @@ export function alerts() {
       if (ls && Date.now() - ls.time > staleMs) add({ key: `${c.id}:slm-stale:${p.id}`, level: 'warning', cluster: c, title: `${c.name}/${p.id}: no successful snapshot recently`, detail: `Last success ${new Date(ls.time).toISOString().replace('T', ' ').slice(0, 16)}` });
     });
   }
+  // Automations the operator wrote, from the last automation run. Computed there because
+  // evaluating a rule can need a snapshot listing and this function is synchronous.
+  for (const a of automationAlerts((id) => clusters().find((c) => c.id === id))) add(a);
+
   return out;
 }
 

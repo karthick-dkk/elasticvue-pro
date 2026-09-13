@@ -4,8 +4,12 @@ import { h, mount } from '../lib/dom.js';
 import { bytes, num, ago } from '../lib/fmt.js';
 import { state, clusters, activeClusters, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, empty, table } from './common.js';
-import { RULES, runAutomation, resultsFor, allProposals, allBlocked, isRunning, lastRunAt, canArm } from '../core/automation.js';
-import { deleteIndices } from '../ui/index-actions.js';
+import { activeRules, runAutomation, resultsFor, allProposals, allBlocked, isRunning, lastRunAt, canArm } from '../core/automation.js';
+import { deleteIndices, closeIndices } from '../ui/index-actions.js';
+import { ruleBuilder } from '../ui/rule-builder.js';
+import { putRule, removeRule, loadRules } from '../core/user-rules.js';
+import { saveRaw } from '../ui/config-editor.js';
+import { confirmDialog } from '../ui/modal.js';
 import { navigateTo } from '../core/intent.js';
 
 let host = null;
@@ -54,6 +58,7 @@ function draw() {
     h('div.toolbar',
       h('button.btn.sm.primary', { disabled: isRunning(), onclick: check },
         isRunning() ? 'Checking…' : '↻ Run checks'),
+      h('button.btn.sm', { onclick: () => edit(null) }, '+ New automation'),
       h('label.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } },
         h('input#auto-blocked', { type: 'checkbox', checked: ui.showBlocked,
           onchange: (e) => { ui.showBlocked = e.target.checked; draw(); } }),
@@ -69,7 +74,7 @@ function draw() {
         h('div.ttl', arm.ok ? 'Arming available' : 'These rules propose. They never act on their own.'),
         h('div', arm.reason))),
 
-    ...RULES.map((rule) => ruleCard(rule, list)));
+    ...activeRules().map((rule) => ruleCard(rule, list)));
 }
 
 function ruleCard(rule, list) {
@@ -93,7 +98,13 @@ function ruleCard(rule, list) {
   return h('div', { style: { marginTop: '10px' } },
     collapsible(rule.title, sub,
       () => h('div', { style: { display: 'grid', gap: '10px' } },
-        h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.55' } }, rule.why),
+        h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '8px' } },
+          h('div.muted', { style: { fontSize: '11.5px', lineHeight: '1.55', flex: '1' } }, rule.why),
+          rule.user
+            ? h('div', { style: { display: 'flex', gap: '6px' } },
+                h('button.btn.sm', { onclick: () => edit(rule.user) }, 'Edit'),
+                h('button.btn.sm.ghost', { title: 'Remove this automation', onclick: () => destroy(rule.user) }, '×'))
+            : h('span.muted', { style: { fontSize: '10.5px' } }, 'built in')),
         ...active.map((x) => proposalBlock(rule, x.cluster, x.item.proposal)),
         ui.showBlocked ? h('div', ...held.map((x) => blockedBlock(x.cluster, x.item.proposal))) : null,
         ...notes.map((x) => h('div.muted', { style: { fontSize: '11.5px' } },
@@ -101,6 +112,39 @@ function ruleCard(rule, list) {
         !active.length && !held.length && !notes.length
           ? empty('Nothing for this rule on any cluster.') : null),
       { key: `auto-${rule.id}`, open: active.length > 0 }));
+}
+
+/**
+ * Create or edit an automation, then write it to the config.
+ *
+ * The hosted stack mounts ./config read-only, so this save can genuinely fail there. The
+ * error is surfaced rather than swallowed, because a rule the operator believes is saved
+ * and is not is worse than one that never saved at all.
+ */
+async function edit(existing) {
+  const rule = await ruleBuilder(existing);
+  if (!rule) return;
+  try {
+    putRule(rule);
+    await saveRaw({ silent: true });
+  } catch (e) {
+    if (existing) putRule(existing); else removeRule(rule.id);
+    alert(`Could not save the automation: ${e.message || e}\n\n`
+        + 'If this is the hosted deployment, ./config is mounted read-only.');
+    return;
+  }
+  await check();
+}
+
+async function destroy(u) {
+  if (!(await confirmDialog(`Remove the automation "${u.name}"?`,
+    'It is taken out of the config file. Nothing it proposed is undone.',
+    { yes: 'remove', danger: true }))) return;
+  const before = loadRules().find((r) => r.id === u.id);
+  removeRule(u.id);
+  try { await saveRaw({ silent: true }); }
+  catch (e) { if (before) putRule(before); alert(`Could not save: ${e.message || e}`); return; }
+  await check();
 }
 
 function proposalBlock(rule, cluster, p) {
@@ -135,6 +179,12 @@ function runButton(rule, cluster, p) {
       title: 'Opens the normal delete confirmation, which verifies the snapshots again',
       onclick: () => deleteIndices(cluster, names, { onChanged: check }),
     }, `Review & delete ${names.length}`);
+  }
+  if (rule.action === 'close') {
+    return h('button.btn.sm', {
+      title: 'Opens the normal close confirmation',
+      onclick: () => closeIndices(cluster, names, { onChanged: check }),
+    }, `Review & close ${names.length}`);
   }
   if (rule.action === 'ilm-retry') {
     return h('button.btn.sm', {

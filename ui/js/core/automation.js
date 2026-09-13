@@ -17,6 +17,7 @@ import { state, activeClusters } from './state.js';
 import { parseRetention } from './volume.js';
 import { verifyIndicesInSnapshots, coverageLabel } from './snapshot-verify.js';
 import { diskBalance } from './disk-balance.js';
+import { loadRules, evaluateUserRule, describeRule, ACTIONS as USER_ACTIONS } from './user-rules.js';
 
 /** UTC, because index names carry a UTC date and "today" must mean the same thing. */
 const daysAgoUtc = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -184,6 +185,32 @@ export const RULES = [
   },
 ];
 
+/**
+ * A user-written rule, wearing the same shape as a built-in one.
+ *
+ * Everything downstream — the runner, the proposal list, the page — then treats the two
+ * identically, so writing your own rule adds no rendering code and no second code path.
+ */
+function asRule(u) {
+  return {
+    id: `user:${u.id}`,
+    title: u.name || '(unnamed automation)',
+    why: describeRule(u),
+    action: u.action === 'propose-delete' ? 'delete'
+      : u.action === 'propose-close' ? 'close' : 'notify',
+    severity: u.notify && u.notify.level === 'critical' ? 'critical' : 'normal',
+    armable: false,
+    needsIndices: true,
+    user: u,
+    evaluate: (ctx) => evaluateUserRule(u, ctx),
+  };
+}
+
+/** Built-ins first, then whatever the operator has written. */
+export function activeRules() {
+  return [...RULES, ...loadRules().map(asRule)];
+}
+
 /* --------------------------------- the engine ---------------------------------- */
 
 /** clusterId -> { at, results: [{rule, proposal|skipped|null, error}] } */
@@ -239,13 +266,13 @@ export async function runAutomation({ onProgress } = {}) {
       if (!data.reachable) {
         results.set(cluster.id, {
           at: Date.now(), clusterName: cluster.name,
-          results: RULES.map((rule) => ({ rule, skipped: 'cluster unreachable' })),
+          results: activeRules().map((rule) => ({ rule, skipped: 'cluster unreachable' })),
         });
         continue;
       }
       const indices = state.indices.get(cluster.id) || [];
       const out = [];
-      for (const rule of RULES) {
+      for (const rule of activeRules()) {
         if (rule.needsIndices && !indices.length) {
           out.push({ rule, skipped: 'no index list loaded for this cluster yet' });
           continue;
@@ -270,3 +297,34 @@ export async function runAutomation({ onProgress } = {}) {
 
 /** Unused by the app; exported so a rule can be exercised on its own in a test. */
 export function ruleById(id) { return RULES.find((r) => r.id === id) || null; }
+
+/**
+ * Notify, the in-app half.
+ *
+ * alerts() in state.js is synchronous, and evaluating a rule can need a snapshot listing,
+ * so nothing is computed here — this reads the last run. A rule that has never run raises
+ * nothing, which is the honest answer rather than a stale one.
+ */
+export function automationAlerts(clusterById) {
+  const out = [];
+  for (const [clusterId, r] of results) {
+    for (const item of r.results) {
+      const u = item.rule.user;
+      if (!u || !u.notify || !u.notify.alert) continue;
+      const p = item.proposal;
+      if (!p || !p.targets.length) continue;
+      const cluster = clusterById(clusterId);
+      if (!cluster) continue;
+      out.push({
+        key: `${clusterId}:automation:${u.id}`,
+        level: u.notify.level === 'critical' ? 'critical' : 'warning',
+        cluster,
+        title: `${u.name}`,
+        detail: `${p.targets.length} match${p.targets.length === 1 ? '' : 'es'} on ${cluster.name}`
+              + (p.blocked && p.blocked.length ? ` · ${p.blocked.length} held back` : '')
+              + ` — ${(USER_ACTIONS[u.action] || {}).label || u.action}`,
+      });
+    }
+  }
+  return out;
+}
