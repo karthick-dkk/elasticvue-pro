@@ -120,6 +120,75 @@ discovery rules build per-cluster and per-rule items automatically from the
 "Held back" alerting louder than "proposals waiting" is deliberate. A proposal is routine
 housekeeping; a refusal means the rule found something it could not make safe.
 
+## Authentication
+
+Three separate boundaries. Only the first involves Zabbix credentials.
+
+### 1. Zabbix to the scrape document
+
+HTTP basic, through the auth gate the hosted stack already has. Add a user:
+
+```bash
+./make-htpasswd.sh zabbix          # bcrypt, prompts for the password
+```
+
+Then set `{$ESPRO.USER}` and `{$ESPRO.PASSWORD}` on the host. The template's master item
+is `authtype: BASIC` and every other item derives from it, so this is the only credential
+Zabbix needs.
+
+The `location = /automation.json` block inherits `auth_basic` from the enclosing `server`,
+which is the only reason the document is protected. Putting it outside that server, or
+adding `auth_basic off;`, publishes your fleet's index names to anyone who can reach the
+port.
+
+If the stack uses a self-signed or internal-CA certificate, either add that CA to the
+Zabbix server's trust store or clear "SSL verify peer" and "SSL verify host" on the master
+item. Prefer the CA — clearing both turns off the only check that the host answering is
+the one you meant.
+
+### 2. The scraper to the core
+
+Not a password. When `ESPRO_BIND` is non-loopback the bridge requires an `X-Auth-User`
+header to be **present and non-empty**, and does not check it any further — the header is
+trusted, and the security comes from the core being unreachable except through nginx. Sent
+directly, `X-Auth-User: root` is accepted exactly as readily as any other name.
+
+So `--auth-user` names the scrape in the audit log; it does not authenticate it. Two ways
+to run it, and the difference is what that audit line is worth:
+
+- **Direct to the core** (what `compose.scraper.yml` does): simple, no credential to
+  manage, and safe in the sense that the core stays unpublished on the internal network.
+  But the name in the audit log is one the scraper asserted about itself.
+- **Through nginx**: give the scraper its own htpasswd user and point `--bridge` at the
+  proxy. nginx then sets `X-Auth-User` from `$remote_user` after authenticating, so the
+  audit line is vouched for rather than claimed. Costs the internal TLS trust
+  (`NODE_EXTRA_CA_CERTS`) and one more credential.
+
+Take the second if your audit log is evidence for anyone. Take the first if it is a
+debugging aid.
+
+`--auth-user` is worth passing even on a loopback bridge that does not demand it: the
+bridge decides from its own bind address, not the client's, so a bridge on `0.0.0.0`
+rejects even a loopback request without the header — and where it is not required it still
+attributes the scrape in the audit log.
+
+### 3. The scraper to Zabbix, if you push instead of pull
+
+`--format sender` has no shared secret of its own. A trapper item accepts a value when the
+host name and item key match, so restrict it:
+
+- set **Allowed hosts** on the trapper items to the scraper's address, and
+- encrypt with PSK — `zabbix_sender --tls-connect psk --tls-psk-identity <id>
+  --tls-psk-file <file>` against a host configured for PSK.
+
+Without both, anything that can reach port 10051 can write these values.
+
+### What never gets a Zabbix credential
+
+Elasticsearch. Zabbix reads one JSON file; it never talks to a cluster, and the cluster
+credentials stay where they were — sealed in the config the core reads. Nothing in this
+directory widens what the core can reach.
+
 ## What this does not do
 
 Arming — letting a rule act unattended — is still off, and not because of anything here.
