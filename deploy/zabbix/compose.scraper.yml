@@ -1,0 +1,48 @@
+# Adds the automation scrape to the hosted stack.
+#
+#   docker compose -f docker-compose.yml -f zabbix/compose.scraper.yml up -d
+#
+# The scraper talks to the core over the internal network — the core is still never
+# published — and writes one JSON file to a volume nginx serves behind the existing auth
+# gate. See README.md for the one nginx location this needs.
+services:
+  scraper:
+    image: node:22-alpine
+    restart: unless-stopped
+    depends_on: [core]
+    environment:
+      # The floor is five minutes: proving an index is safe to delete means listing every
+      # snapshot in every repository, and indices are dated by day.
+      ESPRO_INTERVAL: "300"
+    volumes:
+      - ../ui:/app/ui:ro
+      - ../tools:/app/tools:ro
+      - ./config:/app/config:ro
+      - scrape-state:/app/state
+    # `|| true` because a failed scrape must not stop the loop: the staleness trigger in
+    # the Zabbix template is what reports a scraper that has genuinely stopped.
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          node /app/tools/espro-scrape.mjs \
+            --config /app/config/config_cluster.json \
+            --bridge http://core:8765 \
+            --auth-user scraper \
+            --out /app/state/automation.json || true
+          sleep "$$ESPRO_INTERVAL"
+        done
+    networks: [internal]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Compose appends override volumes to the base list, so this adds the mount without
+  # restating nginx's own.
+  nginx:
+    volumes:
+      - scrape-state:/usr/share/nginx/state:ro
+
+volumes:
+  scrape-state:

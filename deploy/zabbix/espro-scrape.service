@@ -1,0 +1,36 @@
+# Evaluate the ElasticVue Pro automation rules and write the document Zabbix polls.
+#
+#   install -m644 espro-scrape.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now espro-scrape.timer
+#
+# Read-only by construction: the rules return descriptions of work, never perform it.
+[Unit]
+Description=ElasticVue Pro automation scrape
+Documentation=file:///opt/elasticvue-pro/deploy/zabbix/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=espro
+Group=espro
+WorkingDirectory=/opt/elasticvue-pro
+
+# --config must be readable by this user and must not hold sealed (enc:v1:) secrets,
+# which only a person at the keyboard can unlock. The scrape says so rather than
+# reporting every cluster unreachable.
+ExecStart=/usr/bin/node /opt/elasticvue-pro/tools/espro-scrape.mjs \
+  --config /etc/elasticvue-pro/clusters.yaml \
+  --bridge http://127.0.0.1:8765 \
+  --out /var/lib/elasticvue-pro/automation.json
+
+# It reads Elasticsearch and writes one file. Nothing else is needed.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/elasticvue-pro
+CapabilityBoundingSet=
