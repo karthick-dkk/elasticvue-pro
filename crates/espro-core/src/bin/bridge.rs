@@ -15,6 +15,7 @@
 //! Elasticsearch admin console with your stored credentials.
 
 use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+use espro_core::auth::{Caller, Edition};
 use espro_core::Core;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
@@ -51,7 +52,10 @@ async fn main() {
         tracing::warn!(bind = %bind, "hosted mode: every request must carry {USER_HEADER} from an authenticating proxy");
     }
 
-    let core = Core::new(data);
+    // The dev bridge on loopback is a single person on their own machine, exactly like
+    // the portable build; a non-loopback bind is the hosted deployment.
+    let edition = if require_user { Edition::Hosted } else { Edition::Portable };
+    let core = Core::new(data, edition);
     let app = Router::new()
         .route("/bridge", post(bridge))
         .fallback_service(ServeDir::new(&ui))
@@ -69,15 +73,50 @@ async fn bridge(
 ) -> Json<serde_json::Value> {
     let user = headers.get(USER_HEADER).and_then(|v| v.to_str().ok()).map(str::trim).filter(|u| !u.is_empty());
 
-    if app.require_user && user.is_none() {
+    // An API token stands on its own: it is a secret this core issued and can revoke, so
+    // unlike the user header it does not need the proxy to have vouched for anything.
+    // That is what lets Zabbix and scripts in without an account or a password.
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+
+    if app.require_user && user.is_none() && bearer.is_none() {
         return Json(serde_json::json!({
             "ok": false, "kind": "unauthenticated",
-            "message": format!("hosted mode: no {USER_HEADER} header — requests must come through the authenticating proxy"),
+            "message": format!("hosted mode: no {USER_HEADER} header and no bearer token — requests must come through the authenticating proxy, or carry an API token"),
         }));
     }
 
+    // Three ways to be somebody here, most explicit first.
+    //
+    // An API token is a deliberate act: something presenting one is asking to be that
+    // token, not whoever's proxy session it travelled on. A session token is next — it
+    // means a person signed in through the app itself, which is a stronger statement than
+    // the ambient identity nginx attaches to every request. The proxy header is the
+    // fallback, and the only one available to a browser that has never seen a login
+    // screen, which is every hosted browser today.
+    let caller: Option<Caller> = match bearer {
+        Some(secret) => match app.core.caller_for_token(secret) {
+            Some(c) => Some(c),
+            None => {
+                return Json(serde_json::json!({
+                    "ok": false, "kind": "unauthenticated",
+                    "message": "that API token is not valid, has expired, or has been revoked",
+                }))
+            }
+        },
+        None => msg
+            .get("session")
+            .and_then(|v| v.as_str())
+            .and_then(|s| app.core.caller_for_session(s))
+            .or_else(|| user.and_then(|u| app.core.caller_for_proxy_user(u))),
+    };
+
     let t = msg.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let out = app.core.handle(msg.clone()).await;
+    let out = app.core.handle_as(msg.clone(), caller.clone()).await;
 
     // The audit line: who did what to which cluster, and whether it went through. This
     // is the record that answers "who deleted that index".
@@ -87,7 +126,10 @@ async fn bridge(
         if !is_read {
             tracing::info!(
                 target: "audit",
-                user = user.unwrap_or("-"),
+                // The resolved caller, so a write made with an API token is attributed to
+                // the token rather than to whoever's proxy session it rode in on.
+                user = caller.as_ref().map(|c| c.name.as_str()).or(user).unwrap_or("-"),
+                role = caller.as_ref().map(|c| c.role.as_str()).unwrap_or("-"),
                 msg_type = %t,
                 cluster = msg.get("clusterId").and_then(|v| v.as_str()).unwrap_or("-"),
                 method = method,

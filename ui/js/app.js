@@ -14,8 +14,24 @@ import { saveTextAs } from './core/platform.js';
 import { tryVaultCredential } from './ui/credential-dialog.js';
 import { createNewConfig, editCluster, unlockSealed } from './ui/config-editor.js';
 import { applyLoadedConfig } from './ui/load-config.js';
+import { authState, loginScreen, signOut } from './ui/login.js';
+import { onSessionLost } from './core/transport.js';
 
 let coreInfo = { version: '?' };
+
+/**
+ * Who is signed in, or null where accounts do not apply.
+ *
+ * The portable build always leaves this null and every page stays visible, which is the
+ * behaviour it has always had. Everywhere else the core is the authority — this is only
+ * what the shell uses to avoid offering a page whose every request would be refused.
+ */
+let me = null;
+const ROLE_RANK = { guest: 0, user: 1, admin: 2 };
+function may(minRole) {
+  if (!me) return true;                       // no accounts on this build
+  return (ROLE_RANK[me.role] ?? 0) >= (ROLE_RANK[minRole] ?? 0);
+}
 const saveExample = () => saveTextAs('clusters.yaml', EXAMPLE_YAML);
 
 import * as pOverview from './pages/overview.js';
@@ -28,19 +44,34 @@ import * as pNodes from './pages/nodes.js';
 import * as pConsole from './pages/console.js';
 import * as pSettings from './pages/settings.js';
 import * as pAutomation from './pages/automation.js';
+import * as pAccounts from './pages/accounts.js';
 
+/**
+ * `minRole` is the lowest role the tab is offered to.
+ *
+ * It hides a tab; it does not protect anything. The core refuses the requests either way
+ * — see `authorize()` in crates/espro-core/src/auth.rs — and this only avoids showing
+ * someone a page on which every request would fail. Guest gets the dashboard alone,
+ * because every other page names indices, and index names here carry customer names.
+ */
 const PAGES = [
-  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true },
-  { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true },
-  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false },
-  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false },
-  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false },
-  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true },
-  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true },
-  { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true },
-  { id: 'automation', label: 'Automation',    icon: '⟳', mod: pAutomation, multi: true },
-  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true },
+  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
+  { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  minRole: 'user' },
+  { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, minRole: 'user' },
+  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, minRole: 'user' },
+  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, minRole: 'user' },
+  { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  minRole: 'user' },
+  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  minRole: 'user' },
+  { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  minRole: 'user' },
+  { id: 'automation', label: 'Automation',    icon: '⟳', mod: pAutomation, multi: true, minRole: 'user' },
+  { id: 'accounts',  label: 'Accounts',       icon: '☺', mod: pAccounts,  multi: true,  minRole: 'admin', accountsOnly: true },
+  { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true,  minRole: 'admin' },
 ];
+
+/** The tabs this session may actually use. */
+function visiblePages() {
+  return PAGES.filter((p) => may(p.minRole) && (!p.accountsOnly || !!me));
+}
 
 const root = document.getElementById('root');
 let currentPage = null;
@@ -202,8 +233,11 @@ function renderNav() {
   clear(nav);
   const a = alerts();
   const crit = a.filter((x) => x.level === 'critical').length;
-  PAGES.forEach((p) => {
-    if (p.id === 'settings') nav.append(h('div.nav-sep'));
+  const shown = visiblePages();
+  shown.forEach((p) => {
+    if (p.id === 'accounts' || (p.id === 'settings' && !shown.some((x) => x.id === 'accounts'))) {
+      nav.append(h('div.nav-sep'));
+    }
     // The alert count belongs on the tab: it is the reason to go there. Nothing else
     // gets a badge — the tabs used to show a shortcut number that no longer exists.
     const badge = p.id === 'alerts' && a.length
@@ -283,7 +317,14 @@ function renderTopbar() {
             onchange: (e) => openSnapshot(e.target.files[0]) }))
       : h('button.btn.sm', { onclick: () => refreshAll({ force: true }), title: 'Refresh now (r)' }, '↻ Refresh'),
     h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme}` },
-      theme === 'dark' ? '\u25D1 Dark' : theme === 'light' ? '\u25CB Light' : '\u25D2 System'));
+      theme === 'dark' ? '\u25D1 Dark' : theme === 'light' ? '\u25CB Light' : '\u25D2 System'),
+    // Only where accounts exist. The portable build has nobody to sign out.
+    me
+      ? h('button.btn.sm.ghost', {
+          title: `Signed in as ${me.name} (${me.role}) \u2014 sign out`,
+          onclick: async () => { await signOut(); me = null; location.reload(); },
+        }, `\u23FB ${me.name}`)
+      : null);
   tickStatus();
 }
 
@@ -362,7 +403,10 @@ function resolveSelection(page) {
 }
 
 export function go(id) {
-  const page = PAGES.find((p) => p.id === id) || PAGES[0];
+  // A hash typed by hand, or one left in the address bar by a previous session under a
+  // different account, must not land on a tab this role does not have.
+  const allowed = visiblePages();
+  const page = allowed.find((p) => p.id === id) || allowed[0] || PAGES[0];
   currentPage = page.id;
   location.hash = `#/${page.id}`;
   resolveSelection(page);
@@ -401,8 +445,24 @@ async function start(config, handle) {
   startAutoRefresh();
 }
 
+/**
+ * Sign in first, where this build has accounts.
+ *
+ * Resolves once there is a session, or immediately on the portable build, which has no
+ * accounts and never shows this. Everything after it — reading the config, priming the
+ * clusters — is a request the core will authorise, so none of it can usefully run first.
+ */
+async function gateOnAuth() {
+  let st;
+  try { st = await authState(); } catch (_) { return; }
+  if (!st.required) { me = null; return; }
+  if (st.caller) { me = st.caller; return; }        // sessionStorage still had a live one
+  me = await loginScreen(root, { bootstrap: st.bootstrap });
+}
+
 async function boot() {
   await initTheme();
+  await gateOnAuth();
   try { coreInfo = (await workerStatus()) || coreInfo; } catch (_) { /* dev bridge missing */ }
   let res = await cfg.loadConfig();
   if (res.status === 'no_file' && coreInfo.configHint) {
@@ -419,6 +479,14 @@ setInterval(async () => {
   if (!state.config || isSnapshotMode()) return;
   try { const st = await workerStatus(); if (st && st.ok) { coreInfo = st; renderSideFoot(); } } catch (_) { /* ignore */ }
 }, 10000);
+
+// An expired or revoked session: back to the gate rather than a screen of stale numbers
+// that quietly stopped updating.
+onSessionLost(() => {
+  if (!me) return;
+  me = null;
+  location.reload();
+});
 
 bus.on('refreshing', () => { tickStatus(); });
 bus.on('refreshed', () => { maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); renderNav(); const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });

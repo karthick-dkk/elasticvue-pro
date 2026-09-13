@@ -1,7 +1,13 @@
 -- ElasticVue Pro — shared state that must outlive one browser.
+-- Accounts are owned by the core, in users.json beside pins.json — see crates/espro-core/
+-- src/auth.rs. This table is the reporting copy: it exists so acks, notes and audit rows
+-- can reference a name, not so the core can look one up. The role vocabulary is the
+-- core's, and 'operator'/'viewer' are the names this file used while accounts were still
+-- a plan; Role::parse still accepts both so an early row resolves.
 CREATE TABLE IF NOT EXISTS users (
   name        text PRIMARY KEY,
-  role        text NOT NULL DEFAULT 'operator',   -- viewer | operator | admin (phase 2)
+  role        text NOT NULL DEFAULT 'user'
+              CHECK (role IN ('admin', 'user', 'guest', 'operator', 'viewer')),
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 

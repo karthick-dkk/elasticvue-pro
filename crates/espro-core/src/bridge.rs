@@ -2,6 +2,7 @@
 //! worker (PING / PRIME / FORGET / ES …) plus the desktop-only ones (tunnels, trust
 //! decisions, config file, vault).
 
+use crate::auth::{self, Caller, Edition, Role, Sessions, TokenStore, UserStore};
 use crate::guard::Writes;
 use crate::http::{ClusterSpec, EsRequest, Route, Transport};
 use crate::socks::{self, SocksServer};
@@ -39,6 +40,11 @@ pub struct Core {
     /// number rather than a guess. Trimmed to the reporting window on every read.
     request_log: parking_lot::Mutex<HashMap<String, std::collections::VecDeque<std::time::Instant>>>,
     started: std::time::Instant,
+    /// Which build this is. Portable has no accounts and never asks anyone to log in.
+    edition: Edition,
+    users: UserStore,
+    sessions: Sessions,
+    tokens: TokenStore,
 }
 
 /// The window the request counter reports over.
@@ -73,9 +79,36 @@ struct PrimeMsg {
 
 impl Core {
     /// `data_dir`: where pins.json (and nothing secret) lives. `None` = in-memory only.
-    pub fn new(data_dir: Option<PathBuf>) -> Arc<Core> {
+    ///
+    /// `edition` is a parameter rather than something detected here because only the
+    /// caller knows: the Tauri shell has already worked out whether it is portable, and
+    /// the bridge binary is hosted by definition. There is deliberately no default — a
+    /// forgotten edition should be a compile error, not a build that quietly has no
+    /// accounts.
+    pub fn new(data_dir: Option<PathBuf>, edition: Edition) -> Arc<Core> {
+        Core::new_with_rounds(data_dir, edition, auth::ROUNDS)
+    }
+
+    /// A core whose password hashing is deliberately cheap.
+    ///
+    /// Tests only. 600 000 PBKDF2 rounds in an unoptimised build is seconds per login,
+    /// which turns a suite that signs in a few dozen times into one nobody runs — and the
+    /// cost of the KDF is never what those tests are checking. `auth.rs` covers the real
+    /// parameters on their own.
+    #[doc(hidden)]
+    pub fn new_with_rounds(data_dir: Option<PathBuf>, edition: Edition, rounds: u32) -> Arc<Core> {
         let pins = PinStore::open(data_dir.as_ref().map(|d| d.join("pins.json")));
+        // Portable keeps no accounts file at all, even if a data dir exists.
+        let auth_path = |name: &str| {
+            data_dir.as_ref().filter(|_| edition.uses_accounts()).map(|d| d.join(name))
+        };
+        let users = UserStore::open_with_rounds(auth_path("users.json"), rounds);
+        let tokens = TokenStore::open(auth_path("tokens.json"));
         Arc::new(Core {
+            edition,
+            users,
+            sessions: Sessions::default(),
+            tokens,
             transport: Transport::new(pins.clone()),
             pins,
             primed: RwLock::new(Primed { clusters: HashMap::new(), read_only: true }),
@@ -88,9 +121,141 @@ impl Core {
         })
     }
 
+    /* -------------------------------- who is asking -------------------------------- */
+
+    pub fn edition(&self) -> Edition {
+        self.edition
+    }
+
+    /// True when accounts apply but none exist yet, so the app must ask for a first admin
+    /// before it will do anything else.
+    pub fn needs_bootstrap(&self) -> bool {
+        self.edition.uses_accounts() && self.users.is_empty()
+    }
+
+    /// The caller a session token names, if the session is still live.
+    pub fn caller_for_session(&self, token: &str) -> Option<Caller> {
+        let s = self.sessions.resolve(token)?;
+        Some(Caller { name: s.user, role: s.role })
+    }
+
+    /// The caller for a name a trusted reverse proxy has already authenticated.
+    ///
+    /// `None` means "authenticated by nginx, but not someone this deployment knows",
+    /// which the gate turns into a refusal. While no accounts exist at all the proxy's
+    /// word is taken as it always was — see `gate` for why an upgrade must not lock a
+    /// team out of their own monitoring.
+    pub fn caller_for_proxy_user(&self, name: &str) -> Option<Caller> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        if self.users.is_empty() {
+            return Some(Caller { name: name.to_string(), role: Role::Admin });
+        }
+        self.users
+            .list()
+            .into_iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name) && !a.disabled)
+            .map(|a| Caller { name: a.name, role: a.role })
+    }
+
+    /// The caller an API token names. Hosted only — see `Edition::uses_api_tokens`.
+    pub fn caller_for_token(&self, secret: &str) -> Option<Caller> {
+        if !self.edition.uses_api_tokens() {
+            return None;
+        }
+        let role = self.tokens.verify(secret)?;
+        Some(Caller { name: format!("token:{}", &secret[..secret.len().min(12)]), role })
+    }
+
+    /// Whether this caller may send this message, as a ready-made refusal.
+    ///
+    /// Portable never reaches here. Everywhere else the answer is default-deny: an
+    /// unknown message type needs admin, and no session means nothing but the handful of
+    /// types that exist to establish one.
+    fn gate(&self, t: &str, msg: &Value, caller: Option<&Caller>) -> Result<(), Value> {
+        // Before the first admin exists there is nothing to authenticate against, and
+        // what to do about that differs by edition.
+        //
+        // A fresh install has nobody, and asking for a first administrator is exactly the
+        // right first screen. A hosted deployment is different: nginx authenticated the
+        // request before it arrived, and accounts are new to it. Blocking there would mean
+        // an upgrade locks a whole team out of their monitoring — plausibly during the
+        // incident that made them open it. So hosted keeps trusting the proxy until
+        // somebody creates the first account, and PING keeps reporting needsBootstrap so
+        // the UI can say so until they do.
+        if self.users.is_empty() {
+            if self.edition == Edition::Hosted {
+                return Ok(());
+            }
+            return match t {
+                "PING" | "WHOAMI" | "BADGE" | "OPEN_APP" | "ENABLE_NET_ERRORS" | "BOOTSTRAP_ADMIN" => Ok(()),
+                _ => Err(json!({
+                    "ok": false, "kind": "needs_bootstrap",
+                    "message": "no accounts exist yet — create the first administrator to continue",
+                })),
+            };
+        }
+        if auth::required_role(t).is_none() {
+            return Ok(());
+        }
+        let Some(c) = caller else {
+            return Err(json!({
+                "ok": false, "kind": "unauthenticated",
+                "message": "sign in to continue",
+            }));
+        };
+        let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        let path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        auth::authorize(c.role, t, method, path).map_err(|why| {
+            json!({ "ok": false, "kind": "forbidden", "role": c.role.as_str(), "message": why })
+        })
+    }
+
+    /* ---------------------------------- dispatch ---------------------------------- */
+
+    /// Handle a message, working out who is asking from its `session` field.
     pub async fn handle(self: &Arc<Self>, msg: Value) -> Value {
-        let t = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        match t {
+        let caller = msg
+            .get("session")
+            .and_then(|v| v.as_str())
+            .and_then(|tok| self.caller_for_session(tok));
+        self.handle_as(msg, caller).await
+    }
+
+    /// Handle a message on behalf of an already-resolved caller.
+    ///
+    /// The hosted bridge uses this: it has an `Authorization` header to check, which the
+    /// message itself knows nothing about.
+    pub async fn handle_as(self: &Arc<Self>, msg: Value, caller: Option<Caller>) -> Value {
+        let t = msg.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if self.edition.uses_accounts() {
+            if let Err(denied) = self.gate(&t, &msg, caller.as_ref()) {
+                return denied;
+            }
+        }
+        match t.as_str() {
+            "WHOAMI" => json!({
+                "ok": true,
+                "edition": self.edition,
+                "authRequired": self.edition.uses_accounts(),
+                "needsBootstrap": self.needs_bootstrap(),
+                "apiTokens": self.edition.uses_api_tokens(),
+                "caller": caller.as_ref().map(|c| c.public()),
+            }),
+            "LOGIN" => self.login(&msg),
+            "LOGOUT" => {
+                if let Some(tok) = msg.get("session").and_then(|v| v.as_str()) {
+                    self.sessions.end(tok);
+                }
+                json!({ "ok": true })
+            }
+            "BOOTSTRAP_ADMIN" => self.bootstrap_admin(&msg),
+            "USER_LIST" | "USER_ADD" | "USER_REMOVE" | "USER_SET_ROLE" | "USER_SET_PASSWORD" => {
+                self.users_msg(&t, &msg, caller.as_ref())
+            }
+            "TOKEN_LIST" | "TOKEN_CREATE" | "TOKEN_REVOKE" => self.tokens_msg(&t, &msg),
             "PING" => self.ping().await,
             "PRIME" => self.prime(msg).await,
             "FORGET" => {
@@ -256,7 +421,7 @@ impl Core {
                 }
             }
             #[cfg(feature = "vault")]
-            "VAULT_GET" | "VAULT_SET" | "VAULT_DEL" => crate::vault::handle(t, &msg),
+            "VAULT_GET" | "VAULT_SET" | "VAULT_DEL" => crate::vault::handle(&t, &msg),
             "ENABLE_NET_ERRORS" => json!({ "ok": true, "always": true }),
             "BADGE" | "OPEN_APP" => json!({ "ok": true }),
             _ => json!({ "ok": false, "kind": "bad_message", "message": format!("Unknown message type {t:?}") }),
@@ -302,6 +467,183 @@ impl Core {
         self.writes_unlocked.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /* ------------------------------ accounts and tokens ----------------------------- */
+
+    fn login(self: &Arc<Self>, msg: &Value) -> Value {
+        let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("");
+        match self.users.verify(name, password) {
+            Ok(acct) => {
+                let token = self.sessions.begin(&acct);
+                tracing::info!(target: "audit", user = %acct.name, role = acct.role.as_str(), "login");
+                json!({
+                    "ok": true,
+                    "session": token,
+                    "caller": { "name": acct.name, "role": acct.role.as_str() },
+                })
+            }
+            Err(e) => {
+                // The name is logged; the reason is not narrowed for the caller, so a
+                // failed login never confirms which half was wrong.
+                tracing::warn!(target: "audit", user = %name, "login refused");
+                json!({ "ok": false, "kind": "bad_credentials", "message": e.to_string() })
+            }
+        }
+    }
+
+    /// The first administrator. Only possible while no account exists at all, which is
+    /// what stops this being a way to add one later.
+    fn bootstrap_admin(self: &Arc<Self>, msg: &Value) -> Value {
+        if !self.users.is_empty() {
+            return json!({
+                "ok": false, "kind": "forbidden",
+                "message": "accounts already exist — an administrator must create further accounts",
+            });
+        }
+        let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("");
+        match self.users.add(name, password, Role::Admin) {
+            Ok(()) => {
+                tracing::info!(target: "audit", user = %name, "first administrator created");
+                // Signed straight in: making someone type the password they just chose
+                // adds nothing.
+                match self.users.verify(name, password) {
+                    Ok(acct) => {
+                        let token = self.sessions.begin(&acct);
+                        json!({ "ok": true, "session": token, "caller": { "name": acct.name, "role": "admin" } })
+                    }
+                    Err(e) => json!({ "ok": false, "message": e.to_string() }),
+                }
+            }
+            Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e.to_string() }),
+        }
+    }
+
+    fn users_msg(self: &Arc<Self>, t: &str, msg: &Value, caller: Option<&Caller>) -> Value {
+        let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let me = caller.map(|c| c.name.clone()).unwrap_or_default();
+        let role_arg = || {
+            msg.get("role")
+                .and_then(|v| v.as_str())
+                .and_then(Role::parse)
+                .ok_or_else(|| "role must be admin, user or guest".to_string())
+        };
+        let done = |r: Result<(), crate::auth::AuthError>| match r {
+            Ok(()) => json!({ "ok": true, "users": self.users.list().iter().map(|a| a.public()).collect::<Vec<_>>() }),
+            Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e.to_string() }),
+        };
+
+        match t {
+            "USER_LIST" => json!({
+                "ok": true,
+                "users": self.users.list().iter().map(|a| a.public()).collect::<Vec<_>>(),
+                "sessions": self.sessions.count(),
+            }),
+            "USER_ADD" => {
+                let role = match role_arg() {
+                    Ok(r) => r,
+                    Err(m) => return json!({ "ok": false, "kind": "bad_request", "message": m }),
+                };
+                let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("");
+                let out = done(self.users.add(&name, password, role));
+                if out["ok"] == json!(true) {
+                    tracing::info!(target: "audit", user = %me, subject = %name, role = role.as_str(), "account created");
+                }
+                out
+            }
+            "USER_REMOVE" => {
+                // Refusing to remove yourself is not paternalism: an admin who deletes
+                // their own account mid-session leaves a live session with no account
+                // behind it, and possibly nobody able to fix it.
+                if name.eq_ignore_ascii_case(&me) {
+                    return json!({ "ok": false, "kind": "bad_request", "message": "you cannot remove the account you are signed in as" });
+                }
+                let out = done(self.users.remove(&name));
+                if out["ok"] == json!(true) {
+                    // Their sessions go with the account, or they keep working until the
+                    // idle timeout on an account that no longer exists.
+                    self.sessions.end_all_for(&name);
+                    tracing::info!(target: "audit", user = %me, subject = %name, "account removed");
+                }
+                out
+            }
+            "USER_SET_ROLE" => {
+                let role = match role_arg() {
+                    Ok(r) => r,
+                    Err(m) => return json!({ "ok": false, "kind": "bad_request", "message": m }),
+                };
+                if name.eq_ignore_ascii_case(&me) && role != Role::Admin {
+                    return json!({ "ok": false, "kind": "bad_request", "message": "you cannot take away your own administrator role" });
+                }
+                let out = done(self.users.set_role(&name, role));
+                if out["ok"] == json!(true) {
+                    self.sessions.end_all_for(&name);
+                    tracing::info!(target: "audit", user = %me, subject = %name, role = role.as_str(), "role changed");
+                }
+                out
+            }
+            "USER_SET_PASSWORD" => {
+                let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("");
+                let out = done(self.users.set_password(&name, password));
+                if out["ok"] == json!(true) {
+                    // Everyone but the person doing it: changing your own password should
+                    // not sign you out of the screen you are standing at.
+                    if !name.eq_ignore_ascii_case(&me) {
+                        self.sessions.end_all_for(&name);
+                    }
+                    tracing::info!(target: "audit", user = %me, subject = %name, "password changed");
+                }
+                out
+            }
+            _ => json!({ "ok": false, "kind": "bad_message", "message": format!("unknown account message {t}") }),
+        }
+    }
+
+    fn tokens_msg(self: &Arc<Self>, t: &str, msg: &Value) -> Value {
+        if !self.edition.uses_api_tokens() {
+            return json!({
+                "ok": false, "kind": "unsupported",
+                "message": "API tokens need a build that serves HTTP. The desktop app talks to                             this core over local IPC and has no socket to offer one on — use the                             hosted deployment for Zabbix and scripts.",
+            });
+        }
+        match t {
+            "TOKEN_LIST" => json!({ "ok": true, "tokens": self.tokens.list().iter().map(|x| x.public()).collect::<Vec<_>>() }),
+            "TOKEN_CREATE" => {
+                let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let role = msg.get("role").and_then(|v| v.as_str()).and_then(Role::parse).unwrap_or(Role::Guest);
+                if role == Role::Admin {
+                    return json!({
+                        "ok": false, "kind": "bad_request",
+                        "message": "an API token cannot be an administrator — a token that can delete                                     indices unattended is the thing this product exists to avoid",
+                    });
+                }
+                let ttl = msg.get("expiresDays").and_then(|v| v.as_u64()).map(|d| d as u32);
+                match self.tokens.create(name, role, ttl) {
+                    Ok(secret) => {
+                        tracing::info!(target: "audit", token = %name, role = role.as_str(), "api token created");
+                        json!({
+                            "ok": true, "secret": secret,
+                            "note": "This is the only time the token is shown. Store it now.",
+                            "tokens": self.tokens.list().iter().map(|x| x.public()).collect::<Vec<_>>(),
+                        })
+                    }
+                    Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e.to_string() }),
+                }
+            }
+            "TOKEN_REVOKE" => {
+                let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                match self.tokens.revoke(id) {
+                    Ok(()) => {
+                        tracing::info!(target: "audit", token_id = %id, "api token revoked");
+                        json!({ "ok": true, "tokens": self.tokens.list().iter().map(|x| x.public()).collect::<Vec<_>>() })
+                    }
+                    Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e.to_string() }),
+                }
+            }
+            _ => json!({ "ok": false, "kind": "bad_message", "message": format!("unknown token message {t}") }),
+        }
+    }
+
     async fn ping(self: &Arc<Self>) -> Value {
         let (primed, read_only, ids) = {
             let p = self.primed.read();
@@ -313,6 +655,10 @@ impl Core {
             "requests": self.request_stats(),
             "desktop": true, "netErrors": true, "clusters": ids,
             "vault": cfg!(feature = "vault"),
+            "edition": self.edition,
+            "authRequired": self.edition.uses_accounts(),
+            "needsBootstrap": self.needs_bootstrap(),
+            "apiTokens": self.edition.uses_api_tokens(),
             "dataDir": self.data_dir, "configHint": self.config_hint, "uptimeSec": self.started.elapsed().as_secs(),
             "defaultConfigPath": self.data_dir.as_ref().map(|d| d.join("config_cluster.json")),
             "tunnels": self.tunnel_status().await,

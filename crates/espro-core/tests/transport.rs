@@ -10,7 +10,7 @@ use serde_json::json;
 use support::{dead_port, TempDir, TestServer};
 
 fn core(dir: &TempDir) -> std::sync::Arc<Core> {
-    Core::new(Some(dir.0.clone()))
+    Core::new(Some(dir.0.clone()), espro_core::auth::Edition::Portable)
 }
 
 async fn primed(dir: &TempDir, url: &str, read_only: bool) -> std::sync::Arc<Core> {
