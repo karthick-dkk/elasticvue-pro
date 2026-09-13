@@ -1,3 +1,4 @@
+import { plural } from '../lib/fmt.js';
 /**
  * Capacity arithmetic: how much a cluster ingests per day, and what that means for the
  * disk it has and the retention it promises.
@@ -25,7 +26,7 @@ const today = () => new Date().toISOString().slice(0, 10);
  */
 export function parseRetention(v) {
   if (v === null || v === undefined || v === '') return null;
-  if (typeof v === 'number' && isFinite(v)) return { days: v, label: `${v} days` };
+  if (typeof v === 'number' && isFinite(v)) return { days: v, label: plural(v, 'day') };
   const s = String(v).trim();
   const m = /^(\d+(?:\.\d+)?)\s*([a-zA-Z]*)$/.exec(s);
   if (!m) return null;
@@ -35,11 +36,11 @@ export function parseRetention(v) {
   // A capital M means months; lower-case m alone is ambiguous, and months is the only
   // sense that makes sense for a retention policy.
   const isMonth = m[2] === 'M' || unit.startsWith('mo') || unit === 'm' || unit === 'month' || unit === 'months';
-  if (!unit || unit.startsWith('d')) return { days: n, label: `${n} days` };
+  if (!unit || unit.startsWith('d')) return { days: n, label: plural(n, 'day') };
   if (isMonth) return { days: Math.round(n * 30), label: `${n} month${n === 1 ? '' : 's'}` };
   if (unit.startsWith('w')) return { days: Math.round(n * 7), label: `${n} week${n === 1 ? '' : 's'}` };
   if (unit.startsWith('y')) return { days: Math.round(n * 365), label: `${n} year${n === 1 ? '' : 's'}` };
-  if (unit.startsWith('h')) return { days: Math.max(0, n / 24), label: `${n} hours` };
+  if (unit.startsWith('h')) return { days: Math.max(0, n / 24), label: plural(n, 'hour') };
   return null;
 }
 

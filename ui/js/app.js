@@ -27,6 +27,7 @@ import * as pSnapshots from './pages/snapshots.js';
 import * as pNodes from './pages/nodes.js';
 import * as pConsole from './pages/console.js';
 import * as pSettings from './pages/settings.js';
+import * as pAutomation from './pages/automation.js';
 
 const PAGES = [
   { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true },
@@ -37,6 +38,7 @@ const PAGES = [
   { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true },
   { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true },
   { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true },
+  { id: 'automation', label: 'Automation',    icon: '⟳', mod: pAutomation, multi: true },
   { id: 'settings',  label: 'Config',         icon: '⚙', mod: pSettings,  multi: true },
 ];
 
