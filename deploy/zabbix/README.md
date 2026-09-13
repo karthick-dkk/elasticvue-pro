@@ -146,31 +146,36 @@ Zabbix server's trust store or clear "SSL verify peer" and "SSL verify host" on 
 item. Prefer the CA — clearing both turns off the only check that the host answering is
 the one you meant.
 
-### 2. The scraper to the core
+### 2. The scraper to the core — use an API token
 
-Not a password. When `ESPRO_BIND` is non-loopback the bridge requires an `X-Auth-User`
-header to be **present and non-empty**, and does not check it any further — the header is
-trusted, and the security comes from the core being unreachable except through nginx. Sent
-directly, `X-Auth-User: root` is accepted exactly as readily as any other name.
+Mint one on the **Accounts** page (hosted builds only) with the **user** role: the scrape
+reads indices and snapshots, so `guest` is not enough. The secret is shown once, is stored
+only as a SHA-256 hash, and can be revoked from the same page.
 
-So `--auth-user` names the scrape in the audit log; it does not authenticate it. Two ways
-to run it, and the difference is what that audit line is worth:
+Put it in `deploy/.env`, which is gitignored:
 
-- **Direct to the core** (what `compose.scraper.yml` does): simple, no credential to
-  manage, and safe in the sense that the core stays unpublished on the internal network.
-  But the name in the audit log is one the scraper asserted about itself.
-- **Through nginx**: give the scraper its own htpasswd user and point `--bridge` at the
-  proxy. nginx then sets `X-Auth-User` from `$remote_user` after authenticating, so the
-  audit line is vouched for rather than claimed. Costs the internal TLS trust
-  (`NODE_EXTRA_CA_CERTS`) and one more credential.
+```
+ESPRO_TOKEN=espro_…
+```
 
-Take the second if your audit log is evidence for anyone. Take the first if it is a
-debugging aid.
+The scraper reads `$ESPRO_TOKEN` and sends it as `Authorization: Bearer`. It takes
+`--token` too, but prefer the environment — a secret on a command line is visible to
+anyone who can run `ps`.
 
-`--auth-user` is worth passing even on a loopback bridge that does not demand it: the
-bridge decides from its own bind address, not the client's, so a bridge on `0.0.0.0`
-rejects even a loopback request without the header — and where it is not required it still
-attributes the scrape in the audit log.
+**Why a token rather than the user header.** When `ESPRO_BIND` is non-loopback the bridge
+requires `X-Auth-User` to be present and non-empty, and checks it no further: the header
+is trusted because nginx sets it, and the security comes from the core being unreachable
+except through the proxy. Sent directly, `X-Auth-User: root` is accepted as readily as any
+other name. So `--auth-user` **names** the scrape in the audit log; it does not
+authenticate it. A token is different — the core issued it, bound a role to it, and can
+revoke it — which is what makes the audit line worth reading.
+
+The bridge prefers a token over the header when both are present, so adding one to an
+existing deployment needs no other change.
+
+`--auth-user` remains worth passing on a bridge with no token: the bridge decides whether
+to demand the header from its own bind address, not the client's, so a bridge on `0.0.0.0`
+rejects even a loopback request that has neither.
 
 ### 3. The scraper to Zabbix, if you push instead of pull
 

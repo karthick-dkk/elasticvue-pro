@@ -14,6 +14,12 @@ services:
       # The floor is five minutes: proving an index is safe to delete means listing every
       # snapshot in every repository, and indices are dated by day.
       ESPRO_INTERVAL: "300"
+      # An API token minted on the Accounts page with the "user" role — the scrape reads
+      # indices and snapshots, so "guest" is not enough. Put it in deploy/.env, which is
+      # gitignored; passing it as an argument would show the secret in ps output.
+      # Leave it unset and the scrape falls back to naming itself in the audit log only,
+      # which works while the deployment still has no accounts.
+      ESPRO_TOKEN: "${ESPRO_TOKEN:-}"
     volumes:
       - ../ui:/app/ui:ro
       - ../tools:/app/tools:ro

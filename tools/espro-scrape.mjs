@@ -23,7 +23,12 @@
  *   --format json     one JSON document, shaped for a Zabbix HTTP agent item  (default)
  *   --format sender   "<host> <key> <value>" lines for zabbix_sender
  *   --host NAME       host name used by --format sender   (default elasticvue-pro)
- *   --auth-user NAME  sent as X-Auth-User, which the hosted bridge requires
+ *   --token SECRET    an API token (espro_…) minted on the Accounts page; sent as
+ *                     Authorization: Bearer. Prefer $ESPRO_TOKEN over the command line,
+ *                     where the secret would be visible in ps output.
+ *   --auth-user NAME  sent as X-Auth-User. Only names the run in the audit log — the
+ *                     hosted bridge trusts that header because nginx sets it, so it is
+ *                     not authentication. Use --token where the core issues one.
  *
  * Exit status is 0 whenever the scrape produced a document, even if clusters were
  * unreachable — an unreachable cluster is a fact to report, not a reason to report
@@ -50,6 +55,8 @@ const outPath = arg('--out', '');
 const format = arg('--format', 'json');
 const zbxHost = arg('--host', 'elasticvue-pro');
 const authUser = arg('--auth-user', '');
+// The environment first: a secret on the command line is visible to anyone who can run ps.
+const token = process.env.ESPRO_TOKEN || arg('--token', '');
 
 if (!configPath) {
   console.error('espro-scrape: --config <clusters.yaml> is required');
@@ -71,8 +78,12 @@ if (format !== 'json' && format !== 'sender') {
 const realFetch = globalThis.fetch;
 globalThis.fetch = (input, init = {}) => {
   if (typeof input === 'string' && input.startsWith('/')) input = bridgeUrl + input;
-  if (authUser) init = { ...init, headers: { ...(init.headers || {}), 'X-Auth-User': authUser } };
-  return realFetch(input, init);
+  const headers = { ...(init.headers || {}) };
+  // A token is an identity the core issued and can revoke; the user header is only a name
+  // nginx vouched for. The bridge prefers the token when both are present.
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (authUser) headers['X-Auth-User'] = authUser;
+  return realFetch(input, { ...init, headers });
 };
 
 const { parseConfigText } = await import(path.join(UI, 'core/config.js'));
