@@ -265,32 +265,37 @@ if [ "$MODE" = hosted ]; then
   step "Generating a self-signed certificate and a starter config"
   ./trial-setup.sh
 
-  # The core runs as uid 999 inside the image; these files are created by whoever ran the
-  # installer. Without this, "Add cluster" in the UI fails on a permission error even
-  # though the mount is writable — owner is the container so it can write, group is the
-  # host user so a human can still edit the file by hand.
-  if [ "$(stat -c %u config 2>/dev/null || echo 999)" != "999" ]; then
-    step "Letting the core write its own config"
-    # try_root, not as_root: this is a convenience, and as_root exits when it cannot
-    # prompt. A stack that comes up perfectly well but cannot save a cluster from the UI
-    # is worth a warning, not an aborted install.
-    # g+s on the directory is the part that survives. The core writes a temp file and
-    # renames it, so a replacement file gets the writer's own group — setgid makes the
-    # directory hand it the group instead, which is what keeps the file readable by a
-    # human after the app has saved over it.
-    # Explicit modes, not g+w: this file starts at 0600, and adding only the write bit
-    # gives 0620 — group can write it but not read it, which is worse than either.
-    # 0660 and 2770: the app and the host user, nobody else. It holds cluster credentials.
-    if try_root chown -R "999:$(id -g)" config \
-       && try_root chmod 2770 config \
-       && try_root find config -type f -exec chmod 660 {} +; then
-      ok "config/ is writable by the app and by you"
+  # Anything compose needs on a later `docker compose up` has to be in .env, not just
+  # exported here — the installer's environment dies with the installer.
+  env_set() {
+    if grep -q "^$1=" .env 2>/dev/null; then
+      sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
     else
-      warn "could not hand config/ to the core (uid 999)."
-      info "The stack will run, but \"Add cluster\" in the UI will fail on a permission"
-      info "error until you run:"
-      info "  sudo chown -R 999:$(id -g) $DEST/deploy/config && sudo chmod -R g+w \$_"
+      printf '%s=%s\n' "$1" "$2" >> .env
     fi
+  }
+
+  step "Letting the core write its own config"
+  # The core runs as uid 999 and this directory belongs to whoever ran the installer, so
+  # the first version of this chowned the directory to 999 — which needs root, and root
+  # is what a piped install cannot ask for. On a host where sudo wants a password the
+  # chown was skipped and "Add cluster" failed with a permission error on a deployment
+  # that otherwise looked perfectly healthy.
+  #
+  # So nothing is chowned. The container is handed this user's group instead (group_add
+  # in the compose file), and the directory is made setgid so that a file the core
+  # replaces keeps that group rather than taking the writer's — which is what leaves it
+  # readable and editable by a human after the app has saved over it. Both are things
+  # the directory's own owner can do unaided.
+  env_set ESPRO_GID "$(id -g)"
+  if chmod g+rwxs config 2>/dev/null; then
+    chmod g+rw config/* 2>/dev/null || true
+    ok "config/ is writable by the app and by you"
+  else
+    warn "could not make config/ group-writable."
+    info "The stack will run, but \"Add cluster\" in the UI will fail on a permission"
+    info "error until you run:"
+    info "  chmod g+rwxs $DEST/deploy/config && chmod g+rw \$_/*"
   fi
 
   # Pull if there is something to pull. Compiling the core takes about twenty minutes on
@@ -310,7 +315,11 @@ if [ "$MODE" = hosted ]; then
   fi
 
   if [ -n "$PUBLISHED" ]; then
+    # .env as well as the environment: without this a later `docker compose up -d` on
+    # this directory resolves the image to the default and spends twenty minutes
+    # compiling a core that is already installed.
     export ESPRO_IMAGE="$PUBLISHED"
+    env_set ESPRO_IMAGE "$PUBLISHED"
     step "Starting from ${PUBLISHED}"
     docker compose up -d --pull always
   else
