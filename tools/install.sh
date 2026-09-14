@@ -82,6 +82,23 @@ need curl
 as_root() {
   if [ "$(id -u)" = 0 ]; then "$@"; return; fi
   command -v sudo >/dev/null 2>&1 || die "this needs root and sudo is not installed"
+
+  # `curl … | bash` leaves sudo with no terminal to prompt on, so if it also has no
+  # cached credential it fails with "a terminal is required" — true, and useless. Say
+  # what to do about it instead.
+  if ! sudo -n true 2>/dev/null && [ ! -t 0 ] && [ ! -r /dev/tty ]; then
+    say ""
+    warn "sudo needs a password and there is no terminal to ask on."
+    info "That is what piping a script into bash costs. Any one of these works:"
+    info "  • create the directory first, owned by you, and run this again:"
+    info "      sudo mkdir -p ${DEST:-/opt/elasticvuepro_<version>} && sudo chown \$USER: \$_"
+    info "  • put it somewhere you can already write:  --dir ~/elasticvue-pro"
+    info "  • download and run it in two steps, so sudo has a terminal:"
+    info "      curl -fsSL <url> -o install.sh && bash install.sh --hosted"
+    say ""
+    die "nothing installed"
+  fi
+
   if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
     printf '  About to run: sudo %s\n  Continue? [Y/n] ' "$*"
     read -r reply </dev/tty || reply=y
