@@ -105,6 +105,14 @@ impl Core {
             data_dir.as_ref().filter(|_| edition.uses_accounts()).map(|d| d.join(name))
         };
         let users = UserStore::open_with_rounds(auth_path("users.json"), rounds);
+        // A fresh install gets the shipped account rather than an empty state and a
+        // bootstrap screen. It is created must_change, so it is a way in and nothing more.
+        if edition.uses_accounts() && users.seed_default() {
+            tracing::warn!(
+                user = auth::DEFAULT_USER,
+                "no accounts existed: created the default one. It must be changed before anything else works."
+            );
+        }
         let tokens = TokenStore::open(auth_path("tokens.json"));
         Arc::new(Core {
             edition,
@@ -140,7 +148,7 @@ impl Core {
     /// The caller a session token names, if the session is still live.
     pub fn caller_for_session(&self, token: &str) -> Option<Caller> {
         let s = self.sessions.resolve(token)?;
-        Some(Caller { name: s.user, role: s.role })
+        Some(Caller { name: s.user, role: s.role, must_change: s.must_change })
     }
 
     /// The caller for a name a trusted reverse proxy has already authenticated.
@@ -158,7 +166,7 @@ impl Core {
             .list()
             .into_iter()
             .find(|a| a.name.eq_ignore_ascii_case(name) && !a.disabled)
-            .map(|a| Caller { name: a.name, role: a.role })
+            .map(|a| Caller { name: a.name, role: a.role, must_change: a.must_change })
     }
 
     /// The caller an API token names. Hosted only — see `Edition::uses_api_tokens`.
@@ -167,7 +175,8 @@ impl Core {
             return None;
         }
         let role = self.tokens.verify(secret)?;
-        Some(Caller { name: format!("token:{}", &secret[..secret.len().min(12)]), role })
+        // A token is not a person and has no password to change.
+        Some(Caller { name: format!("token:{}", &secret[..secret.len().min(12)]), role, must_change: false })
     }
 
     /// Whether this caller may send this message, as a ready-made refusal.
@@ -204,6 +213,15 @@ impl Core {
                 "message": "sign in to continue",
             }));
         };
+        // The shipped password is a way in and nothing else. Until it is replaced this
+        // session can see who it is, change that password, and leave.
+        if c.must_change && !matches!(t, "PING" | "WHOAMI" | "LOGOUT" | "USER_SET_PASSWORD") {
+            return Err(json!({
+                "ok": false, "kind": "must_change_password",
+                "message": "this account is still on the password it shipped with — set a new one to continue",
+            }));
+        }
+
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
         auth::authorize(c.role, t, method, path).map_err(|why| {
@@ -240,6 +258,10 @@ impl Core {
                 "authRequired": self.edition.uses_accounts(),
                 "needsBootstrap": self.needs_bootstrap(),
                 "apiTokens": self.edition.uses_api_tokens(),
+                "defaultUser": auth::DEFAULT_USER,
+                // So the sign-in screen can say what the first login is, for exactly as
+                // long as that is still true.
+                "defaultPasswordUnchanged": self.users.default_unchanged(),
                 "caller": caller.as_ref().map(|c| c.public()),
             }),
             "LOGIN" => self.login(&msg),
@@ -493,11 +515,10 @@ impl Core {
             Ok(acct) => {
                 let token = self.sessions.begin(&acct);
                 tracing::info!(target: "audit", user = %acct.name, role = acct.role.as_str(), "login");
-                json!({
-                    "ok": true,
-                    "session": token,
-                    "caller": { "name": acct.name, "role": acct.role.as_str() },
-                })
+                // One shape for "who is this", built from the account rather than
+                // assembled by hand here and differently somewhere else.
+                let who = Caller { name: acct.name.clone(), role: acct.role, must_change: acct.must_change };
+                json!({ "ok": true, "session": token, "caller": who.public() })
             }
             Err(e) => {
                 // The name is logged; the reason is not narrowed for the caller, so a
@@ -527,7 +548,8 @@ impl Core {
                 match self.users.verify(name, password) {
                     Ok(acct) => {
                         let token = self.sessions.begin(&acct);
-                        json!({ "ok": true, "session": token, "caller": { "name": acct.name, "role": "admin" } })
+                        let who = Caller { name: acct.name.clone(), role: acct.role, must_change: acct.must_change };
+                        json!({ "ok": true, "session": token, "caller": who.public() })
                     }
                     Err(e) => json!({ "ok": false, "message": e.to_string() }),
                 }
@@ -600,9 +622,17 @@ impl Core {
                 out
             }
             "USER_SET_PASSWORD" => {
+                // Otherwise the forced change could be satisfied by changing somebody
+                // else's password and leaving the shipped one in place.
+                if caller.is_some_and(|c| c.must_change) && !name.eq_ignore_ascii_case(&me) {
+                    return json!({ "ok": false, "kind": "bad_request",
+                                   "message": "set your own password first" });
+                }
                 let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("");
                 let out = done(self.users.set_password(&name, password));
                 if out["ok"] == json!(true) {
+                    // The session in front of us is holding the old answer.
+                    self.sessions.clear_must_change(&name);
                     // Everyone but the person doing it: changing your own password should
                     // not sign you out of the screen you are standing at.
                     if !name.eq_ignore_ascii_case(&me) {
@@ -723,6 +753,10 @@ impl Core {
             "authRequired": self.edition.uses_accounts(),
             "needsBootstrap": self.needs_bootstrap(),
             "apiTokens": self.edition.uses_api_tokens(),
+            // The same two facts WHOAMI reports. Two answers to "is this still on the
+            // shipped password" that could disagree is worse than one in the wrong place.
+            "defaultUser": auth::DEFAULT_USER,
+            "defaultPasswordUnchanged": self.users.default_unchanged(),
             "dataDir": self.data_dir, "configHint": self.config_hint, "uptimeSec": self.started.elapsed().as_secs(),
             "defaultConfigPath": self.data_dir.as_ref().map(|d| d.join("config_cluster.json")),
             "tunnels": self.tunnel_status().await,

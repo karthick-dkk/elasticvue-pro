@@ -250,11 +250,13 @@ pub fn authorize(role: Role, msg_type: &str, method: &str, path: &str) -> Result
 pub struct Caller {
     pub name: String,
     pub role: Role,
+    /// True while this account is still on the password it shipped with.
+    pub must_change: bool,
 }
 
 impl Caller {
     pub fn public(&self) -> serde_json::Value {
-        serde_json::json!({ "name": self.name, "role": self.role.as_str() })
+        serde_json::json!({ "name": self.name, "role": self.role.as_str(), "mustChange": self.must_change })
     }
 }
 
@@ -273,6 +275,10 @@ pub struct Account {
     pub created_at: u64,
     #[serde(default)]
     pub disabled: bool,
+    /// Set on the seeded account. Until it is cleared the session may only change this
+    /// password, which is what makes shipping a known one acceptable.
+    #[serde(default)]
+    pub must_change: bool,
 }
 
 impl Account {
@@ -284,6 +290,7 @@ impl Account {
             "role": self.role.as_str(),
             "createdAt": self.created_at,
             "disabled": self.disabled,
+            "mustChange": self.must_change,
         })
     }
 }
@@ -324,6 +331,15 @@ impl std::fmt::Display for AuthError {
 /// The shortest password worth calling one. Long enough to matter, short enough that
 /// nobody writes it on a sticky note.
 pub const MIN_PASSWORD: usize = 10;
+
+/// The account a fresh install starts with.
+///
+/// A known password that ships in the source is not a secret, so it is not treated as
+/// one: the account is created with `must_change` set, and a session holding it can do
+/// nothing at all except replace it. The convenience is a first login that works; the
+/// credential itself is worth nothing for longer than that takes.
+pub const DEFAULT_USER: &str = "elasticvue";
+pub const DEFAULT_PASSWORD: &str = "loginme";
 
 fn check_password(p: &str) -> Result<(), AuthError> {
     if p.chars().count() < MIN_PASSWORD {
@@ -371,6 +387,11 @@ impl UserStore {
         self.accounts.read().clone()
     }
 
+    /// True while the shipped account still has the shipped password.
+    pub fn default_unchanged(&self) -> bool {
+        self.accounts.read().iter().any(|a| a.name == DEFAULT_USER && a.must_change)
+    }
+
     pub fn count_admins(&self) -> usize {
         self.accounts.read().iter().filter(|a| a.role == Role::Admin && !a.disabled).count()
     }
@@ -396,11 +417,28 @@ impl UserStore {
     }
 
     pub fn add(&self, name: &str, password: &str, role: Role) -> Result<(), AuthError> {
+        self.add_inner(name, password, role, false, true)
+    }
+
+    /// The one account allowed to be weak, because it is also the one account that cannot
+    /// be used for anything until it is replaced.
+    pub fn seed_default(&self) -> bool {
+        if !self.accounts.read().is_empty() {
+            return false;
+        }
+        self.add_inner(DEFAULT_USER, DEFAULT_PASSWORD, Role::Admin, true, false).is_ok()
+    }
+
+    fn add_inner(&self, name: &str, password: &str, role: Role, must_change: bool, enforce_len: bool)
+        -> Result<(), AuthError>
+    {
         let name = name.trim();
         if name.is_empty() {
             return Err(AuthError::Weak("the account needs a name".into()));
         }
-        check_password(password)?;
+        if enforce_len {
+            check_password(password)?;
+        }
         {
             let mut list = self.accounts.write();
             if list.iter().any(|a| a.name.eq_ignore_ascii_case(name)) {
@@ -416,6 +454,7 @@ impl UserStore {
                 rounds: self.rounds,
                 created_at: now(),
                 disabled: false,
+                must_change,
             });
         }
         self.save()
@@ -476,6 +515,8 @@ impl UserStore {
             a.salt = random_hex(16);
             a.rounds = self.rounds;
             a.hash = derive(password, &a.salt, a.rounds);
+            // The forced change is over the moment it happens.
+            a.must_change = false;
         }
         self.save()
     }
@@ -510,6 +551,7 @@ pub struct Session {
     pub user: String,
     pub role: Role,
     pub started: u64,
+    pub must_change: bool,
 }
 
 /// Live sessions, in memory only.
@@ -534,7 +576,12 @@ impl Sessions {
 
     pub fn begin(&self, account: &Account) -> String {
         let token = random_hex(32);
-        let s = Session { user: account.name.clone(), role: account.role, started: now() };
+        let s = Session {
+            user: account.name.clone(),
+            role: account.role,
+            started: now(),
+            must_change: account.must_change,
+        };
         self.map.write().insert(token.clone(), (s, Instant::now()));
         token
     }
@@ -552,6 +599,19 @@ impl Sessions {
 
     pub fn end(&self, token: &str) {
         self.map.write().remove(token);
+    }
+
+    /// The forced change is over for any session this account already holds.
+    ///
+    /// Needed because a session caches the flag it was created with: without this the
+    /// operator changes their password, the account is updated, and the session they are
+    /// sitting in is still locked to the change-password screen.
+    pub fn clear_must_change(&self, user: &str) {
+        for (s, _) in self.map.write().values_mut() {
+            if s.user.eq_ignore_ascii_case(user) {
+                s.must_change = false;
+            }
+        }
     }
 
     /// Every session for one account, gone. Used when an account is removed, disabled or

@@ -17,14 +17,25 @@ fn core(dir: &TempDir, edition: Edition) -> std::sync::Arc<Core> {
     Core::new_with_rounds(Some(dir.0.clone()), edition, 1)
 }
 
-/// Create the first admin and return a live session token.
+/// Sign in as the shipped account and get past its forced password change.
+///
+/// Every install now starts with one, so this is what "become an admin" looks like —
+/// there is no empty state to bootstrap out of.
 async fn admin_session(c: &std::sync::Arc<Core>) -> String {
     let res = c
-        .handle(json!({ "type": "BOOTSTRAP_ADMIN", "name": "root", "password": PASSWORD }))
+        .handle(json!({ "type": "LOGIN", "name": "elasticvue", "password": "loginme" }))
         .await;
-    assert_eq!(res["ok"], json!(true), "bootstrap failed: {res}");
-    res["session"].as_str().expect("a session").to_string()
+    assert_eq!(res["ok"], json!(true), "the shipped account should sign in: {res}");
+    let s = res["session"].as_str().expect("a session").to_string();
+    let ch = c
+        .handle(json!({ "type": "USER_SET_PASSWORD", "session": s, "name": "elasticvue", "password": PASSWORD }))
+        .await;
+    assert_eq!(ch["ok"], json!(true), "the forced change should succeed: {ch}");
+    s
 }
+
+/// The name admin_session() leaves you signed in as.
+const ADMIN: &str = "elasticvue";
 
 async fn login(c: &std::sync::Arc<Core>, name: &str) -> String {
     let res = c.handle(json!({ "type": "LOGIN", "name": name, "password": PASSWORD })).await;
@@ -71,28 +82,6 @@ async fn portable_writes_no_accounts_file() {
 /* -------------------------------- bootstrap --------------------------------- */
 
 #[tokio::test]
-async fn an_installed_build_demands_a_first_admin_before_anything_else() {
-    let dir = TempDir::new("auth-bootstrap");
-    let c = core(&dir, Edition::Installed);
-
-    let ping = c.handle(json!({ "type": "PING" })).await;
-    assert_eq!(ping["authRequired"], json!(true));
-    assert_eq!(ping["needsBootstrap"], json!(true));
-
-    // Nothing useful works yet, and the refusal says what to do about it.
-    let res = c.handle(json!({ "type": "CONFIG_READ", "path": "x" })).await;
-    assert_eq!(res["kind"], json!("needs_bootstrap"), "{res}");
-
-    let session = admin_session(&c).await;
-    let after = c.handle(json!({ "type": "PING" })).await;
-    assert_eq!(after["needsBootstrap"], json!(false));
-
-    let who = c.handle(json!({ "type": "WHOAMI", "session": session })).await;
-    assert_eq!(who["caller"]["name"], json!("root"));
-    assert_eq!(who["caller"]["role"], json!("admin"));
-}
-
-#[tokio::test]
 async fn bootstrap_is_only_available_while_there_are_no_accounts() {
     let dir = TempDir::new("auth-rebootstrap");
     let c = core(&dir, Edition::Installed);
@@ -119,16 +108,83 @@ async fn bootstrap_is_only_available_while_there_are_no_accounts() {
     assert_eq!(listed["users"].as_array().unwrap().len(), 1, "{listed}");
 }
 
+/* --------------------------- the account that ships ---------------------------- */
+
 #[tokio::test]
-async fn a_short_password_is_refused_at_bootstrap() {
-    let dir = TempDir::new("auth-weak");
+async fn a_fresh_install_ships_an_account_that_can_do_nothing_but_change_itself() {
+    let dir = TempDir::new("auth-seed");
     let c = core(&dir, Edition::Installed);
-    let res = c.handle(json!({ "type": "BOOTSTRAP_ADMIN", "name": "root", "password": "abc" })).await;
-    assert_eq!(res["ok"], json!(false));
-    assert!(res["message"].as_str().unwrap().contains("at least"), "{res}");
+
+    let ping = c.handle(json!({ "type": "PING" })).await;
+    assert_eq!(ping["authRequired"], json!(true));
+    assert_eq!(ping["defaultUser"], json!("elasticvue"));
+    assert_eq!(ping["defaultPasswordUnchanged"], json!(true), "{ping}");
+
+    let res = c.handle(json!({ "type": "LOGIN", "name": "elasticvue", "password": "loginme" })).await;
+    assert_eq!(res["ok"], json!(true), "the shipped account should sign in: {res}");
+    let s = res["session"].as_str().unwrap().to_string();
+    assert_eq!(res["caller"]["mustChange"], json!(true), "{res}");
+
+    // A known password is only acceptable because it buys nothing.
+    for t in ["PINS", "CONFIG_READ", "USER_LIST", "WRITE_UNLOCK", "TOKEN_LIST"] {
+        let r = c.handle(json!({ "type": t, "session": s })).await;
+        assert_eq!(r["kind"], json!("must_change_password"), "{t} worked on the shipped password: {r}");
+    }
+    let es = c
+        .handle(json!({ "type": "ES", "session": s, "clusterId": "x", "method": "GET", "path": "/_cluster/health" }))
+        .await;
+    assert_eq!(es["kind"], json!("must_change_password"), "not even a read: {es}");
+
+    // Nor can it dodge the change by setting somebody else's password.
+    let dodge = c
+        .handle(json!({ "type": "USER_SET_PASSWORD", "session": s, "name": "someone", "password": "a-long-enough-one" }))
+        .await;
+    assert_eq!(dodge["ok"], json!(false), "{dodge}");
+
+    // The replacement still has to be a real password.
+    let short = c
+        .handle(json!({ "type": "USER_SET_PASSWORD", "session": s, "name": "elasticvue", "password": "abc" }))
+        .await;
+    assert_eq!(short["ok"], json!(false));
+    assert!(short["message"].as_str().unwrap().contains("at least"), "{short}");
+
+    // And once it is changed, the session in hand works — without signing in again.
+    let ok = c
+        .handle(json!({ "type": "USER_SET_PASSWORD", "session": s, "name": "elasticvue", "password": PASSWORD }))
+        .await;
+    assert_eq!(ok["ok"], json!(true), "{ok}");
+    assert_eq!(
+        c.handle(json!({ "type": "USER_LIST", "session": s })).await["ok"],
+        json!(true),
+        "the live session should stop being locked the moment the password changes"
+    );
+    assert_eq!(
+        c.handle(json!({ "type": "PING" })).await["defaultPasswordUnchanged"],
+        json!(false)
+    );
 }
 
-/* ---------------------------------- sessions --------------------------------- */
+#[tokio::test]
+async fn the_shipped_password_stops_working_once_it_is_replaced() {
+    let dir = TempDir::new("auth-seed-gone");
+    let c = core(&dir, Edition::Installed);
+    admin_session(&c).await;
+
+    let old = c.handle(json!({ "type": "LOGIN", "name": "elasticvue", "password": "loginme" })).await;
+    assert_eq!(old["ok"], json!(false), "the shipped password must not survive the change: {old}");
+    let new = c.handle(json!({ "type": "LOGIN", "name": "elasticvue", "password": PASSWORD })).await;
+    assert_eq!(new["ok"], json!(true));
+    assert_eq!(new["caller"]["mustChange"], json!(false));
+}
+
+#[tokio::test]
+async fn portable_gets_no_seeded_account() {
+    let dir = TempDir::new("auth-seed-portable");
+    let c = core(&dir, Edition::Portable);
+    let _ = c.handle(json!({ "type": "PING" })).await;
+    assert!(!dir.0.join("users.json").exists(), "portable must not create an accounts file");
+    assert_eq!(c.handle(json!({ "type": "PING" })).await["authRequired"], json!(false));
+}
 
 #[tokio::test]
 async fn no_session_means_nothing_but_the_public_messages() {
@@ -150,7 +206,7 @@ async fn a_bad_password_says_nothing_about_which_half_was_wrong() {
     let c = core(&dir, Edition::Installed);
     admin_session(&c).await;
 
-    let wrong_pw = c.handle(json!({ "type": "LOGIN", "name": "root", "password": "nope" })).await;
+    let wrong_pw = c.handle(json!({ "type": "LOGIN", "name": ADMIN, "password": "nope" })).await;
     let no_user = c.handle(json!({ "type": "LOGIN", "name": "ghost", "password": "nope" })).await;
     assert_eq!(wrong_pw["ok"], json!(false));
     assert_eq!(no_user["ok"], json!(false));
@@ -255,11 +311,11 @@ async fn an_admin_cannot_lock_everyone_out() {
     let s = admin_session(&c).await;
 
     let demote = c
-        .handle(json!({ "type": "USER_SET_ROLE", "session": s, "name": "root", "role": "user" }))
+        .handle(json!({ "type": "USER_SET_ROLE", "session": s, "name": ADMIN, "role": "user" }))
         .await;
     assert_eq!(demote["ok"], json!(false), "the only admin must not be able to demote themselves");
 
-    let remove = c.handle(json!({ "type": "USER_REMOVE", "session": s, "name": "root" })).await;
+    let remove = c.handle(json!({ "type": "USER_REMOVE", "session": s, "name": ADMIN })).await;
     assert_eq!(remove["ok"], json!(false), "nor remove themselves");
 }
 
@@ -310,39 +366,6 @@ async fn the_accounts_file_never_holds_a_password() {
 }
 
 /* ---------------------------- hosted, and its upgrade --------------------------- */
-
-#[tokio::test]
-async fn hosted_demands_a_first_administrator_like_every_other_edition() {
-    let dir = TempDir::new("auth-hosted-bootstrap");
-    let c = core(&dir, Edition::Hosted);
-
-    // Being past nginx is not an identity. Before any account exists the proxy's name
-    // resolves to nobody, and nothing but the bootstrap is on offer.
-    assert!(
-        c.caller_for_proxy_user("alice").is_none(),
-        "a proxy name with no account behind it must carry no role"
-    );
-    let ping = c.handle(json!({ "type": "PING" })).await;
-    assert_eq!(ping["authRequired"], json!(true));
-    assert_eq!(ping["needsBootstrap"], json!(true));
-
-    for t in ["PINS", "CONFIG_READ", "ES", "USER_LIST"] {
-        let res = c.handle(json!({ "type": t })).await;
-        assert_eq!(res["kind"], json!("needs_bootstrap"), "{t} was reachable before setup: {res}");
-    }
-
-    // Once the administrator exists, the proxy name is only as good as its account.
-    admin_session(&c).await;
-    assert_eq!(c.handle(json!({ "type": "PING" })).await["needsBootstrap"], json!(false));
-    assert!(
-        c.caller_for_proxy_user("alice").is_none(),
-        "still nobody — alice has no account"
-    );
-    assert_eq!(
-        c.caller_for_proxy_user("root").expect("root has an account").role,
-        espro_core::auth::Role::Admin
-    );
-}
 
 #[tokio::test]
 async fn a_disabled_account_is_not_let_in_by_the_proxy_either() {

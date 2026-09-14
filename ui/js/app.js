@@ -464,8 +464,15 @@ async function gateOnAuth() {
   let st;
   try { st = await authState(); } catch (_) { return; }
   if (!st.required) { me = null; return; }
-  if (st.caller) { me = st.caller; return; }        // sessionStorage still had a live one
-  me = await loginScreen(root, { bootstrap: st.bootstrap });
+  // A live session that is still on the shipped password goes to the change screen, not
+  // to a dashboard the core will refuse to fill.
+  if (st.caller && !st.caller.mustChange) { me = st.caller; return; }
+  me = st.caller && st.caller.mustChange
+    ? await loginScreen(root, { mode: 'change', hint: st.caller })
+    : await loginScreen(root, {
+        bootstrap: st.bootstrap,
+        startHint: st.defaultUnchanged ? { defaultUser: st.defaultUser } : null,
+      });
 }
 
 async function boot() {

@@ -26,6 +26,10 @@ export async function authState() {
     apiTokens: !!res.apiTokens,
     edition: res.edition || 'portable',
     caller: res.caller || null,
+    defaultUser: res.defaultUser || '',
+    // True only until somebody replaces the shipped password, which is exactly how long
+    // it is worth telling people what it is.
+    defaultUnchanged: !!res.defaultPasswordUnchanged,
   };
 }
 
@@ -40,11 +44,11 @@ export async function signOut() {
  * Resolves with the caller, so the shell can render a role-appropriate UI without asking
  * again.
  */
-export function loginScreen(root, { bootstrap = false } = {}) {
+export function loginScreen(root, { bootstrap = false, mode: startMode = null, hint = null, startHint = null } = {}) {
   return new Promise((resolve) => {
     let busy = false;
     let error = '';
-    let mode = bootstrap ? 'bootstrap' : 'login';
+    let mode = startMode || (bootstrap ? 'bootstrap' : 'login');
 
     const submit = async () => {
       if (busy) return;
@@ -52,6 +56,22 @@ export function loginScreen(root, { bootstrap = false } = {}) {
       const password = (document.getElementById('login-pw') || {}).value || '';
       const confirm = (document.getElementById('login-pw2') || {}).value || '';
 
+      if (mode === 'change') {
+        if (password.length < MIN_PASSWORD) {
+          error = `The new password must be at least ${MIN_PASSWORD} characters.`;
+          return draw();
+        }
+        if (password !== confirm) { error = 'The two passwords do not match.'; return draw(); }
+        busy = true; error = ''; draw();
+        const res = await bridge({ type: 'USER_SET_PASSWORD', name: hint.name, password });
+        busy = false;
+        if (res && res.ok) {
+          try { document.body.classList.remove('auth-bg'); } catch { /* not a browser */ }
+          return resolve({ ...hint, mustChange: false });
+        }
+        error = (res && res.message) || 'Could not set the password.';
+        return draw();
+      }
       if (!name.trim()) { error = 'Enter a user name.'; return draw(); }
       if (mode === 'bootstrap') {
         if (password.length < MIN_PASSWORD) {
@@ -71,8 +91,16 @@ export function loginScreen(root, { bootstrap = false } = {}) {
 
       if (res && res.ok && res.session) {
         setSession(res.session);
+        const who = res.caller || { name: name.trim(), role: 'admin' };
+        // The shipped password gets you exactly this screen. The core refuses everything
+        // else until it changes, so sending them on to a dashboard that cannot load
+        // would only look broken.
+        if (who.mustChange) {
+          hint = who; mode = 'change'; error = '';
+          return draw();
+        }
         try { document.body.classList.remove('auth-bg'); } catch { /* not a browser */ }
-        return resolve(res.caller || { name: name.trim(), role: 'admin' });
+        return resolve(who);
       }
       error = (res && res.message) || 'Sign-in failed.';
       draw();
@@ -84,6 +112,9 @@ export function loginScreen(root, { bootstrap = false } = {}) {
 
     function draw() {
       const first = mode === 'bootstrap';
+      const changing = mode === 'change';
+      // Both the first-run and the forced-change screens ask for a password twice.
+      const twice = first || changing;
       // Only while the gate is up — the dashboard behind it wants a plain surface, not
       // a backdrop competing with charts.
       try { document.body.classList.add('auth-bg'); } catch { /* not a browser */ }
@@ -93,29 +124,42 @@ export function loginScreen(root, { bootstrap = false } = {}) {
           h('div',
             h('h2', 'ElasticVue Pro'),
             h('div.muted', { style: { fontSize: '12.5px' } },
-              first
-                ? 'No accounts exist yet. Create the administrator for this installation.'
-                : 'Sign in to continue.'))),
+              changing
+                ? `Signed in as ${hint && hint.name}. Choose a password before going any further.`
+                : first
+                  ? 'No accounts exist yet. Create the administrator for this installation.'
+                  : 'Sign in to continue.'))),
 
-        error ? h('div.banner.err', { role: 'alert' }, h('div', h('div.ttl', first ? 'Could not create the account' : 'Could not sign in'), h('div', error))) : null,
+        // Said once, on the screen where it is useful, and only while it is still true.
+        !changing && !first && startHint
+          ? h('div.banner', { style: { marginBottom: '12px' } },
+              h('div',
+                h('div.ttl', 'First sign-in'),
+                h('div', 'Use ', h('code.inline', startHint.defaultUser), ' with the password ',
+                  h('code.inline', 'loginme'), '. You will be asked to replace it immediately.')))
+          : null,
+
+        error ? h('div.banner.err', { role: 'alert' }, h('div',
+          h('div.ttl', changing ? 'Could not set the password' : first ? 'Could not create the account' : 'Could not sign in'),
+          h('div', error))) : null,
 
         h('div.card', h('div.body',
-          h('label.field',
+          changing ? null : h('label.field',
             h('span', 'User name'),
             h('input#login-name', {
               type: 'text', autocomplete: 'username', autofocus: true,
               spellcheck: 'false', autocapitalize: 'none', onkeydown: onKey,
             })),
           h('label.field', { style: { marginTop: '10px' } },
-            h('span', first ? 'Password' : 'Password'),
+            h('span', changing ? 'New password' : 'Password'),
             h('input#login-pw', {
               type: 'password',
-              autocomplete: first ? 'new-password' : 'current-password',
+              autocomplete: twice ? 'new-password' : 'current-password',
               onkeydown: onKey,
             }),
-            first ? h('span.sec', { style: { fontSize: '11.5px' } },
+            twice ? h('span.sec', { style: { fontSize: '11.5px' } },
               `At least ${MIN_PASSWORD} characters. It is stored only as a PBKDF2 hash and cannot be recovered — if it is lost, delete users.json to start again.`) : null),
-          first
+          twice
             ? h('label.field', { style: { marginTop: '10px' } },
                 h('span', 'Repeat the password'),
                 h('input#login-pw2', { type: 'password', autocomplete: 'new-password', onkeydown: onKey }))
@@ -123,12 +167,12 @@ export function loginScreen(root, { bootstrap = false } = {}) {
 
           h('div', { style: { display: 'flex', gap: '8px', marginTop: '14px', alignItems: 'center' } },
             h('button.btn.primary', { disabled: busy, onclick: submit },
-              busy ? 'Working…' : (first ? 'Create administrator' : 'Sign in')),
+              busy ? 'Working…' : changing ? 'Set password and continue' : first ? 'Create administrator' : 'Sign in'),
             first
               ? h('span.muted', { style: { fontSize: '11.5px' } }, 'This account can manage every other one.')
               : null))),
 
-        first
+        twice
           ? h('div.banner', { style: { marginTop: '14px' } },
               h('div',
                 h('div.ttl', 'What the three roles can do'),
@@ -145,7 +189,7 @@ export function loginScreen(root, { bootstrap = false } = {}) {
       mount(root, h('div.auth-split',
         h('div.auth-brand', { role: 'presentation' }),
         h('div.auth-form', panel)));
-      const el = document.getElementById('login-name');
+      const el = document.getElementById(changing ? 'login-pw' : 'login-name');
       if (el && !busy) el.focus();
     }
 
