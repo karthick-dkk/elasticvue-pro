@@ -298,20 +298,36 @@ export async function fetchOverview(id, { withSnapshots = true } = {}) {
   if (!cl) return null;
   const prev = state.data.get(id) || {};
 
-  const [root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies,
-         ilmOfIndices, clusterSettings] =
-    await Promise.all([
-      settled(cl.root()), settled(cl.health()), settled(cl.allocation()), settled(cl.nodes()),
-      settled(cl.repositories()), settled(cl.slmPolicies()), settled(cl.slmStatus()),
-      settled(cl.ilmStatus()), settled(cl.ilmErrors()),
-      settled(cl.json('GET', '/_nodes/settings?filter_path=nodes.*.settings.path.repo,nodes.*.name')),
-      // What the cluster actually enforces, as opposed to what the config says it should.
-      settled(cl.ilmPolicies()),
-      settled(cl.ilmPolicyOfIndices(cl.c.logIndexPattern || '*')),
-      // The real watermarks, so disk advice is not given against assumed thresholds.
-      settled(cl.json('GET', '/_cluster/settings?include_defaults=true&flat_settings=true' +
-        '&filter_path=**.disk.watermark**,**.allocation.enable,**.rebalance.enable')),
-    ]);
+  // Reach for the cluster before interrogating it.
+  //
+  // These two decide reachability (see buildClusterData), so both are tried. The other
+  // eleven are only worth sending to something that answered: against a cluster that is
+  // down they are eleven more connection timeouts establishing a fact the first two
+  // already established, and they are why an offline cluster reported twenty-six
+  // requests in five minutes — thirteen per refresh, every refresh, none of them
+  // arriving anywhere.
+  const [root, health] = await Promise.all([settled(cl.root()), settled(cl.health())]);
+  const answered = root.ok || health.ok;
+
+  // The same shape settled() produces, so buildClusterData cannot tell a skipped call
+  // from a failed one and needs no special case for this.
+  const skipped = () => ({ ok: false, error: (root.error || health.error), skipped: true });
+
+  const [alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies,
+         ilmOfIndices, clusterSettings] = answered
+    ? await Promise.all([
+        settled(cl.allocation()), settled(cl.nodes()),
+        settled(cl.repositories()), settled(cl.slmPolicies()), settled(cl.slmStatus()),
+        settled(cl.ilmStatus()), settled(cl.ilmErrors()),
+        settled(cl.json('GET', '/_nodes/settings?filter_path=nodes.*.settings.path.repo,nodes.*.name')),
+        // What the cluster actually enforces, as opposed to what the config says it should.
+        settled(cl.ilmPolicies()),
+        settled(cl.ilmPolicyOfIndices(cl.c.logIndexPattern || '*')),
+        // The real watermarks, so disk advice is not given against assumed thresholds.
+        settled(cl.json('GET', '/_cluster/settings?include_defaults=true&flat_settings=true' +
+          '&filter_path=**.disk.watermark**,**.allocation.enable,**.rebalance.enable')),
+      ])
+    : Array.from({ length: 11 }, skipped);
 
   const out = buildClusterData(id, prev, {
     root, health, alloc, nodes, repos, slm, slmStatus, ilm, ilmErr, repoPaths, ilmPolicies,

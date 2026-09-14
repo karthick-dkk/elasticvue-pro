@@ -13,6 +13,7 @@ import { state, setConfig, refreshAll, clusters, applyUnlockedCredential, reprim
 import * as cfg from '../core/config.js';
 import { bridge } from '../core/transport.js';
 import { rememberConfigPath, pickFilePath } from '../core/platform.js';
+import { filePickerButton, canPickByPath, uploadKey } from './upload.js';
 import { bus } from '../core/state.js';
 import { modal, confirmDialog, field, text, select, val, checked } from './modal.js';
 import { parseRetention, parseSize } from '../core/volume.js';
