@@ -11,7 +11,10 @@ name: docker
 #   DOCKERHUB_TOKEN      an access token with Read/Write — not the account password
 on:
   push:
-    tags: ['v*']
+    # Both shapes. Every tag in this repository is v-prefixed, but a release cut as
+    # "2.2.3" matched nothing and built nothing — and a release that looks created while
+    # producing no assets is a worse failure than a rejected tag.
+    tags: ['v*', '[0-9]*']
   workflow_dispatch:
     inputs:
       tag:
