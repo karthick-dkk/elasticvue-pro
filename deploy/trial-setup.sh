@@ -28,7 +28,11 @@ if [ ! -s nginx/htpasswd ]; then
   # installed everywhere, and Python's crypt module was removed in 3.13. Docker is already
   # a requirement for the trial, so depending on it here adds nothing.
   docker run --rm httpd:2.4-alpine htpasswd -Bbn "$TRIAL_USER" "$TRIAL_PASS" > nginx/htpasswd
-  echo "  made nginx/htpasswd ($TRIAL_USER / $TRIAL_PASS — a trial credential, nothing more)"; made=1
+  # Not the login. nginx.conf has no auth_basic — signing in is the app's own job, and it
+  # asks for an administrator on first run. This file only matters if you turn edge
+  # authentication back on, and saying otherwise would send someone hunting for a
+  # password prompt that is not there.
+  echo "  made nginx/htpasswd (unused unless you re-enable auth_basic — not the app login)"; made=1
 fi
 
 # The config the compose file points ELASTICVUE_CONFIG at. It has to exist before the

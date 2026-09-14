@@ -1,15 +1,17 @@
 # ElasticVue Pro, hosted. One exposed port: nginx on 443.
 #
 #   cp .env.example .env            # then edit
-#   ./make-htpasswd.sh alice        # one line per user (phase 1 auth gate)
 #   docker compose up -d --build
 #
+# Signing in is the app's own job now — the first run asks for an administrator. Edge
+# authentication is optional: make-htpasswd.sh and the htpasswd mount are still here so
+# re-enabling auth_basic in nginx.conf is a two-line change, not a rebuild.
 # The core is reachable ONLY through nginx. Never publish port 8765.
 services:
   core:
     # Defaults to a locally built image, so `docker compose up --build` works on a clone
     # with no registry access at all. Set ESPRO_IMAGE to a published tag —
-    # karthickdk02/elasticvue-pro-core:2.2.3 — and compose pulls it instead, which is
+    # karthickdk02/elasticvue-pro-core:2.2.4 — and compose pulls it instead, which is
     # what turns a twenty-minute Rust build on a small server into a download.
     image: ${ESPRO_IMAGE:-elasticvue-pro-core:latest}
     build:
@@ -45,6 +47,8 @@ services:
       - "${LISTEN:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Unused while nginx.conf has no auth_basic; kept so turning it back on is a
+      # config change rather than a compose change.
       - ./nginx/htpasswd:/etc/nginx/htpasswd:ro
       - ./tls:/etc/nginx/tls:ro         # fullchain.pem + privkey.pem
     networks: [internal]

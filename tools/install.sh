@@ -254,7 +254,7 @@ if [ "$MODE" = hosted ]; then
     "${REF} has no deploy/ directory — the hosted stack is newer than that ref. Try --version main."
 
   cd "$DEST/deploy"
-  step "Generating throwaway credentials (self-signed TLS, one trial user)"
+  step "Generating a self-signed certificate and a starter config"
   ./trial-setup.sh
 
   # The core runs as uid 999 inside the image; these files are created by whoever ran the
@@ -312,7 +312,8 @@ if [ "$MODE" = hosted ]; then
     info "Open  https://<this host>/"
   fi
   info "The certificate is self-signed, so your browser will warn once."
-  info "Replace deploy/tls/ and deploy/nginx/htpasswd before anyone relies on this."
+  info "First visit asks you to create an administrator — that account is the login."
+  info "Replace deploy/tls/ with a real certificate before anyone relies on this."
   exit 0
 fi
 
