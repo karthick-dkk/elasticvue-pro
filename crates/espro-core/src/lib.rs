@@ -16,6 +16,7 @@ pub mod http;
 pub mod socks;
 pub mod ssh;
 pub mod tls;
+pub mod vault_files;
 #[cfg(feature = "vault")]
 pub mod vault;
 

@@ -9,11 +9,12 @@ import { workerStatus, forgetWorker, tunnels as fetchTunnels, listPins, untrustC
 import { showCredentialDialog, forgetVaultCredential } from '../ui/credential-dialog.js';
 import { EXAMPLE_YAML } from '../core/example.js';
 import { saveTextAs } from '../core/platform.js';
-import { editCluster, editJumpHost, editCredentials, editDefaults, unlockSealed } from '../ui/config-editor.js';
+import { editCluster, editJumpHost, editCredentials, editDefaults, unlockSealed, saveRaw } from '../ui/config-editor.js';
 import { card, pill, table, empty } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { applyLoadedConfig } from '../ui/load-config.js';
+import { filePickerButton, canPickByPath, configHistory, readVersion } from '../ui/upload.js';
 import { confirmDialog } from '../ui/modal.js';
 import { rowMenu, ICON } from '../ui/menu.js';
 
@@ -21,6 +22,82 @@ let host = null;
 
 let core = null;      // last PING
 let trust = null;     // last PINS + TUNNELS
+
+/* ------------------------- uploading a config, and its history ------------------- */
+
+let versions = [];
+let historyOpen = false;
+
+/**
+ * A config the operator chose in their browser.
+ *
+ * Parsed before it is saved, so a file that is not a config is refused here rather than
+ * after it has replaced the working one. Then it goes through applyLoadedConfig, the same
+ * path every other way of loading a config uses — a second loader would be a second set
+ * of rules about credentials and sealed secrets.
+ */
+async function uploadConfig(text, err, name) {
+  const msg = $('#cfg-msg');
+  const say = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--critical-ink)' : ''; } };
+  if (err) return say(err, true);
+  try {
+    const parsed = cfg.parseConfigText(text, name);
+    parsed.fileMeta = { name, size: text.length, lastModified: Date.now(), ephemeral: false };
+    // The same two steps every other loader uses: make it the live config, then write it
+    // where the core reads it. saveRaw() owns "where does a config get saved", including
+    // falling back to the core's default path, so this does not get its own opinion.
+    await applyLoadedConfig(parsed, null);
+    const path = await saveRaw();
+    say(`Loaded ${name} and saved to ${path}. The version it replaced is in the history.`);
+    await loadHistory();
+  } catch (e) {
+    say(`${name} is not a usable config: ${e.message || e}`, true);
+  }
+}
+
+async function loadHistory() {
+  try { versions = await configHistory(); } catch { versions = []; }
+  const el = $('#cfg-history');
+  if (el) mount(el, historyBody());
+}
+
+function historyBlock() {
+  // Fetched lazily: it is one more round trip and most visits to this page are not
+  // looking for it.
+  if (!versions.length && !historyOpen) loadHistory().then(() => { historyOpen = true; });
+  return h('div#cfg-history', { style: { marginTop: '10px' } }, historyBody());
+}
+
+function historyBody() {
+  if (!versions.length) {
+    return h('div.muted', { style: { fontSize: '11.5px' } },
+      'No earlier versions yet. One is kept each time the config is saved from here.');
+  }
+  return h('details.disc', { open: false },
+    h('summary', `Earlier versions (${versions.length})`),
+    h('div', { style: { paddingTop: '6px' } },
+      table(['Saved', 'File', { label: 'Size', num: true }, ''],
+        versions.map((v) => h('tr',
+          h('td', { title: new Date(v.saved_at * 1000).toISOString() }, ago(v.saved_at * 1000)),
+          h('td.mono', { style: { fontSize: '11.5px' } }, v.source),
+          h('td.num', bytes(v.bytes)),
+          h('td', { style: { textAlign: 'right' } },
+            h('button.btn.sm', { onclick: () => restore(v) }, 'Load this')))),
+        { emptyText: 'None' })),
+    h('div.muted', { style: { fontSize: '11px', paddingTop: '6px' } },
+      'Loading an older version does not discard the current one — that is saved as a '
+      + 'version first, so this goes both ways.'));
+}
+
+async function restore(v) {
+  const msg = $('#cfg-msg');
+  try {
+    const text = await readVersion(v.id);
+    await uploadConfig(text, null, v.source);
+  } catch (e) {
+    if (msg) { msg.textContent = e.message || String(e); msg.style.color = 'var(--critical-ink)'; }
+  }
+}
 
 export function render(el) { host = el; draw(); confirmCoreGuard(); loadTrust(); }
 
@@ -148,11 +225,21 @@ function draw() {
           ]),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('button.btn.primary', { onclick: reload, disabled: !state.handle || isSnapshotMode() }, 'Reload from disk'),
-            h('button.btn', { onclick: repick }, 'Pick another file…'),
+            // "Pick another file" asks the core for a path, which is the right question
+            // on a desktop and the wrong one on a server, where the file is on the
+            // operator's own machine.
+            canPickByPath()
+              ? h('button.btn', { onclick: repick }, 'Pick another file…')
+              : filePickerButton('Upload a config…', {
+                  accept: '.json,.yaml,.yml',
+                  className: 'btn',
+                  onText: (txt, err, name) => uploadConfig(txt, err, name),
+                }),
             h('button.btn.danger', { onclick: forget }, 'Forget file & credentials')),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('button.btn.sm.ghost', { onclick: () => saveTextAs('clusters.yaml', EXAMPLE_YAML) }, 'Save example YAML…')),
-          h('div#cfg-msg'))),
+          h('div#cfg-msg'),
+          historyBlock())),
 
       card('Credentials', hasSessionCredential() ? `session credential active — ${sessionCredentialLabel()}` : 'from the config file',
         h('div', { style: { display: 'grid', gap: '11px' } },

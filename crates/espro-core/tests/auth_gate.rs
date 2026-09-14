@@ -433,3 +433,61 @@ async fn the_token_secret_is_shown_once_and_not_stored() {
     let raw = std::fs::read_to_string(dir.0.join("tokens.json")).expect("tokens file");
     assert!(!raw.contains(&secret), "the secret must not be on disk");
 }
+
+/* --------------------------- uploads and config history -------------------------- */
+
+const A_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nc29tZXRoaW5n\n-----END OPENSSH PRIVATE KEY-----\n";
+
+#[tokio::test]
+async fn only_an_admin_uploads_a_private_key() {
+    let dir = TempDir::new("auth-keys");
+    let c = core(&dir, Edition::Installed);
+    let admin = admin_session(&c).await;
+    add(&c, &admin, "reader", "user").await;
+    let reader = login(&c, "reader").await;
+
+    for s in [&reader] {
+        let res = c.handle(json!({ "type": "KEY_UPLOAD", "session": s, "name": "id_ed25519", "text": A_KEY })).await;
+        assert_eq!(res["kind"], json!("forbidden"), "a read-only user uploaded a key: {res}");
+    }
+    let res = c.handle(json!({ "type": "KEY_LIST", "session": reader })).await;
+    assert_eq!(res["kind"], json!("forbidden"), "and cannot even see which keys exist");
+
+    let up = c.handle(json!({ "type": "KEY_UPLOAD", "session": admin, "name": "id_ed25519", "text": A_KEY })).await;
+    assert_eq!(up["ok"], json!(true), "{up}");
+    // The path is what goes into a jump host's keyFile, so it has to come back.
+    assert!(up["key"]["path"].as_str().unwrap().ends_with("id_ed25519"));
+    // The key itself must not.
+    assert!(!up.to_string().contains("c29tZXRoaW5n"), "the key material came back out");
+}
+
+#[tokio::test]
+async fn saving_a_config_keeps_the_one_it_replaced() {
+    let dir = TempDir::new("auth-history");
+    let c = core(&dir, Edition::Installed);
+    let admin = admin_session(&c).await;
+    let path = dir.0.join("config_cluster.json");
+
+    let first = c.handle(json!({ "type": "CONFIG_WRITE", "session": admin, "path": path, "text": "{\"v\":1}" })).await;
+    assert_eq!(first["ok"], json!(true));
+    assert_eq!(first["keptVersion"], json!(false), "nothing existed to keep yet");
+
+    let second = c.handle(json!({ "type": "CONFIG_WRITE", "session": admin, "path": path, "text": "{\"v\":2}" })).await;
+    assert_eq!(second["keptVersion"], json!(true), "the first version should have been kept: {second}");
+
+    let hist = c.handle(json!({ "type": "CONFIG_HISTORY", "session": admin })).await;
+    let versions = hist["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 1, "{hist}");
+
+    let id = versions[0]["id"].as_str().unwrap();
+    let back = c.handle(json!({ "type": "CONFIG_RESTORE", "session": admin, "id": id })).await;
+    assert_eq!(back["text"], json!("{\"v\":1}"), "restoring should hand back the older text: {back}");
+
+    // A history of files that have held cluster credentials is admin-only too.
+    add(&c, &admin, "reader", "user").await;
+    let reader = login(&c, "reader").await;
+    assert_eq!(
+        c.handle(json!({ "type": "CONFIG_HISTORY", "session": reader })).await["kind"],
+        json!("forbidden")
+    );
+}

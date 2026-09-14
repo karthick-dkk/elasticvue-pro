@@ -193,6 +193,10 @@ pub fn required_role(msg_type: &str) -> Option<Role> {
         "TRUST_CERT" | "UNTRUST_CERT" | "TRUST_HOSTKEY" | "UNTRUST_HOSTKEY" => Some(Role::Admin),
         "TUNNEL_SECRET" | "TUNNEL_RECONNECT" => Some(Role::Admin),
         "USER_LIST" | "USER_ADD" | "USER_REMOVE" | "USER_SET_ROLE" | "USER_SET_PASSWORD" => Some(Role::Admin),
+        // Uploading a private key, and every version of a config that has held
+        // credentials. Nothing below admin goes near either.
+        "KEY_UPLOAD" | "KEY_LIST" | "KEY_DELETE" => Some(Role::Admin),
+        "CONFIG_HISTORY" | "CONFIG_RESTORE" => Some(Role::Admin),
         "TOKEN_LIST" | "TOKEN_CREATE" | "TOKEN_REVOKE" => Some(Role::Admin),
 
         // Anything new is refused until somebody decides where it belongs.

@@ -45,6 +45,8 @@ pub struct Core {
     users: UserStore,
     sessions: Sessions,
     tokens: TokenStore,
+    keys: crate::vault_files::KeyStore,
+    history: crate::vault_files::ConfigHistory,
 }
 
 /// The window the request counter reports over.
@@ -109,6 +111,8 @@ impl Core {
             users,
             sessions: Sessions::default(),
             tokens,
+            keys: crate::vault_files::KeyStore::new(data_dir.as_deref()),
+            history: crate::vault_files::ConfigHistory::new(data_dir.as_deref()),
             transport: Transport::new(pins.clone()),
             pins,
             primed: RwLock::new(Primed { clusters: HashMap::new(), read_only: true }),
@@ -250,6 +254,8 @@ impl Core {
                 self.users_msg(&t, &msg, caller.as_ref())
             }
             "TOKEN_LIST" | "TOKEN_CREATE" | "TOKEN_REVOKE" => self.tokens_msg(&t, &msg),
+            "KEY_UPLOAD" | "KEY_LIST" | "KEY_DELETE" => self.keys_msg(&t, &msg),
+            "CONFIG_HISTORY" | "CONFIG_RESTORE" => self.history_msg(&t, &msg),
             "PING" => self.ping().await,
             "PRIME" => self.prime(msg).await,
             "FORGET" => {
@@ -385,6 +391,9 @@ impl Core {
                     return json!({ "ok": false, "message": "no path" });
                 }
                 let p = std::path::PathBuf::from(path);
+                // Keep what is there before replacing it. A config edited from the UI is
+                // edited by hand no longer, so an undo has to come from somewhere.
+                let kept = if t == "CONFIG_WRITE" { self.history.snapshot(&p) } else { false };
                 let tmp = p.with_extension("tmp");
                 if let Some(dir) = p.parent() {
                     let _ = tokio::fs::create_dir_all(dir).await;
@@ -406,7 +415,7 @@ impl Core {
                     let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
                 }
                 match tokio::fs::rename(&tmp, &p).await {
-                    Ok(_) => json!({ "ok": true, "path": path, "bytes": text.len() }),
+                    Ok(_) => json!({ "ok": true, "path": path, "bytes": text.len(), "keptVersion": kept }),
                     Err(e) => json!({ "ok": false, "message": format!("cannot replace {path}: {e}") }),
                 }
             }
@@ -649,6 +658,53 @@ impl Core {
                 }
             }
             _ => json!({ "ok": false, "kind": "bad_message", "message": format!("unknown token message {t}") }),
+        }
+    }
+
+    /* ------------------------- uploaded keys and history ------------------------- */
+
+    fn keys_msg(self: &Arc<Self>, t: &str, msg: &Value) -> Value {
+        let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        match t {
+            "KEY_LIST" => json!({ "ok": true, "keys": self.keys.list() }),
+            "KEY_UPLOAD" => {
+                let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                match self.keys.put(name, text) {
+                    // The path is the point: it is what goes in the jump host's keyFile,
+                    // and the operator has no other way to know where it landed.
+                    Ok(info) => {
+                        tracing::info!(target: "audit", key = %info.name, digest = %info.digest, "private key uploaded");
+                        json!({ "ok": true, "key": info, "keys": self.keys.list() })
+                    }
+                    Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e }),
+                }
+            }
+            "KEY_DELETE" => match self.keys.delete(name) {
+                Ok(()) => {
+                    tracing::info!(target: "audit", key = %name, "private key removed");
+                    json!({ "ok": true, "keys": self.keys.list() })
+                }
+                Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e }),
+            },
+            _ => json!({ "ok": false, "kind": "bad_message", "message": format!("unknown key message {t}") }),
+        }
+    }
+
+    fn history_msg(self: &Arc<Self>, t: &str, msg: &Value) -> Value {
+        match t {
+            "CONFIG_HISTORY" => json!({ "ok": true, "versions": self.history.list() }),
+            "CONFIG_RESTORE" => {
+                let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                match self.history.read(id) {
+                    // Handed back rather than written. Restoring is loading a config, and
+                    // the UI already knows how to parse one, ask about its credentials and
+                    // save it — going around that would be a second way to load a config
+                    // that could disagree with the first.
+                    Ok(text) => json!({ "ok": true, "id": id, "text": text }),
+                    Err(e) => json!({ "ok": false, "kind": "bad_request", "message": e }),
+                }
+            }
+            _ => json!({ "ok": false, "kind": "bad_message", "message": format!("unknown history message {t}") }),
         }
     }
 

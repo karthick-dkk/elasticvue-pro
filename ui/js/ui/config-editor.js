@@ -240,10 +240,30 @@ export async function editJumpHost(existingId = null) {
   if (!r) return false;
   if (Array.isArray(r.jump_hosts)) r.jump_hosts = Object.fromEntries(jumpHostList(r));
   const j = existingId ? (r.jump_hosts[existingId] || {}) : {};
-  const keyRow = h('div', { style: { display: 'flex', gap: '6px' } },
+  // Browse where the core and the browser are the same machine; upload where they are
+  // not. On the hosted stack "Browse…" could only offer paths on the server, and the key
+  // is on the laptop in front of the operator.
+  const keyNote = h('span.muted', { style: { fontSize: '11px' } });
+  const keyRow = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
     text('ce-key', j.keyFile || j.key_file || '', { mono: true, placeholder: 'C:\\Users\\me\\.ssh\\id_ed25519', style: { flex: '1' } }),
-    h('button.btn.sm', { type: 'button', onclick: async () => {
-      const p = await pickFilePath('Choose the private key file'); if (p) $('#ce-key').value = p; } }, 'Browse…'));
+    canPickByPath()
+      ? h('button.btn.sm', { type: 'button', onclick: async () => {
+          const p = await pickFilePath('Choose the private key file'); if (p) $('#ce-key').value = p; } }, 'Browse…')
+      : filePickerButton('Upload key…', {
+          accept: '.pem,.key,',
+          onText: async (txt, err, name) => {
+            if (err) { keyNote.textContent = err; keyNote.style.color = 'var(--critical-ink)'; return; }
+            keyNote.style.color = ''; keyNote.textContent = 'Uploading…';
+            try {
+              const info = await uploadKey(name, txt);
+              $('#ce-key').value = info.path;
+              keyNote.textContent = `${info.name} uploaded · ${info.digest} · stored 0600, never sent back`;
+            } catch (e) {
+              keyNote.style.color = 'var(--critical-ink)';
+              keyNote.textContent = e.message || String(e);
+            }
+          },
+        }));
   const body = [
     h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 2fr 90px', gap: '10px' } },
       field('Id', text('ce-jid', existingId || '', { placeholder: 'jumpwin' }), 'Used as via: on clusters'),
@@ -251,7 +271,7 @@ export async function editJumpHost(existingId = null) {
       field('Port', text('ce-jport', j.port || 22, { mono: true }))),
     h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' } },
       field('SSH user', text('ce-juser', j.user || '', { placeholder: 'esfleet' })),
-      field('Private key file', keyRow, 'OpenSSH format (id_ed25519 / id_rsa). Passphrase, if any, is asked in the app — never stored. Leave empty to use a session password.')),
+      field('Private key file', h('div', keyRow, keyNote), 'OpenSSH format (id_ed25519 / id_rsa). Passphrase, if any, is asked in the app — never stored. Leave empty to use a session password.')),
     field('Note', text('ce-jnote', j.note || '')),
   ];
   const saved = await modal(existingId ? `Edit jump host ${existingId}` : 'Add jump host',
