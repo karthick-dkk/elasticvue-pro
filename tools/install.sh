@@ -25,12 +25,15 @@ DEST=""
 DRY=0
 ASSUME_YES=0
 
-say()  { printf '%s\n' "$*"; }
-info() { printf '  %s\n' "$*"; }
+# Everything goes to stderr. All of it is progress reporting rather than output anyone
+# would pipe onward, and mixing the two streams inside `curl … | bash` reorders them —
+# a warning surfacing three lines above its own explanation reads as a different bug.
+say()  { printf '%s\n' "$*" >&2; }
+info() { printf '  %s\n' "$*" >&2; }
 warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
-step() { printf '\033[36m→\033[0m %s\n' "$*"; }
-ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+step() { printf '\033[36m→\033[0m %s\n' "$*" >&2; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
 
 usage() {
   cat <<'EOF'
