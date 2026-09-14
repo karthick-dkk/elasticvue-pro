@@ -36,11 +36,13 @@ if [ ! -s nginx/htpasswd ]; then
 fi
 
 # The config the compose file points ELASTICVUE_CONFIG at. It has to exist before the
-# first start, and it cannot be created from the UI: ./config is mounted read-only, which
-# is deliberate — the file holds cluster credentials and the core has no business writing
-# it. So the starter is made here, empty, and the operator adds clusters by editing it on
-# the host. Without this every fresh hosted deploy opens on "cannot read
+# first start: without it every fresh hosted deploy opens on "cannot read
 # /app/config/config_cluster.json", which looks like a broken install and is not one.
+#
+# An empty starter, not a missing file. Adding clusters from the Config page is the
+# normal way to fill it in — the mount is writable and CONFIG_WRITE is admin-only — but
+# the file still has to be there for the core to read at boot. Editing it on the host
+# works too; the installer leaves it group-writable for exactly that.
 if [ ! -s config/config_cluster.json ]; then
   mkdir -p config
   cat > config/config_cluster.json <<'JSON'
