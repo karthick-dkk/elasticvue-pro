@@ -71,6 +71,7 @@ export function loginScreen(root, { bootstrap = false } = {}) {
 
       if (res && res.ok && res.session) {
         setSession(res.session);
+        try { document.body.classList.remove('auth-bg'); } catch { /* not a browser */ }
         return resolve(res.caller || { name: name.trim(), role: 'admin' });
       }
       error = (res && res.message) || 'Sign-in failed.';
@@ -83,6 +84,9 @@ export function loginScreen(root, { bootstrap = false } = {}) {
 
     function draw() {
       const first = mode === 'bootstrap';
+      // Only while the gate is up — the dashboard behind it wants a plain surface, not
+      // a backdrop competing with charts.
+      try { document.body.classList.add('auth-bg'); } catch { /* not a browser */ }
       mount(root, h('div.setup',
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' } },
           h('img', { src: 'icons/icon48.png', width: 34, height: 34, alt: '' }),
