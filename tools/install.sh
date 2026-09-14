@@ -19,6 +19,12 @@ set -euo pipefail
 REPO="karthick-dkk/elasticvue-pro"
 API="https://api.github.com/repos/${REPO}"
 
+# Where a Linux install goes, one directory per version — /opt/elasticvuepro_2.2.3.
+# Versioned rather than a single /opt/elasticvuepro so two can sit side by side and a
+# rollback is a path change rather than a reinstall. --dir overrides it.
+LINUX_BASE=/opt
+linux_dir() { printf '%s/elasticvuepro_%s' "$LINUX_BASE" "$1"; }
+
 MODE=install          # install | portable | hosted
 VERSION=""            # empty = the latest release
 DEST=""
@@ -71,6 +77,18 @@ done
 
 need() { command -v "$1" >/dev/null 2>&1 || die "this needs $1, which is not installed"; }
 need curl
+
+# sudo, but only when it is actually needed, and never silently.
+as_root() {
+  if [ "$(id -u)" = 0 ]; then "$@"; return; fi
+  command -v sudo >/dev/null 2>&1 || die "this needs root and sudo is not installed"
+  if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
+    printf '  About to run: sudo %s\n  Continue? [Y/n] ' "$*"
+    read -r reply </dev/tty || reply=y
+    case "$reply" in n|N|no) die "stopped at your request" ;; esac
+  fi
+  sudo "$@"
+}
 
 # ------------------------------------------------------------------ what am I on
 
@@ -175,8 +193,22 @@ asset_url() {
 if [ "$MODE" = hosted ]; then
   need docker
   docker compose version >/dev/null 2>&1 || die "this needs the docker compose plugin"
-  DEST=${DEST:-./elasticvue-pro}
+  if [ -z "$DEST" ]; then
+    if [ "$OS" = linux ]; then DEST=$(linux_dir "${REF#v}"); else DEST=./elasticvue-pro; fi
+  fi
   step "Hosted stack into ${DEST}"
+  # Created as root because /opt is, then handed to the invoking user: trial-setup.sh
+  # writes credentials into it and docker compose reads them, and neither should need
+  # sudo once the directory exists.
+  if [ ! -d "$DEST" ]; then
+    parent=$(dirname "$DEST")
+    if [ ! -w "$parent" ]; then
+      as_root mkdir -p "$DEST"
+      as_root chown "$(id -u):$(id -g)" "$DEST"
+    else
+      mkdir -p "$DEST"
+    fi
+  fi
   if [ "$DRY" -eq 1 ]; then ok "dry run — would fetch ${REF} and run docker compose up"; exit 0; fi
 
   if [ -f "$DEST/deploy/docker-compose.yml" ]; then
@@ -267,18 +299,6 @@ else SUM=""; fi
 
 # ------------------------------------------------------------------ install it
 
-# sudo, but only when it is actually needed, and never silently.
-as_root() {
-  if [ "$(id -u)" = 0 ]; then "$@"; return; fi
-  command -v sudo >/dev/null 2>&1 || die "this needs root and sudo is not installed"
-  if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
-    printf '  About to run: sudo %s\n  Continue? [Y/n] ' "$*"
-    read -r reply </dev/tty || reply=y
-    case "$reply" in n|N|no) die "stopped at your request" ;; esac
-  fi
-  sudo "$@"
-}
-
 case "$KIND" in
   deb)
     step "Installing the package"
@@ -292,14 +312,27 @@ case "$KIND" in
     else as_root rpm -i "$TMP/$FILE"; fi
     ok "Installed. Launch it from your applications menu, or run: elasticvue-pro" ;;
   appimage)
-    DEST=${DEST:-$( [ "$MODE" = portable ] && echo "$PWD" || echo "$HOME/.local/bin" )}
-    mkdir -p "$DEST"
-    install -m 0755 "$TMP/$FILE" "$DEST/$FILE"
-    ok "Placed ${DEST}/${FILE}"
+    # Portable stays where the operator is standing — that is what portable means. An
+    # install goes to the versioned directory under /opt.
+    VER=${TAG#v}
+    DEST=${DEST:-$( [ "$MODE" = portable ] && echo "$PWD" || linux_dir "$VER" )}
     if [ "$MODE" = portable ]; then
+      mkdir -p "$DEST"
+      install -m 0755 "$TMP/$FILE" "$DEST/$FILE"
+      ok "Placed ${DEST}/${FILE}"
       info "Self-contained: run it directly, delete it to remove it."
     else
-      case ":$PATH:" in *":$DEST:"*) ;; *) info "Add ${DEST} to your PATH to run it by name." ;; esac
+      as_root mkdir -p "$DEST"
+      as_root install -m 0755 "$TMP/$FILE" "$DEST/elasticvue-pro"
+      ok "Installed ${DEST}/elasticvue-pro"
+      # One stable name pointing at the version in use, so a rollback is a symlink
+      # change and nobody's script has to know the version number.
+      if as_root ln -sfn "$DEST/elasticvue-pro" /usr/local/bin/elasticvue-pro 2>/dev/null; then
+        info "Linked /usr/local/bin/elasticvue-pro → ${DEST}/elasticvue-pro"
+        info "Run it by name: elasticvue-pro"
+      else
+        info "Run it with: ${DEST}/elasticvue-pro"
+      fi
     fi ;;
   zip)
     need unzip
