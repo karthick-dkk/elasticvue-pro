@@ -111,6 +111,14 @@ as_root() {
   sudo "$@"
 }
 
+# Root if it is available without a fuss, false if not. For steps that improve the
+# result but must not decide whether the install happens.
+try_root() {
+  if [ "$(id -u)" = 0 ]; then "$@" 2>/dev/null; return; fi
+  command -v sudo >/dev/null 2>&1 || return 1
+  sudo -n "$@" 2>/dev/null
+}
+
 # ------------------------------------------------------------------ what am I on
 
 case "$(uname -s)" in
@@ -263,11 +271,15 @@ if [ "$MODE" = hosted ]; then
   # host user so a human can still edit the file by hand.
   if [ "$(stat -c %u config 2>/dev/null || echo 999)" != "999" ]; then
     step "Letting the core write its own config"
-    if as_root chown -R "999:$(id -g)" config 2>/dev/null && as_root chmod -R g+w config 2>/dev/null; then
+    # try_root, not as_root: this is a convenience, and as_root exits when it cannot
+    # prompt. A stack that comes up perfectly well but cannot save a cluster from the UI
+    # is worth a warning, not an aborted install.
+    if try_root chown -R "999:$(id -g)" config && try_root chmod -R g+w config; then
       ok "config/ is writable by the app and by you"
     else
-      warn "could not hand config/ to the core (uid 999) — adding a cluster from the UI will"
-      info "fail with a permission error. Fix with:"
+      warn "could not hand config/ to the core (uid 999)."
+      info "The stack will run, but \"Add cluster\" in the UI will fail on a permission"
+      info "error until you run:"
       info "  sudo chown -R 999:$(id -g) $DEST/deploy/config && sudo chmod -R g+w \$_"
     fi
   fi
