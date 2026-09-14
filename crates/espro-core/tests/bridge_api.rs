@@ -287,3 +287,32 @@ async fn seal(c: &std::sync::Arc<Core>, plain: &str, master: &str) -> String {
     let v: Value = c.handle(json!({ "type": "SEAL", "plain": plain, "master": master })).await;
     v["value"].as_str().unwrap().to_string()
 }
+
+/// A config that is not there yet, and one that is there but broken, must be told apart.
+///
+/// The hosted stack sets ELASTICVUE_CONFIG unconditionally and the config file is
+/// gitignored because it holds credentials, so the very first start always asks for a
+/// file that does not exist. The UI shows a setup screen for the first and an error for
+/// the second; it can only do that if the core says which this is.
+#[tokio::test]
+async fn a_missing_config_is_distinguishable_from_an_unreadable_one() {
+    let dir = TempDir::new("config-read");
+    let c = core(&dir);
+
+    let missing = dir.0.join("not-created-yet.json");
+    let res = c.handle(json!({ "type": "CONFIG_READ", "path": missing })).await;
+    assert_eq!(res["ok"], json!(false));
+    assert_eq!(res["kind"], json!("not_found"), "{res}");
+
+    // A directory is readable metadata but not a file — a fault, not a fresh install.
+    let res = c.handle(json!({ "type": "CONFIG_READ", "path": dir.0.clone() })).await;
+    assert_eq!(res["ok"], json!(false));
+    assert_ne!(res["kind"], json!("not_found"), "a directory is not a missing file: {res}");
+
+    // And a real one still reads.
+    let good = dir.0.join("cfg.json");
+    std::fs::write(&good, r#"{"version":2,"clusters":[]}"#).unwrap();
+    let res = c.handle(json!({ "type": "CONFIG_READ", "path": good })).await;
+    assert_eq!(res["ok"], json!(true), "{res}");
+    assert!(res["text"].as_str().unwrap().contains("\"version\":2"));
+}

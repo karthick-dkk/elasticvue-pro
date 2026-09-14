@@ -475,8 +475,19 @@ async function boot() {
   let res = await cfg.loadConfig();
   if (res.status === 'no_file' && coreInfo.configHint) {
     // --config <path> / ELASTICVUE_CONFIG: pre-provisioned config, e.g. on the jump server
-    try { res = { status: 'ok', path: coreInfo.configHint, config: await cfg.readPath(coreInfo.configHint) }; }
-    catch (e) { res = { status: 'error', path: coreInfo.configHint, error: e.message }; }
+    try {
+      res = { status: 'ok', path: coreInfo.configHint, config: await cfg.readPath(coreInfo.configHint) };
+    } catch (e) {
+      // A hinted path that does not exist is a fresh install, not a fault. The hosted
+      // stack sets ELASTICVUE_CONFIG unconditionally and the config file is gitignored
+      // because it holds credentials, so the very first start always lands here — and
+      // "Could not load /app/config/config_cluster.json" is a bad first screen for a
+      // deployment that is working perfectly. Fall through to setup, which offers to
+      // make one. A file that exists but will not parse is still an error.
+      res = e.kind === 'not_found'
+        ? { status: 'no_file' }
+        : { status: 'error', path: coreInfo.configHint, error: e.message };
+    }
   }
   if (res.status === 'ok') await start(res.config, res.path);
   else renderSetup(res);

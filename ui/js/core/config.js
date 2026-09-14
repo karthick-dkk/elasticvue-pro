@@ -217,7 +217,13 @@ function basename(p) { return String(p).split(/[\\/]/).pop() || p; }
 /** Read + parse the YAML at `path` through the core. */
 export async function readPath(path) {
   const r = await readConfigText(path);
-  if (!r || !r.ok) throw new ConfigError((r && r.message) || `Could not read ${path}`);
+  if (!r || !r.ok) {
+    const e = new ConfigError((r && r.message) || `Could not read ${path}`);
+    // Carried through so the caller can tell "no config here yet" from "this config is
+    // broken" without reading the message.
+    e.kind = (r && r.kind) || 'io_error';
+    throw e;
+  }
   const cfg = parseConfigText(r.text, basename(path));
   cfg.fileMeta = { name: basename(path), path, size: r.size || r.text.length, lastModified: r.lastModified || 0 };
   return cfg;

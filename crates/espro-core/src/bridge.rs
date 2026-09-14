@@ -374,7 +374,13 @@ impl Core {
                                 "lastModified": meta.and_then(|m| m.modified().ok())
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64) })
                     }
-                    Err(e) => json!({ "ok": false, "message": format!("cannot read {path}: {e}") }),
+                    // "not there yet" and "there but unreadable" call for different
+                    // answers from the UI: the first is a fresh install, the second is a
+                    // fault. Typed here so no caller has to match on the message text.
+                    Err(e) => {
+                        let kind = if e.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io_error" };
+                        json!({ "ok": false, "kind": kind, "message": format!("cannot read {path}: {e}") })
+                    }
                 }
             }
             "FILE_WRITE" | "CONFIG_WRITE" | "CONFIG_WRITE_EXAMPLE" => {

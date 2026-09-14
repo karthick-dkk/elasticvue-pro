@@ -31,6 +31,31 @@ if [ ! -s nginx/htpasswd ]; then
   echo "  made nginx/htpasswd ($TRIAL_USER / $TRIAL_PASS — a trial credential, nothing more)"; made=1
 fi
 
+# The config the compose file points ELASTICVUE_CONFIG at. It has to exist before the
+# first start, and it cannot be created from the UI: ./config is mounted read-only, which
+# is deliberate — the file holds cluster credentials and the core has no business writing
+# it. So the starter is made here, empty, and the operator adds clusters by editing it on
+# the host. Without this every fresh hosted deploy opens on "cannot read
+# /app/config/config_cluster.json", which looks like a broken install and is not one.
+if [ ! -s config/config_cluster.json ]; then
+  mkdir -p config
+  cat > config/config_cluster.json <<'JSON'
+{
+  "version": 2,
+  "defaults": {
+    "readOnly": true,
+    "autoRefresh": false,
+    "refreshIntervalSec": 30,
+    "logIndexPattern": "logstash-*",
+    "tls": "auto"
+  },
+  "jump_hosts": {},
+  "clusters": []
+}
+JSON
+  echo "  made config/config_cluster.json (no clusters yet — add them here, then restart the core)"; made=1
+fi
+
 if [ ! -s secrets/db_password ]; then
   mkdir -p secrets
   openssl rand -base64 32 > secrets/db_password
