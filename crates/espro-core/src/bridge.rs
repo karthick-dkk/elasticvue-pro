@@ -108,9 +108,14 @@ impl Core {
         // A fresh install gets the shipped account rather than an empty state and a
         // bootstrap screen. It is created must_change, so it is a way in and nothing more.
         if edition.uses_accounts() && users.seed_default() {
+            // The log, not the sign-in page. Whoever can read this already has the server;
+            // whoever loads the page has not, and the screen they see says nothing about
+            // how to get in. It is printed once, on the start that creates the account.
             tracing::warn!(
                 user = auth::DEFAULT_USER,
-                "no accounts existed: created the default one. It must be changed before anything else works."
+                password = auth::DEFAULT_PASSWORD,
+                "no accounts existed: created the first one. Sign in with this and set a real \
+                 password — nothing else works until you do."
             );
         }
         let tokens = TokenStore::open(auth_path("tokens.json"));

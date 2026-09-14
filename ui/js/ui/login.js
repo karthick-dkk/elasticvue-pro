@@ -9,6 +9,16 @@
  * This is a full-screen gate rather than a modal on purpose: until there is a session
  * there is nothing behind it worth looking at, and a dismissible dialog in front of an
  * empty app invites people to try dismissing it.
+ *
+ * It says as little as it can. This is the one screen every unauthenticated visitor
+ * reaches, so it carries no credential and no hint at one, no description of what the
+ * roles are or why, and nothing about how or where passwords are stored — "delete
+ * users.json to start again" tells an attacker the filename and tells a legitimate user
+ * nothing they can act on from a browser.
+ *
+ * The shipped credential is printed to the server log on first start instead, where an
+ * operator can read it and a visitor cannot. The roles are for the administrator
+ * assigning them, on the Accounts page, behind a session.
  */
 
 import { h, mount } from '../lib/dom.js';
@@ -44,7 +54,7 @@ export async function signOut() {
  * Resolves with the caller, so the shell can render a role-appropriate UI without asking
  * again.
  */
-export function loginScreen(root, { bootstrap = false, mode: startMode = null, hint = null, startHint = null } = {}) {
+export function loginScreen(root, { bootstrap = false, mode: startMode = null, hint = null } = {}) {
   return new Promise((resolve) => {
     let busy = false;
     let error = '';
@@ -130,15 +140,6 @@ export function loginScreen(root, { bootstrap = false, mode: startMode = null, h
                   ? 'No accounts exist yet. Create the administrator for this installation.'
                   : 'Sign in to continue.'))),
 
-        // Said once, on the screen where it is useful, and only while it is still true.
-        !changing && !first && startHint
-          ? h('div.banner', { style: { marginBottom: '12px' } },
-              h('div',
-                h('div.ttl', 'First sign-in'),
-                h('div', 'Use ', h('code.inline', startHint.defaultUser), ' with the password ',
-                  h('code.inline', 'loginme'), '. You will be asked to replace it immediately.')))
-          : null,
-
         error ? h('div.banner.err', { role: 'alert' }, h('div',
           h('div.ttl', changing ? 'Could not set the password' : first ? 'Could not create the account' : 'Could not sign in'),
           h('div', error))) : null,
@@ -158,7 +159,7 @@ export function loginScreen(root, { bootstrap = false, mode: startMode = null, h
               onkeydown: onKey,
             }),
             twice ? h('span.sec', { style: { fontSize: '11.5px' } },
-              `At least ${MIN_PASSWORD} characters. It is stored only as a PBKDF2 hash and cannot be recovered — if it is lost, delete users.json to start again.`) : null),
+              `At least ${MIN_PASSWORD} characters.`) : null),
           twice
             ? h('label.field', { style: { marginTop: '10px' } },
                 h('span', 'Repeat the password'),
@@ -167,20 +168,7 @@ export function loginScreen(root, { bootstrap = false, mode: startMode = null, h
 
           h('div', { style: { display: 'flex', gap: '8px', marginTop: '14px', alignItems: 'center' } },
             h('button.btn.primary', { disabled: busy, onclick: submit },
-              busy ? 'Working…' : changing ? 'Set password and continue' : first ? 'Create administrator' : 'Sign in'),
-            first
-              ? h('span.muted', { style: { fontSize: '11.5px' } }, 'This account can manage every other one.')
-              : null))),
-
-        twice
-          ? h('div.banner', { style: { marginTop: '14px' } },
-              h('div',
-                h('div.ttl', 'What the three roles can do'),
-                h('div',
-                  h('div', h('b', 'admin'), ' — everything, and the only role that can write to a cluster.'),
-                  h('div', h('b', 'user'), ' — read-only across every page.'),
-                  h('div', h('b', 'guest'), ' — the dashboard only. No index names, because those tend to carry customer and project names.'))))
-          : null,
+              busy ? 'Working…' : changing ? 'Set password and continue' : first ? 'Create administrator' : 'Sign in')))),
       );
 
       // Two columns: the supplied brand panel on the left, the real form on the right.

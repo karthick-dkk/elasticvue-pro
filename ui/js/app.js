@@ -469,10 +469,7 @@ async function gateOnAuth() {
   if (st.caller && !st.caller.mustChange) { me = st.caller; return; }
   me = st.caller && st.caller.mustChange
     ? await loginScreen(root, { mode: 'change', hint: st.caller })
-    : await loginScreen(root, {
-        bootstrap: st.bootstrap,
-        startHint: st.defaultUnchanged ? { defaultUser: st.defaultUser } : null,
-      });
+    : await loginScreen(root, { bootstrap: st.bootstrap });
 }
 
 async function boot() {
