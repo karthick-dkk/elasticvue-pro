@@ -207,7 +207,19 @@ if [ "$MODE" = hosted ]; then
   docker compose up -d --build
   say ""
   ok "Hosted stack is up."
-  info "Open  https://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost)/"
+  # `hostname -I` lists every address the host has — on a machine running containers that
+  # is a dozen docker bridges and link-local addresses, and the first one is as likely to
+  # be 172.17.0.1 as the one anybody can reach. Show the routable ones and let the
+  # operator pick, rather than confidently printing a URL that does not work.
+  ADDRS=$(hostname -I 2>/dev/null | tr ' ' '\n' \
+    | grep -E '^[0-9]+\.' \
+    | grep -vE '^(127\.|169\.254\.|172\.1[6-9]\.|172\.2[0-9]\.|172\.3[01]\.)' \
+    | tr '\n' ' ')
+  if [ -n "${ADDRS// /}" ]; then
+    for a in $ADDRS; do info "Open  https://${a}/"; done
+  else
+    info "Open  https://<this host>/"
+  fi
   info "The certificate is self-signed, so your browser will warn once."
   info "Replace deploy/tls/ and deploy/nginx/htpasswd before anyone relies on this."
   exit 0
