@@ -11,7 +11,7 @@ services:
   core:
     # Defaults to a locally built image, so `docker compose up --build` works on a clone
     # with no registry access at all. Set ESPRO_IMAGE to a published tag —
-    # karthickdk02/elasticvue-pro-core:2.2.7 — and compose pulls it instead, which is
+    # karthickdk02/elasticvue-pro-core:2.2.8 — and compose pulls it instead, which is
     # what turns a twenty-minute Rust build on a small server into a download.
     image: ${ESPRO_IMAGE:-elasticvue-pro-core:latest}
     build:
