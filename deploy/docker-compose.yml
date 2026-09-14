@@ -22,7 +22,14 @@ services:
       ELASTICVUE_CONFIG: /app/config/config_cluster.json
       RUST_LOG: info,audit=info
     volumes:
-      - ./config:/app/config:ro        # config_cluster.json, secrets sealed
+      # Writable, because adding a cluster from the Config page is the normal way to set
+      # this up and a fresh install has no other way to do it — the read-only mount it
+      # replaced turned "Add cluster" into "Read-only file system (os error 30)".
+      #
+      # It is not a hole: CONFIG_WRITE is admin-only (auth.rs), the core already holds
+      # these credentials in memory, and the directory is owned by the container's uid
+      # with the host user's group, so both can edit it. Secrets in it stay sealed.
+      - ./config:/app/config           # config_cluster.json, secrets sealed
       - core-data:/app/data            # pins.json — trust decisions
       - ${SSH_KEYS_DIR:-./ssh}:/app/ssh:ro   # jump-host keys, read-only
     networks: [internal]

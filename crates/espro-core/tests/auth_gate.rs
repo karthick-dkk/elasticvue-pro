@@ -312,28 +312,31 @@ async fn the_accounts_file_never_holds_a_password() {
 /* ---------------------------- hosted, and its upgrade --------------------------- */
 
 #[tokio::test]
-async fn a_hosted_deployment_keeps_working_until_someone_creates_an_account() {
-    let dir = TempDir::new("auth-hosted-upgrade");
+async fn hosted_demands_a_first_administrator_like_every_other_edition() {
+    let dir = TempDir::new("auth-hosted-bootstrap");
     let c = core(&dir, Edition::Hosted);
 
-    // Before any account exists the proxy's word is taken, exactly as it was before this
-    // feature. Upgrading must not lock a team out of their monitoring.
-    let before = c.caller_for_proxy_user("alice").expect("the proxy's word should be enough");
-    assert_eq!(before.role, espro_core::auth::Role::Admin);
-    assert_eq!(
-        c.handle(json!({ "type": "PING" })).await["needsBootstrap"],
-        json!(true),
-        "but it should keep saying that accounts are not set up"
-    );
-    // Unlike an install, nothing is blocked meanwhile.
-    let res = c.handle_as(json!({ "type": "PINS" }), Some(before)).await;
-    assert_eq!(res["ok"], json!(true), "hosted must not block before bootstrap: {res}");
-
-    // The moment an account exists, the proxy's word is only as good as the account.
-    admin_session(&c).await;
+    // Being past nginx is not an identity. Before any account exists the proxy's name
+    // resolves to nobody, and nothing but the bootstrap is on offer.
     assert!(
         c.caller_for_proxy_user("alice").is_none(),
-        "once accounts exist, a proxy name with no account is nobody"
+        "a proxy name with no account behind it must carry no role"
+    );
+    let ping = c.handle(json!({ "type": "PING" })).await;
+    assert_eq!(ping["authRequired"], json!(true));
+    assert_eq!(ping["needsBootstrap"], json!(true));
+
+    for t in ["PINS", "CONFIG_READ", "ES", "USER_LIST"] {
+        let res = c.handle(json!({ "type": t })).await;
+        assert_eq!(res["kind"], json!("needs_bootstrap"), "{t} was reachable before setup: {res}");
+    }
+
+    // Once the administrator exists, the proxy name is only as good as its account.
+    admin_session(&c).await;
+    assert_eq!(c.handle(json!({ "type": "PING" })).await["needsBootstrap"], json!(false));
+    assert!(
+        c.caller_for_proxy_user("alice").is_none(),
+        "still nobody — alice has no account"
     );
     assert_eq!(
         c.caller_for_proxy_user("root").expect("root has an account").role,

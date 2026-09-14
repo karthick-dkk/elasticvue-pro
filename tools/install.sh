@@ -257,6 +257,21 @@ if [ "$MODE" = hosted ]; then
   step "Generating throwaway credentials (self-signed TLS, one trial user)"
   ./trial-setup.sh
 
+  # The core runs as uid 999 inside the image; these files are created by whoever ran the
+  # installer. Without this, "Add cluster" in the UI fails on a permission error even
+  # though the mount is writable — owner is the container so it can write, group is the
+  # host user so a human can still edit the file by hand.
+  if [ "$(stat -c %u config 2>/dev/null || echo 999)" != "999" ]; then
+    step "Letting the core write its own config"
+    if as_root chown -R "999:$(id -g)" config 2>/dev/null && as_root chmod -R g+w config 2>/dev/null; then
+      ok "config/ is writable by the app and by you"
+    else
+      warn "could not hand config/ to the core (uid 999) — adding a cluster from the UI will"
+      info "fail with a permission error. Fix with:"
+      info "  sudo chown -R 999:$(id -g) $DEST/deploy/config && sudo chmod -R g+w \$_"
+    fi
+  fi
+
   # Pull if there is something to pull. Compiling the core takes about twenty minutes on
   # a small arm64 server, and the published image is the same build — so the only reason
   # to compile is that no image exists for this architecture, which is worth saying out

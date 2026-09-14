@@ -142,16 +142,13 @@ impl Core {
     /// The caller for a name a trusted reverse proxy has already authenticated.
     ///
     /// `None` means "authenticated by nginx, but not someone this deployment knows",
-    /// which the gate turns into a refusal. While no accounts exist at all the proxy's
-    /// word is taken as it always was — see `gate` for why an upgrade must not lock a
-    /// team out of their own monitoring.
+    /// which the gate turns into a refusal. Being past the proxy is not by itself an
+    /// identity here: a name with no account gets no role, including before the first
+    /// account exists, when the only thing available is the bootstrap.
     pub fn caller_for_proxy_user(&self, name: &str) -> Option<Caller> {
         let name = name.trim();
         if name.is_empty() {
             return None;
-        }
-        if self.users.is_empty() {
-            return Some(Caller { name: name.to_string(), role: Role::Admin });
         }
         self.users
             .list()
@@ -175,20 +172,17 @@ impl Core {
     /// unknown message type needs admin, and no session means nothing but the handful of
     /// types that exist to establish one.
     fn gate(&self, t: &str, msg: &Value, caller: Option<&Caller>) -> Result<(), Value> {
-        // Before the first admin exists there is nothing to authenticate against, and
-        // what to do about that differs by edition.
+        // Before the first admin exists there is nothing to authenticate against, so the
+        // only thing on offer is creating one. Every edition that uses accounts, hosted
+        // included.
         //
-        // A fresh install has nobody, and asking for a first administrator is exactly the
-        // right first screen. A hosted deployment is different: nginx authenticated the
-        // request before it arrived, and accounts are new to it. Blocking there would mean
-        // an upgrade locks a whole team out of their monitoring — plausibly during the
-        // incident that made them open it. So hosted keeps trusting the proxy until
-        // somebody creates the first account, and PING keeps reporting needsBootstrap so
-        // the UI can say so until they do.
+        // Hosted was briefly exempt, on the argument that nginx had already authenticated
+        // the request and that enforcing accounts would lock a team out mid-incident. The
+        // exemption is gone: a deployment where being past the proxy is enough has no
+        // per-user identity at all, which is the thing accounts exist to provide, and
+        // "authentication is required unless it would be inconvenient" is not a security
+        // posture. An upgrade now shows its administrator the bootstrap screen once.
         if self.users.is_empty() {
-            if self.edition == Edition::Hosted {
-                return Ok(());
-            }
             return match t {
                 "PING" | "WHOAMI" | "BADGE" | "OPEN_APP" | "ENABLE_NET_ERRORS" | "BOOTSTRAP_ADMIN" => Ok(()),
                 _ => Err(json!({
