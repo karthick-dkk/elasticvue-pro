@@ -274,7 +274,16 @@ if [ "$MODE" = hosted ]; then
     # try_root, not as_root: this is a convenience, and as_root exits when it cannot
     # prompt. A stack that comes up perfectly well but cannot save a cluster from the UI
     # is worth a warning, not an aborted install.
-    if try_root chown -R "999:$(id -g)" config && try_root chmod -R g+w config; then
+    # g+s on the directory is the part that survives. The core writes a temp file and
+    # renames it, so a replacement file gets the writer's own group — setgid makes the
+    # directory hand it the group instead, which is what keeps the file readable by a
+    # human after the app has saved over it.
+    # Explicit modes, not g+w: this file starts at 0600, and adding only the write bit
+    # gives 0620 — group can write it but not read it, which is worse than either.
+    # 0660 and 2770: the app and the host user, nobody else. It holds cluster credentials.
+    if try_root chown -R "999:$(id -g)" config \
+       && try_root chmod 2770 config \
+       && try_root find config -type f -exec chmod 660 {} +; then
       ok "config/ is writable by the app and by you"
     else
       warn "could not hand config/ to the core (uid 999)."

@@ -395,7 +395,15 @@ impl Core {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+                    // 0600 for a file being created, but never a downgrade of one that
+                    // already exists. Forcing it unconditionally meant saving from the UI
+                    // silently locked the operator out of their own config file — the
+                    // hosted stack deliberately shares it between the container and the
+                    // host user, and one write reset that to owner-only.
+                    let mode = std::fs::metadata(&p)
+                        .map(|m| m.permissions().mode() & 0o777)
+                        .unwrap_or(0o600);
+                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
                 }
                 match tokio::fs::rename(&tmp, &p).await {
                     Ok(_) => json!({ "ok": true, "path": path, "bytes": text.len() }),

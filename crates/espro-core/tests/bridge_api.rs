@@ -316,3 +316,33 @@ async fn a_missing_config_is_distinguishable_from_an_unreadable_one() {
     assert_eq!(res["ok"], json!(true), "{res}");
     assert!(res["text"].as_str().unwrap().contains("\"version\":2"));
 }
+
+/// Saving a config must not change who can read it.
+///
+/// The hosted stack shares config_cluster.json between the container and the host user,
+/// so the file is deliberately group-readable. A write that forced 0600 back on locked
+/// the operator out of their own file the first time they saved from the UI.
+#[cfg(unix)]
+#[tokio::test]
+async fn writing_a_config_preserves_the_mode_it_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new("config-mode");
+    let c = core(&dir);
+    let path = dir.0.join("cfg.json");
+
+    // A file the operator has deliberately made group-readable.
+    std::fs::write(&path, "{}").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
+
+    let res = c.handle(json!({ "type": "CONFIG_WRITE", "path": path, "text": "{\"version\":2}" })).await;
+    assert_eq!(res["ok"], json!(true), "{res}");
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o660, "the mode was reset to {mode:o}");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("version"));
+
+    // A file that did not exist is still created private.
+    let fresh = dir.0.join("new.json");
+    c.handle(json!({ "type": "CONFIG_WRITE", "path": fresh, "text": "{}" })).await;
+    let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "a new config should default to owner-only, got {mode:o}");
+}
