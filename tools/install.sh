@@ -252,8 +252,31 @@ if [ "$MODE" = hosted ]; then
   cd "$DEST/deploy"
   step "Generating throwaway credentials (self-signed TLS, one trial user)"
   ./trial-setup.sh
-  step "Building and starting — the first build compiles the Rust core and takes a while"
-  docker compose up -d --build
+
+  # Pull if there is something to pull. Compiling the core takes about twenty minutes on
+  # a small arm64 server, and the published image is the same build — so the only reason
+  # to compile is that no image exists for this architecture, which is worth saying out
+  # loud rather than silently spending the twenty minutes.
+  PUBLISHED=${ESPRO_IMAGE:-}
+  if [ -z "$PUBLISHED" ]; then
+    candidate="karthickdk02/elasticvue-pro-core:${REF#v}"
+    step "Looking for a published image (${candidate})"
+    if docker manifest inspect "$candidate" >/dev/null 2>&1; then
+      PUBLISHED="$candidate"
+      ok "Found it — pulling instead of compiling"
+    else
+      info "none published for ${REF#v} — building from source instead"
+    fi
+  fi
+
+  if [ -n "$PUBLISHED" ]; then
+    export ESPRO_IMAGE="$PUBLISHED"
+    step "Starting from ${PUBLISHED}"
+    docker compose up -d --pull always
+  else
+    step "Building and starting — compiling the Rust core takes a while"
+    docker compose up -d --build
+  fi
   say ""
   ok "Hosted stack is up."
   # `hostname -I` lists every address the host has — on a machine running containers that
