@@ -101,7 +101,7 @@ function securityNote() {
     h('div.sec', { style: { fontSize: '12px', padding: '6px 0 2px', lineHeight: '1.6' } },
       h('p', { style: { margin: '0 0 6px' } },
         'The username/password (or API key) is read from your YAML file each time the app starts and is kept in memory only. ',
-        'What the app remembers on disk is the PATH of the file, your theme, the console history, and the certificates / jump-host keys you chose to trust (pins.json). ',
+        'What the app remembers on disk is the PATH of the file, your theme, the console history, and the certificates and jump-host keys you chose to trust. ',
         'A credential is written to the Windows Credential Manager only if you tick "remember on this machine" in the sign-in dialog.'),
       h('p', { style: { margin: '0 0 6px' } },
         'Jump-host passphrases and passwords are never read from the file; the app asks for them and forgets them when it closes.'),

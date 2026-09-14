@@ -175,7 +175,12 @@ function trustCard() {
       h('div', { style: { fontWeight: 620, marginBottom: '6px' } }, `Pinned certificates (${cRows.length})`),
       cRows.length ? table(['Address', 'Subject', 'SHA-256', 'Since', ''], cRows)
         : h('div.muted', { style: { fontSize: '12px' } }, 'None yet. A certificate the OS does not trust is shown on the Clusters page with a Trust button; the decision lands here.')),
-    h('div.muted', { style: { fontSize: '11.5px' } }, 'Stored in ', h('code.inline', (core && core.dataDir) ? core.dataDir + '/pins.json' : 'pins.json'), ' — fingerprints only, no secrets.'));
+    // The reassurance is worth saying; the path it is kept at is not. Naming a file on
+    // the server tells a reader nothing they can act on from a browser, and tells anyone
+    // else where to look. Config paths elsewhere on this page are a different matter —
+    // that file is the operator's own, and they are expected to go and edit it.
+    h('div.muted', { style: { fontSize: '11.5px' } },
+      'Trust decisions record fingerprints only — never a key, a password or a certificate.'));
 }
 export function onData() { if (host && host.isConnected) { draw(); loadTrust(); } }
 
