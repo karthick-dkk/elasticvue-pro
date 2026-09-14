@@ -87,7 +87,7 @@ export function loginScreen(root, { bootstrap = false } = {}) {
       // Only while the gate is up — the dashboard behind it wants a plain surface, not
       // a backdrop competing with charts.
       try { document.body.classList.add('auth-bg'); } catch { /* not a browser */ }
-      mount(root, h('div.setup',
+      const panel = h('div.setup',
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' } },
           h('img', { src: 'icons/icon48.png', width: 34, height: 34, alt: '' }),
           h('div',
@@ -137,7 +137,14 @@ export function loginScreen(root, { bootstrap = false } = {}) {
                   h('div', h('b', 'user'), ' — read-only across every page.'),
                   h('div', h('b', 'guest'), ' — the dashboard only. No index names, because those tend to carry customer and project names.'))))
           : null,
-      ));
+      );
+
+      // Two columns: the supplied brand panel on the left, the real form on the right.
+      // The mock-up drew a form in its right half; that half is cropped off rather than
+      // placed under this one, which would have been a picture of a form behind a form.
+      mount(root, h('div.auth-split',
+        h('div.auth-brand', { role: 'presentation' }),
+        h('div.auth-form', panel)));
       const el = document.getElementById('login-name');
       if (el && !busy) el.focus();
     }

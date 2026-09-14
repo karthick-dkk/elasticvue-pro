@@ -354,28 +354,44 @@ pre.json {
  * colour underneath so the whole thing still resolves to something readable if a layer
  * fails to paint.
  */
-body.auth-bg {
-  background-color: var(--surface-0);
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Ccircle cx='2' cy='2' r='1' fill='%23808080' fill-opacity='0.22'/%3E%3C/svg%3E"),
-    radial-gradient(58rem 40rem at 12% -8%,  color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
-    radial-gradient(48rem 36rem at 92% 108%, color-mix(in srgb, var(--series-3) 16%, transparent), transparent 70%);
-  background-repeat: repeat, no-repeat, no-repeat;
-  background-attachment: fixed;
-  min-height: 100vh;
+body.auth-bg { min-height: 100vh; background: var(--surface-0); }
+body.auth-bg .app { display: none; }
+
+.auth-split { display: grid; grid-template-columns: 1.05fr 1fr; min-height: 100vh; }
+
+/* ---- left: the brand panel ---------------------------------------------------
+ * One image, the left half of the supplied mock-up, cropped at the seam so the form
+ * it drew on the right is not underneath the real one. 65 KB at 704x900 — it is a
+ * decorative panel, not a diagram anybody has to read, so it is cropped by `cover`
+ * on narrow windows and hidden entirely below 900px.
+ *
+ * The gradient underneath is not decoration: it is what shows if the file is missing
+ * or still loading, so the panel is never a white rectangle beside a dark form.
+ */
+.auth-brand {
+  background-color: #0a1f42;
+  background-image: linear-gradient(155deg, #0d2a55 0%, #0a1f42 46%, #07162f 100%);
+  position: relative;
+}
+.auth-brand::after {
+  content: ""; position: absolute; inset: 0;
+  background: url("../img/login-brand.jpg") no-repeat center / cover;
 }
 
-/* A little more presence over a busy backdrop than the flat card used inline. */
-body.auth-bg .setup { max-width: 460px; margin: 12vh auto; }
-body.auth-bg .setup > .card {
+/* ---- right: the form ---------------------------------------------------------- */
+.auth-form { display: grid; place-items: center; padding: 5vh 24px; background: var(--surface-0); }
+.auth-form .setup { max-width: 400px; width: 100%; margin: 0; }
+.auth-form .setup > .card {
   border-color: var(--border-strong);
-  box-shadow: 0 18px 48px -24px rgb(0 0 0 / .45), 0 2px 8px -4px rgb(0 0 0 / .2);
+  box-shadow: 0 18px 48px -26px rgb(0 0 0 / .4), 0 2px 8px -4px rgb(0 0 0 / .16);
 }
-/* The banner explaining the three roles is guidance, not a card competing with the form. */
-body.auth-bg .setup .banner { background: color-mix(in srgb, var(--surface-1) 82%, transparent); }
+.auth-form .banner { background: color-mix(in srgb, var(--surface-1) 82%, transparent); }
 
-@media (max-width: 560px) {
-  body.auth-bg .setup { margin: 5vh auto; }
+/* Below this the brand panel is a wall between the reader and the form. */
+@media (max-width: 900px) {
+  .auth-split { grid-template-columns: 1fr; }
+  .auth-brand { display: none; }
+  .auth-form { padding: 8vh 20px; }
 }
 
 .setup { max-width: 760px; margin: 6vh auto; padding: 0 18px; }
