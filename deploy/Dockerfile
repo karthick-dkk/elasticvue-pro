@@ -9,6 +9,13 @@ COPY crates ./crates
 # src/lib.rs must exist — a stub main.rs is not enough. The directory is under 1 MB, so
 # copying it whole is simpler than a stub and cannot drift from the real manifest.
 COPY src-tauri ./src-tauri
+# Capped by default, because the machine most likely to build this is a small server that
+# is already running something. rustc peaks over a gigabyte per crate on this dependency
+# set, and one unbounded build has enough parallelism to push a 4 GB host into the OOM
+# killer — which takes out whatever else that host was doing, not the build.
+# Raise it on a build machine: --build-arg CARGO_BUILD_JOBS=8.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN cargo build --release --locked -p espro-core --features bridge --bin espro-bridge
 
 FROM debian:bookworm-slim
