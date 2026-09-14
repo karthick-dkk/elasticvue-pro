@@ -142,13 +142,23 @@ resolve_release() {
   fi
 }
 
-step "Asking GitHub for the release"
-REL_JSON=$(curl -fsSL "$(resolve_release)") \
-  || die "could not read the release list. Is ${VERSION:-the latest release} published?"
-
-TAG=$(printf '%s' "$REL_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-[ -n "$TAG" ] || die "the release has no tag — the API response was not what was expected"
-info "release ${TAG}"
+# The hosted stack is infrastructure that tracks the repository, not something a release
+# ships: deploy/ arrived after the last stable tag, so resolving "latest release" for it
+# would reliably fetch a tree with no deploy/ in it. It follows the default branch unless
+# a ref is named.
+if [ "$MODE" = hosted ] && [ -z "$VERSION" ]; then
+  REF=$(curl -fsSL "$API" | sed -n 's/.*"default_branch": *"\([^"]*\)".*/\1/p' | head -1)
+  REF=${REF:-main}
+  info "tracking the ${REF} branch"
+else
+  step "Asking GitHub for the release"
+  REL_JSON=$(curl -fsSL "$(resolve_release)") \
+    || die "could not read the release list. Is ${VERSION:-the latest release} published?"
+  TAG=$(printf '%s' "$REL_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$TAG" ] || die "the release has no tag — the API response was not what was expected"
+  info "release ${TAG}"
+  REF="$TAG"
+fi
 
 # The asset whose name matches a pattern, as a download URL.
 asset_url() {
@@ -167,17 +177,28 @@ if [ "$MODE" = hosted ]; then
   docker compose version >/dev/null 2>&1 || die "this needs the docker compose plugin"
   DEST=${DEST:-./elasticvue-pro}
   step "Hosted stack into ${DEST}"
-  if [ "$DRY" -eq 1 ]; then ok "dry run — would fetch ${TAG} and run docker compose up"; exit 0; fi
+  if [ "$DRY" -eq 1 ]; then ok "dry run — would fetch ${REF} and run docker compose up"; exit 0; fi
 
-  if [ -d "$DEST/.git" ] || [ -f "$DEST/deploy/docker-compose.yml" ]; then
+  if [ -f "$DEST/deploy/docker-compose.yml" ]; then
     info "using the checkout already at ${DEST}"
   else
     mkdir -p "$DEST"
-    step "Downloading the source for ${TAG}"
-    curl -fsSL "https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz" \
-      | tar -xz -C "$DEST" --strip-components=1 \
-      || die "could not download or unpack the source"
+    step "Downloading ${REF}"
+    # A tag and a branch live at different paths, and only one of them exists.
+    for kind in tags heads; do
+      if curl -fsSL "https://github.com/${REPO}/archive/refs/${kind}/${REF}.tar.gz" \
+           | tar -xz -C "$DEST" --strip-components=1 2>/dev/null; then
+        GOT=1; break
+      fi
+    done
+    [ "${GOT:-0}" = 1 ] || die "could not download ${REF} as either a tag or a branch"
   fi
+
+  # Checked rather than assumed: deploy/ was added after the last stable tag, so an older
+  # ref unpacks perfectly and simply has no stack in it. Without this the failure is a
+  # bare "cd: no such file or directory" forty lines further down.
+  [ -f "$DEST/deploy/docker-compose.yml" ] || die \
+    "${REF} has no deploy/ directory — the hosted stack is newer than that ref. Try --version main."
 
   cd "$DEST/deploy"
   step "Generating throwaway credentials (self-signed TLS, one trial user)"
