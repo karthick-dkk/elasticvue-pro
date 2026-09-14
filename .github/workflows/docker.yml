@@ -48,9 +48,15 @@ jobs:
       - uses: actions/checkout@v4
 
       # Fail here, with a sentence, rather than forty lines later inside docker login.
+      # Through env, not interpolation: a value substituted straight into a run block is
+      # pasted into the script before the shell ever sees it, so anything shell-special
+      # in it changes what runs.
       - name: check the credentials exist
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
             echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set on this repository."
             echo "::error::Settings → Secrets and variables → Actions. The token needs Read/Write."
             exit 1
@@ -112,9 +118,11 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: tag the manifest list
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          version="${{ inputs.tag }}"
+          version="$INPUT_TAG"
           [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
 
           tags="-t ${IMAGE}:${version}"
@@ -130,9 +138,11 @@ jobs:
           docker buildx imagetools create $tags $(printf "${IMAGE}@sha256:%s " *)
 
       - name: prove both architectures are in it
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          version="${{ inputs.tag }}"
+          version="$INPUT_TAG"
           [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
           docker buildx imagetools inspect "${IMAGE}:${version}"
           # An image that resolves for only one architecture is the failure this whole
@@ -145,8 +155,10 @@ jobs:
           echo "✓ ${IMAGE}:${version} carries linux/amd64 and linux/arm64"
 
       - name: summary
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          version="${{ inputs.tag }}"
+          version="$INPUT_TAG"
           [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
           {
             echo "### Published"
