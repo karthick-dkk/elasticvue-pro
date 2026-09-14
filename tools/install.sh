@@ -83,10 +83,14 @@ as_root() {
   if [ "$(id -u)" = 0 ]; then "$@"; return; fi
   command -v sudo >/dev/null 2>&1 || die "this needs root and sudo is not installed"
 
-  # `curl … | bash` leaves sudo with no terminal to prompt on, so if it also has no
-  # cached credential it fails with "a terminal is required" — true, and useless. Say
-  # what to do about it instead.
-  if ! sudo -n true 2>/dev/null && [ ! -t 0 ] && [ ! -r /dev/tty ]; then
+  # `curl … | bash` can leave sudo with no terminal to prompt on, and it then fails with
+  # "a terminal is required" — true, and useless.
+  #
+  # Whether it can prompt is asked, not predicted: `sudo -v` prompts if it has anywhere
+  # to prompt and fails if it does not. The first version of this inspected /dev/tty
+  # instead, decided a non-interactive ssh session could prompt, skipped the guard, and
+  # let the raw sudo error through — which is the whole thing it exists to prevent.
+  if ! sudo -n true 2>/dev/null && ! sudo -v 2>/dev/null; then
     say ""
     warn "sudo needs a password and there is no terminal to ask on."
     info "That is what piping a script into bash costs. Any one of these works:"
