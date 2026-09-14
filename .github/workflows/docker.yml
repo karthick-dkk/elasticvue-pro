@@ -150,9 +150,15 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${version}"
           # An image that resolves for only one architecture is the failure this whole
           # two-runner arrangement exists to prevent, so it is checked rather than assumed.
+          #
+          # Parsed, not grepped. The first version of this matched "architecture":"amd64"
+          # against --raw output that is pretty-printed with a space after the colon, so a
+          # perfectly good manifest list failed the check — a false alarm on a successful
+          # publish, which is worse than no check at all.
+          raw=$(docker buildx imagetools inspect "${IMAGE}:${version}" --raw)
           for arch in amd64 arm64; do
-            docker buildx imagetools inspect "${IMAGE}:${version}" --raw \
-              | grep -q "\"architecture\":\"$arch\"" \
+            echo "$raw" | jq -e --arg a "$arch" \
+              '.manifests[]?.platform | select(.os == "linux" and .architecture == $a)' >/dev/null \
               || { echo "::error::${IMAGE}:${version} has no linux/$arch"; exit 1; }
           done
           echo "✓ ${IMAGE}:${version} carries linux/amd64 and linux/arm64"
