@@ -77,6 +77,16 @@ function visiblePages() {
 const root = document.getElementById('root');
 let currentPage = null;
 
+/**
+ * Pages the status strip stays out of the way on.
+ *
+ * The strip is ambient state — config name, fleet health, how hard we are hitting the
+ * clusters — which is worth a glance from a dashboard and is a band of text in the way
+ * when you are reading a wide table, typing a request or watching a live tail. It stays
+ * on the overview, alerts, automation and the admin pages, where glancing is the point.
+ */
+const STRIP_HIDDEN = new Set(['indices', 'console', 'logs', 'snapshots', 'nodes', 'volume']);
+
 /* --------------------------------- theming ---------------------------------- */
 async function initTheme() {
   const t = (await idb.getKV('theme')) || 'system';
@@ -352,6 +362,10 @@ function tickStatus() {
 function renderSideFoot() {
   const el = $('#side-foot');
   if (!el) return;
+  // Decided here rather than at navigation: the strip is rebuilt from refresh events that
+  // fire whatever page is open, so a decision made anywhere else comes undone on the next
+  // tick. Hidden, not unbuilt — the content is cheap and stays correct for the way back.
+  el.hidden = STRIP_HIDDEN.has(currentPage);
   const meta = state.config && state.config.fileMeta;
   const row = (label, value, opts = {}) => h('span.row', opts, h('b', label), value);
 
@@ -420,6 +434,7 @@ export function go(id) {
   resolveSelection(page);
   renderNav();
   renderTopbar();
+  renderSideFoot();
   const view = $('#view');
   if (!view) return;
   clear(view);

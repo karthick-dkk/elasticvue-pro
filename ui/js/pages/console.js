@@ -169,7 +169,7 @@ function draw() {
 
   const pathInput = h('input#c-path', { type: 'text', value: ui.path, list: 'ep-list', spellcheck: false,
     placeholder: '/_cluster/health', style: { flex: '1', fontFamily: 'var(--mono)' },
-    oninput: (e) => { ui.path = e.target.value; },
+    oninput: (e) => { ui.path = e.target.value; syncTarget(); },
     onkeydown: (e) => { if (e.key === 'Enter') run(); } });
 
   // Grouped, so the list stays usable now that it covers ILM, watermarks and shards.
@@ -187,22 +187,40 @@ function draw() {
       ...SNIPPETS.map((s, i) => [s, i]).filter(([s]) => s.g === g)
         .map(([s, i]) => h('option', { value: String(i) }, `${s.w ? '✎ ' : ''}${s.m} ${s.p}`)))));
 
-  // ---- request line: method · path · run
+  // ---- the address this will actually hit
+  //
+  // Above the method, not below it, and the whole URL rather than the cluster's base:
+  // the console is the one page where a person can send anything to anything, so what
+  // gets audited afterwards is which host received which path. Reading that off two
+  // fields — a base down here, a path up there — is how the wrong cluster gets hit.
+  // It follows the path field as it is typed, so it is never a stale answer.
+  const targetUrl = () => {
+    const base = String(c.url || '').replace(/\/+$/, '');
+    const p = String(ui.path || '');
+    return base + (p ? (p.startsWith('/') ? p : `/${p}`) : '');
+  };
+  const target = h('span.mono#c-target', { style: { fontSize: '12px', wordBreak: 'break-all' } }, targetUrl());
+  const syncTarget = () => { target.textContent = targetUrl(); };
+
+  // ---- request line: target · method · path · run
   const requestBar = h('section.card',
     h('div.body', { style: { display: 'grid', gap: '8px', padding: '10px 14px' } },
+      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' } },
+        h('b', { style: { fontSize: '12px' } }, c.name),
+        h('span.muted', { style: { fontSize: '12px' } }, ui.method),
+        target,
+        c.via ? h('span.muted', { style: { fontSize: '11px' } }, `via ${c.via}`) : null),
       h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
         methodSel, pathInput,
         h('button.btn.primary#c-run', { onclick: run, style: { minWidth: '96px' } }, 'Run ▸'),
         snippetSel),
       h('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', fontSize: '11px', flexWrap: 'wrap' } },
-        h('span.muted', h('b', c.name), ' · ', h('span.mono', c.url), c.via ? ` · via ${c.via}` : ''),
         h('span.muted', { style: { marginLeft: 'auto' } }, 'Ctrl/⌘+Enter runs · Enter in the path runs'),
         writeToggle(draw))));
 
   // ---- Query | Results
   const bodyArea = h('textarea#c-body', { spellcheck: false,
     style: { width: '100%', height: '100%', minHeight: '340px', fontFamily: 'var(--mono)', fontSize: '12px', resize: 'vertical', boxSizing: 'border-box' },
-    placeholder: '{ "query": { "match_all": {} } }   — body for POST/PUT; ignored for GET/HEAD',
     oninput: (e) => { ui.body = e.target.value; },
     onkeydown: (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); } } }, ui.body);
 
