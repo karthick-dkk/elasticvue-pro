@@ -344,7 +344,7 @@ export const SHEET_COLUMNS = [
   { group: 'Disk on the cluster', label: 'Disk free', unit: 'GB', kind: 'num', get: (r) => round1(r.liveFreeGB),
     help: 'Disk not yet used. Not all of it is usable: Elasticsearch stops allocating shards at the high '
         + 'watermark, 90% full by default, so the cluster is in trouble before this reaches zero.' },
-  { group: 'Disk on the cluster', label: 'Free disk lasts', unit: 'days', kind: 'num',
+  { group: 'Disk on the cluster', label: 'Current live storage store upto', unit: 'days', kind: 'num',
     get: (r) => floorOrNull(r.liveSufficientDays), note: () => 'at the current daily rate',
     help: 'Disk free ÷ indices size per day. How long until the cluster fills at today\'s rate, assuming nothing is deleted. '
         + 'Uses the unbuffered daily figure, because it is a projection of what is happening rather than a plan.' },
@@ -459,6 +459,41 @@ export const SHEET_COLUMNS = [
   { group: 'Backups (snapshots)', label: 'Newest snapshot taken', kind: 'text', get: (r) => r.snapshotsTo,
     help: 'When the most recent snapshot was taken. If this is not today, snapshots may have stopped running.' },
 ];
+
+/**
+ * The client storage plan — the same report as a customer-facing sizing sheet.
+ *
+ * Thirteen of the thirty-six columns above, under the words a storage plan is actually
+ * discussed in: "live storage" rather than "disk", "client" rather than "cluster". Each
+ * entry points at a SHEET_COLUMNS definition and overrides nothing but the heading, so a
+ * figure here and the same figure on the full sheet are the one calculation — rename a
+ * column and this view follows it rather than quietly disagreeing.
+ *
+ * A `from` that no longer resolves throws at load. A sizing sheet that silently ships
+ * with a column missing is worse than one that refuses to render, and the render check
+ * catches it before it leaves the branch.
+ */
+const CLIENT_VIEW = [
+  { from: 'Cluster name',                       group: 'Client',         label: 'ClientName' },
+  { from: 'Elasticsearch URL',                  group: 'Client',         label: 'ES Host' },
+  { from: 'Indices size per day',               group: 'Volume',         label: 'Current Per Day Volume' },
+  { from: 'Per day + 30% buffer',               group: 'Volume',         label: 'Daily Volume +30%' },
+  { from: 'Disk total',                         group: 'Live storage',   label: 'Current Live Storage' },
+  { from: 'Disk used',                          group: 'Live storage',   label: 'Live Used' },
+  { from: 'Current live storage store upto',    group: 'Live storage',   label: 'Current Live Storage Store Upto' },
+  { from: 'Disk needed for 30 days',            group: 'Live storage',   label: 'Required Live Storage for 30days' },
+  { from: 'Disk needed for 90 days',            group: 'Live storage',   label: 'Required Live Storage for 90days' },
+  { from: 'Backup space available',             group: 'Backup storage', label: 'Current Backup Storage' },
+  { from: 'Where backups go',                   group: 'Backup storage', label: 'Backup Storage Type' },
+  { from: 'Backup space required for 365 days', group: 'Backup storage', label: 'Required Backup Storage for 365 days' },
+  { from: 'Days the backup size buys',          group: 'Backup storage', label: 'Current Backup storage Store upto' },
+];
+
+export const CLIENT_COLUMNS = CLIENT_VIEW.map(({ from, group, label }) => {
+  const src = SHEET_COLUMNS.find((c) => c.label === from);
+  if (!src) throw new Error(`client storage plan: no report column named "${from}"`);
+  return { ...src, group, label };
+});
 
 
 function round1(v) { return v === null || v === undefined || !isFinite(v) ? null : Math.round(v * 10) / 10; }

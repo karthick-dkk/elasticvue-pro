@@ -113,11 +113,11 @@ function block(c) {
         ? hbarList(nodes.map((n) => ({ key: n.name, label: n.name, value: Number(n['heap.percent']) || 0,
             color: Number(n['heap.percent']) >= 85 ? 'var(--critical)' : Number(n['heap.percent']) >= 75 ? 'var(--warning)' : 'var(--series-1)' })),
             { format: (v) => `${v}%`, topN: 14, labelWidth: 150, showOther: false })
-        : empty('No node data'), { key: 'nodes-heap' }),
+        : empty('No node data'), { key: 'nodes-heap', open: true }),
       collapsible('Disk used by node', 'from _cat/nodes', () => (nodes.length
         ? hbarList(nodes.map((n) => ({ key: n.name, label: n.name, value: Number(n['disk.used']) || 0,
             sub: `of ${bytes(Number(n['disk.total']) || 0)}` })), { format: bytes, topN: 14, labelWidth: 150, showOther: false })
-        : empty('No node data')), { key: 'nodes-disk' })),
+        : empty('No node data')), { key: 'nodes-disk', open: true })),
 
     card('Nodes', `${nodes.length} node(s)`,
       table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true }, { label: 'CPU', num: true },

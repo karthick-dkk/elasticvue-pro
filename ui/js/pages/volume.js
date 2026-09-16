@@ -6,7 +6,7 @@ import { bytes, num, ago, dt, toCsv, download, plural } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
 import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
-import { volumeReport, reportRows, SHEET_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
+import { volumeReport, reportRows, SHEET_COLUMNS, CLIENT_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
 import { popover } from '../ui/menu.js';
 
@@ -14,6 +14,21 @@ let host = null;
 const ui = { measuring: new Set(), view: 'sheet', sort: 'name', dir: 1 };
 /** Measured repository sizes, per cluster. Elasticsearch does not report this cheaply. */
 const repoBytes = new Map();
+
+/**
+ * The grid views.
+ *
+ * Both render the same table from the same column definitions and differ only in which
+ * columns they take, so a new view is an entry here rather than another renderer. The
+ * CSV is generated from whichever list is on screen — the file a person gets is the
+ * sheet they were looking at, not a second layout they have to reconcile with it.
+ */
+const VIEWS = {
+  sheet: { cols: () => SHEET_COLUMNS, title: 'Volume resource report', file: 'volume-resource-report' },
+  client: { cols: () => CLIENT_COLUMNS, title: 'Client storage plan', file: 'client-storage-plan' },
+};
+/** The summary table is its own renderer; its export is the full sheet. */
+const activeView = () => VIEWS[ui.view] || VIEWS.sheet;
 
 export function render(el) {
   host = el;
@@ -62,22 +77,25 @@ function draw() {
         `updated ${ago(state.lastRefresh)} · per-day volume from the dated indices, today excluded`),
       h('label.field', 'View', (() => {
         const sel = h('select', { onchange: (e) => { ui.view = e.target.value; draw(); } },
-          h('option', { value: 'sheet' }, 'Spreadsheet — one row per cluster'),
+          h('option', { value: 'sheet' }, 'Spreadsheet — every parameter'),
+          h('option', { value: 'client' }, 'Client storage plan — 13 columns'),
           h('option', { value: 'summary' }, 'Summary table'));
         sel.value = ui.view; return sel;
       })()),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
         h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'),
         h('button.btn.sm.primary', {
-          title: 'One row per cluster, every parameter as a column — the shape a spreadsheet wants',
-          onclick: () => exportWide(reports),
+          title: ui.view === 'summary'
+            ? 'One row per cluster, every parameter as a column — the full report, not the summary above'
+            : `One row per cluster, the ${activeView().cols().length} columns of this view — the shape a spreadsheet wants`,
+          onclick: () => exportWide(reports, activeView()),
         }, 'Export CSV'),
         h('button.btn.sm', {
           title: 'One row per parameter, a column per cluster — the report as it reads on screen',
           onclick: () => exportTall(reports),
         }, 'Export as report layout'))),
 
-    ui.view === 'sheet' ? sheetView(reports) : fleetTable(reports),
+    ui.view === 'summary' ? fleetTable(reports) : sheetView(reports, activeView()),
 
     h('div.grid.c2', { style: { marginTop: '10px' } },
       collapsible('Daily volume by cluster', 'the figure every other number is built on',
@@ -246,7 +264,7 @@ function clusterCardBody(r) {
                             : 'No repository registered on this cluster',
         onclick: () => measureRepos(c),
       }, measuring ? 'Measuring…' : r.repoGB === null ? 'Measure repo size' : 'Re-measure'),
-      h('button.btn.sm', { onclick: () => exportWide([r]) }, 'Export this cluster'),
+      h('button.btn.sm', { onclick: () => exportWide([r], VIEWS.sheet) }, 'Export this cluster'),
       h('button.btn.sm.ghost', { onclick: () => navigateTo('indices') }, 'Indices')));
 }
 
@@ -257,8 +275,8 @@ function clusterCardBody(r) {
  * cluster column and the header pinned so a wide row stays identifiable while scrolling.
  * Column headers sort; YES/NO is coloured because that is what the eye goes to.
  */
-function sheetView(reports) {
-  const col = SHEET_COLUMNS;
+function sheetView(reports, view) {
+  const col = view.cols();
   const sorted = [...reports].sort((a, b) => {
     const c = col.find((x) => x.label === ui.sort) || col[0];
     const av = c.get(a), bv = c.get(b);
@@ -310,9 +328,9 @@ function sheetView(reports) {
     return h(cls ? `td.${cls}` : 'td', { title: tip }, text);
   }))));
 
-  return card('Volume resource report', `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,
+  return card(view.title, `${reports.length} cluster${reports.length === 1 ? '' : 's'} · one row each · click a header to sort`,
     h('div.sheet-wrap', h('table.sheet', head, body)),
-    [h('button.btn.sm.primary', { onclick: () => exportWide(reports) }, 'Export CSV')]);
+    [h('button.btn.sm.primary', { onclick: () => exportWide(reports, view) }, 'Export CSV')]);
 }
 
 /* ---------------------------------- what it all means ---------------------------- */
@@ -409,22 +427,23 @@ function exportTall(reports) {
  * One row per cluster, one column per parameter — sortable and chartable in a
  * spreadsheet, and the default export.
  */
-function exportWide(reports) {
+function exportWide(reports, view = VIEWS.sheet) {
+  const cols = view.cols();
   // Same column definitions the grid uses, so the file and the screen cannot diverge.
   //
   // The header is the column's own name and nothing else. It used to carry the group as a
   // prefix joined by an em dash — "Backups (snapshots) — Backup space used (GB)" — which
   // made every header long, and the dash arrives mangled in a spreadsheet that reads the
   // file as anything but UTF-8. The group is a heading for the screen; a CSV is flat, and
-  // all 36 labels are unique on their own.
+  // the labels are unique on their own in either view.
   const rows = reports.map((r) => {
     const o = {};
-    for (const c of SHEET_COLUMNS) {
+    for (const c of cols) {
       o[c.unit ? `${c.label} (${c.unit})` : c.label] = sheetCell(c, r);
     }
     o['Generated at'] = new Date().toISOString();
     return o;
   });
   const stamp = new Date().toISOString().slice(0, 10);
-  download(`volume-resource-report-${stamp}.csv`, toCsv(rows), 'text/csv');
+  download(`${view.file}-${stamp}.csv`, toCsv(rows), 'text/csv');
 }

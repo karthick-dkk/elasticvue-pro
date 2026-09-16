@@ -106,7 +106,7 @@ function clusterBlock(c) {
             ? h('div.banner.warn', h('div', h('div.ttl', `${cov.missing.length} day(s) without a successful snapshot`),
                 h('div.mono', { style: { fontSize: '11.5px' } }, cov.missing.slice(0, 12).join(', ') + (cov.missing.length > 12 ? ` … +${cov.missing.length - 12}` : ''))))
             : repos.length ? h('div.sec', { style: { fontSize: '12px' } }, `Every day in the window has at least one successful snapshot.`) : null),
-        { key: 'snap-coverage', open: cov.missing.length > 0 })),
+        { key: 'snap-coverage', open: true })),
 
     h('div', { style: { marginTop: '10px' } },
       card(`Snapshots in ${selected || '—'}`,
