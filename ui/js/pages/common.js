@@ -18,9 +18,11 @@ export function card(title, sub, body, actions) {
 /**
  * A card the operator can fold away.
  *
- * The charts and coverage strips are useful but tall; left open they push the table
- * that people actually work in below the fold. Secondary panels start folded, and the
- * choice is remembered per panel so it only has to be made once.
+ * Charts and bars start open: a picture is read at a glance, and one that has to be
+ * unfolded first is one nobody looks at. Panels holding a table or a set of controls
+ * start folded, because those are tall and are gone looking for rather than glanced at.
+ * Either way the choice is remembered per panel, so it is made once — a remembered
+ * choice always wins over the default here.
  */
 const foldState = new Map();
 

@@ -101,16 +101,18 @@ function draw() {
       statTile('Store size', bytes(totals.size), `${num(totals.shards)} shards`),
       statTile('Sources detected', String(sourceList.filter((x) => x.key !== '__none').length), 'parsed from index names')),
 
-    // Folded by default: useful, but tall enough to push the table off the screen.
+    // Open by default: a chart is read at a glance, and one that has to be unfolded first
+    // is one nobody looks at. The table below is still reachable by folding them away, and
+    // that choice is remembered.
     h('div.grid.c2', { style: { marginBottom: '10px' } },
       collapsible('Store size by source', 'click a bar to filter the table', () =>
         sourceList.length
           ? hbarList(sourceList.map((x) => ({ key: x.key, label: x.key === '__none' ? '(unparsed)' : x.key, value: x.size,
               sub: `${num(x.indices)} indices · ${compact(x.docs)} docs` })),
               { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.sourceFilter = r.key; draw(); } })
-          : empty('No indices'), { key: 'idx-by-source' }),
+          : empty('No indices'), { key: 'idx-by-source', open: true }),
       collapsible('Indices per day', 'daily indices detected from the naming pattern',
-        () => perDay(rows), { key: 'idx-per-day' })),
+        () => perDay(rows), { key: 'idx-per-day', open: true })),
 
     h('div', { style: { marginBottom: '10px' } }, volumeAnalysisCard(c)),
 
