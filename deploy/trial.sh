@@ -36,23 +36,45 @@ done
 
 echo "waiting for nginx…"
 for i in $(seq 1 40); do
-  # Our nginx, not merely something listening: the auth gate answers 401, and that is the
-  # first property under test anyway.
-  [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$LISTEN/" 2>/dev/null)" = 401 ] && break
+  # 200, not 401: nginx stopped carrying auth_basic when the app grew its own accounts,
+  # so the login page is served to anyone who asks and the gate is behind it.
+  [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$LISTEN/" 2>/dev/null)" = 200 ] && break
   sleep 1
 done
 echo
+# The edge used to answer 401 to everything, because nginx carried auth_basic. The app
+# authenticates itself now, so the login page has to be served to a stranger — the gate is
+# the bridge, and what matters is that it refuses the messages and gives nothing away in
+# the handshake it must answer.
 echo "== 1. no credentials =="
 code=$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$LISTEN/")
-[ "$code" = 401 ] && ok "GET / without credentials -> 401" || bad "GET / without credentials -> $code (want 401)"
-code=$(curl -sk -o /dev/null -w '%{http_code}' -X POST "https://127.0.0.1:$LISTEN/bridge" -H 'content-type: application/json' -d '{"type":"PING"}')
-[ "$code" = 401 ] && ok "POST /bridge without credentials -> 401" || bad "POST /bridge without credentials -> $code"
+[ "$code" = 200 ] && ok "GET / serves the login page -> 200" || bad "GET / -> $code (want 200)"
+
+anon=$(curl -sk -X POST "https://127.0.0.1:$LISTEN/bridge" -H 'content-type: application/json' -d '{"type":"PING"}')
+echo "$anon" | grep -q '"ok":true' \
+  && ok "PING answers unauthenticated (the shell must know whether to sign in)" \
+  || bad "PING -> $anon"
+leaked=$(printf '%s' "$anon" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+named = [k for k in ("clusters","dataDir","configHint","defaultConfigPath",
+                     "requests","tunnels","uptimeSec","defaultUser","defaultPasswordUnchanged") if k in d]
+print(",".join(named))')
+[ -z "$leaked" ] && ok "the unauthenticated handshake names nothing" \
+                 || bad "unauthenticated PING leaked: $leaked"
+
+for t in CONFIG_READ USER_LIST PINS; do
+  kind=$(curl -sk -X POST "https://127.0.0.1:$LISTEN/bridge" -H 'content-type: application/json' \
+           -d "{\"type\":\"$t\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("kind"))')
+  [ "$kind" = unauthenticated ] && ok "$t without credentials -> refused" \
+                                || bad "$t without credentials -> '$kind' (want unauthenticated)"
+done
 
 echo "== 2. with credentials, through TLS =="
 code=$(curl -sk -o /dev/null -w '%{http_code}' -u "$U:$PW" "https://127.0.0.1:$LISTEN/")
 [ "$code" = 200 ] && ok "UI served over TLS" || bad "UI -> $code"
 ping=$(curl -sk -u "$U:$PW" -X POST "https://127.0.0.1:$LISTEN/bridge" -H 'content-type: application/json' -d '{"type":"PING"}')
-echo "$ping" | grep -q '"ok":true' && ok "bridge answers PING: $(echo "$ping" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("v"+d["version"],"dataDir",d["dataDir"])')" || bad "PING -> $ping"
+echo "$ping" | grep -q '"ok":true' && ok "bridge answers PING: $(echo "$ping" | python3 -c 'import json,sys;print("v"+json.load(sys.stdin)["version"])')" || bad "PING -> $ping"
 
 echo "== 3. audit trail names the user =="
 curl -sk -u "$U:$PW" -X POST "https://127.0.0.1:$LISTEN/bridge" -H 'content-type: application/json' -d '{"type":"WRITE_UNLOCK","on":true}' >/dev/null

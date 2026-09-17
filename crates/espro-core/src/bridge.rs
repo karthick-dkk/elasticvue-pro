@@ -263,10 +263,11 @@ impl Core {
                 "authRequired": self.edition.uses_accounts(),
                 "needsBootstrap": self.needs_bootstrap(),
                 "apiTokens": self.edition.uses_api_tokens(),
-                "defaultUser": auth::DEFAULT_USER,
-                // So the sign-in screen can say what the first login is, for exactly as
-                // long as that is still true.
-                "defaultPasswordUnchanged": self.users.default_unchanged(),
+                // The shipped username and whether its password still works used to ride
+                // along here so the sign-in screen could print them. The screen does not
+                // print them any more, and answering "is the default password still good,
+                // and what is the username" to an unauthenticated caller is handing over
+                // the first half of a login.
                 "caller": caller.as_ref().map(|c| c.public()),
             }),
             "LOGIN" => self.login(&msg),
@@ -283,7 +284,7 @@ impl Core {
             "TOKEN_LIST" | "TOKEN_CREATE" | "TOKEN_REVOKE" => self.tokens_msg(&t, &msg),
             "KEY_UPLOAD" | "KEY_LIST" | "KEY_DELETE" => self.keys_msg(&t, &msg),
             "CONFIG_HISTORY" | "CONFIG_RESTORE" => self.history_msg(&t, &msg),
-            "PING" => self.ping().await,
+            "PING" => self.ping(caller.as_ref()).await,
             "PRIME" => self.prime(msg).await,
             "FORGET" => {
                 {
@@ -743,29 +744,58 @@ impl Core {
         }
     }
 
-    async fn ping(self: &Arc<Self>) -> Value {
-        let (primed, read_only, ids) = {
-            let p = self.primed.read();
-            (!p.clusters.is_empty(), p.read_only, p.clusters.keys().cloned().collect::<Vec<_>>())
-        };
-        json!({
-            "ok": true, "primed": primed, "readOnly": read_only, "version": crate::VERSION,
-            "writesUnlocked": self.writes_unlocked(),
-            "requests": self.request_stats(),
-            "desktop": true, "netErrors": true, "clusters": ids,
+    /// The shell's handshake, and — once there is somebody to tell — the fleet's state.
+    ///
+    /// PING has to answer before anyone signs in, because the shell cannot know whether a
+    /// sign-in is needed until it asks. That makes the first half of this payload the one
+    /// thing a stranger who can reach the port is guaranteed to see, so it carries facts
+    /// about the build and about whether authentication is on, and nothing that names
+    /// anything.
+    ///
+    /// The second half names plenty: the clusters, where the config lives, how much
+    /// traffic we are sending and which jump hosts are up. A configured hosted instance
+    /// handed all of it to a bare curl for a while — the cluster list, the config path
+    /// and the request rates, with no credential at all — because this was one flat
+    /// object and PING was exempt from the gate. It is two halves now.
+    ///
+    /// The split is on `uses_accounts`, not on `caller.is_none()`: the portable build has
+    /// no accounts and no caller ever, and must still see all of it.
+    async fn ping(self: &Arc<Self>, caller: Option<&Caller>) -> Value {
+        let mut out = json!({
+            "ok": true,
+            "version": crate::VERSION,
+            "desktop": true,
+            "netErrors": true,
             "vault": cfg!(feature = "vault"),
             "edition": self.edition,
             "authRequired": self.edition.uses_accounts(),
             "needsBootstrap": self.needs_bootstrap(),
             "apiTokens": self.edition.uses_api_tokens(),
-            // The same two facts WHOAMI reports. Two answers to "is this still on the
-            // shipped password" that could disagree is worse than one in the wrong place.
-            "defaultUser": auth::DEFAULT_USER,
-            "defaultPasswordUnchanged": self.users.default_unchanged(),
-            "dataDir": self.data_dir, "configHint": self.config_hint, "uptimeSec": self.started.elapsed().as_secs(),
-            "defaultConfigPath": self.data_dir.as_ref().map(|d| d.join("config_cluster.json")),
-            "tunnels": self.tunnel_status().await,
-        })
+        });
+        if self.edition.uses_accounts() && caller.is_none() {
+            return out;
+        }
+
+        let (primed, read_only, ids) = {
+            let p = self.primed.read();
+            (!p.clusters.is_empty(), p.read_only, p.clusters.keys().cloned().collect::<Vec<_>>())
+        };
+        let tunnels = self.tunnel_status().await;
+        let m = out.as_object_mut().expect("the ping payload is a json object");
+        m.insert("primed".into(), json!(primed));
+        m.insert("readOnly".into(), json!(read_only));
+        m.insert("writesUnlocked".into(), json!(self.writes_unlocked()));
+        m.insert("requests".into(), self.request_stats());
+        m.insert("clusters".into(), json!(ids));
+        m.insert("dataDir".into(), json!(self.data_dir));
+        m.insert("configHint".into(), json!(self.config_hint));
+        m.insert("uptimeSec".into(), json!(self.started.elapsed().as_secs()));
+        m.insert(
+            "defaultConfigPath".into(),
+            json!(self.data_dir.as_ref().map(|d| d.join("config_cluster.json"))),
+        );
+        m.insert("tunnels".into(), json!(tunnels));
+        out
     }
 
     async fn tunnel_status(&self) -> Vec<Value> {

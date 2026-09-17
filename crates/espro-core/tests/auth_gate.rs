@@ -108,6 +108,65 @@ async fn bootstrap_is_only_available_while_there_are_no_accounts() {
     assert_eq!(listed["users"].as_array().unwrap().len(), 1, "{listed}");
 }
 
+/// An unauthenticated PING names nothing.
+///
+/// It has to answer at all — the shell cannot know whether to show a sign-in screen until
+/// it asks — so it is the one reply a stranger who can reach the port is guaranteed to
+/// get. For a while it was the whole status object: the cluster list, the config path,
+/// the data directory, per-cluster request rates, the jump hosts, and the shipped
+/// username together with whether its password still worked. None of that is needed to
+/// draw a login box.
+#[tokio::test]
+async fn an_unauthenticated_ping_names_nothing() {
+    let dir = TempDir::new("ping-leak");
+    let c = core(&dir, Edition::Hosted);
+
+    // Configured, so there is something to leak.
+    let admin = admin_session(&c).await;
+    let primed = c
+        .handle(json!({
+            "type": "PRIME", "session": admin,
+            "clusters": [{ "id": "prod-1", "url": "http://127.0.0.1:9200" }],
+        }))
+        .await;
+    assert_eq!(primed["ok"], json!(true), "{primed}");
+
+    let anon = c.handle(json!({ "type": "PING" })).await;
+    assert_eq!(anon["ok"], json!(true), "the handshake still has to work: {anon}");
+    assert_eq!(anon["authRequired"], json!(true), "{anon}");
+    for named in [
+        "clusters",
+        "dataDir",
+        "configHint",
+        "defaultConfigPath",
+        "requests",
+        "tunnels",
+        "uptimeSec",
+        "primed",
+        "readOnly",
+        "writesUnlocked",
+        "defaultUser",
+        "defaultPasswordUnchanged",
+    ] {
+        assert!(anon.get(named).is_none(), "unauthenticated PING leaked `{named}`: {anon}");
+    }
+
+    // WHOAMI is the other pre-auth reply, and must not name the shipped account either.
+    let who = c.handle(json!({ "type": "WHOAMI" })).await;
+    assert!(who.get("defaultUser").is_none(), "WHOAMI named the shipped user: {who}");
+    assert!(
+        who.get("defaultPasswordUnchanged").is_none(),
+        "WHOAMI said whether the shipped password still works: {who}"
+    );
+
+    // Signed in, the same call answers in full — the split is about the caller, not about
+    // removing the figures the app runs on.
+    let full = c.handle(json!({ "type": "PING", "session": admin })).await;
+    assert_eq!(full["clusters"], json!(["prod-1"]), "{full}");
+    assert!(full.get("dataDir").is_some(), "{full}");
+    assert!(full.get("requests").is_some(), "{full}");
+}
+
 /* --------------------------- the account that ships ---------------------------- */
 
 #[tokio::test]
@@ -117,8 +176,6 @@ async fn a_fresh_install_ships_an_account_that_can_do_nothing_but_change_itself(
 
     let ping = c.handle(json!({ "type": "PING" })).await;
     assert_eq!(ping["authRequired"], json!(true));
-    assert_eq!(ping["defaultUser"], json!("elasticvue"));
-    assert_eq!(ping["defaultPasswordUnchanged"], json!(true), "{ping}");
 
     let res = c.handle(json!({ "type": "LOGIN", "name": "elasticvue", "password": "loginme" })).await;
     assert_eq!(res["ok"], json!(true), "the shipped account should sign in: {res}");
@@ -157,10 +214,6 @@ async fn a_fresh_install_ships_an_account_that_can_do_nothing_but_change_itself(
         c.handle(json!({ "type": "USER_LIST", "session": s })).await["ok"],
         json!(true),
         "the live session should stop being locked the moment the password changes"
-    );
-    assert_eq!(
-        c.handle(json!({ "type": "PING" })).await["defaultPasswordUnchanged"],
-        json!(false)
     );
 }
 

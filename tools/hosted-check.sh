@@ -30,8 +30,19 @@ trap 'kill $PID 2>/dev/null; rm -f "$OUT"' EXIT
 until curl -s -o /dev/null "http://127.0.0.1:$P/"; do sleep 0.2; done
 B="http://127.0.0.1:$P/bridge"
 
-check "no header is refused"        "$(post $B -d '{"type":"PING"}' | field kind)" "unauthenticated"
-check "blank header is refused"     "$(post $B -H 'x-auth-user:  ' -d '{"type":"PING"}' | field kind)" "unauthenticated"
+# PING is the handshake and has to answer before anyone signs in, so it is not the thing
+# to probe for refusal — CONFIG_READ is. What PING owes us instead is silence about the
+# estate: it once returned the cluster list, the config path and the request rates to a
+# bare curl, which is how that went unnoticed.
+check "no header is refused"        "$(post $B -d '{"type":"CONFIG_READ"}' | field kind)" "unauthenticated"
+check "blank header is refused"     "$(post $B -H 'x-auth-user:  ' -d '{"type":"CONFIG_READ"}' | field kind)" "unauthenticated"
+check "the handshake still answers" "$(post $B -d '{"type":"PING"}' | field ok)" "True"
+check "the handshake names nothing" "$(post $B -d '{"type":"PING"}' | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+named = [k for k in ("clusters","dataDir","configHint","defaultConfigPath",
+                     "requests","tunnels","uptimeSec","defaultUser","defaultPasswordUnchanged") if k in d]
+print(",".join(named) or "nothing")')" "nothing"
 check "a named user is served"      "$(post $B -H 'x-auth-user: alice' -d '{"type":"PING"}' | field ok)" "True"
 
 post $B -H 'x-auth-user: alice' -d '{"type":"WRITE_UNLOCK","on":true}' >/dev/null

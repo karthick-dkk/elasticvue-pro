@@ -36,10 +36,6 @@ export async function authState() {
     apiTokens: !!res.apiTokens,
     edition: res.edition || 'portable',
     caller: res.caller || null,
-    defaultUser: res.defaultUser || '',
-    // True only until somebody replaces the shipped password, which is exactly how long
-    // it is worth telling people what it is.
-    defaultUnchanged: !!res.defaultPasswordUnchanged,
   };
 }
 

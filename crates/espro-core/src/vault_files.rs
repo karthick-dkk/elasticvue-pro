@@ -154,7 +154,7 @@ impl KeyStore {
             .filter(|e| e.path().is_file())
             .filter_map(|e| self.info(&e.path()).ok())
             .collect();
-        out.sort_by(|a, b| b.uploaded_at.cmp(&a.uploaded_at));
+        out.sort_by_key(|a| std::cmp::Reverse(a.uploaded_at));
         out
     }
 
@@ -258,7 +258,7 @@ impl ConfigHistory {
                 })
             })
             .collect();
-        out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+        out.sort_by_key(|a| std::cmp::Reverse(a.saved_at));
         out
     }
 
