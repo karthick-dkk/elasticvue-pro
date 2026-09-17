@@ -16,7 +16,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findJsdom, bootApp, applyConfig } from './lib/jsdom-app.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'ui');
@@ -25,14 +26,7 @@ const UI = path.join(ROOT, 'ui');
 // can live outside the project and Node stays out of the app's own build.
 let JSDOM;
 {
-  const { createRequire } = await import('node:module');
-  const { pathToFileURL } = await import('node:url');
-  const req = createRequire(import.meta.url);
-  const paths = [ROOT, process.cwd(), process.env.RENDER_CHECK_MODULES].filter(Boolean);
-  let entry = null;
-  for (const base of paths) {
-    try { entry = req.resolve('jsdom', { paths: [base] }); break; } catch { /* try the next one */ }
-  }
+  const { entry, paths } = findJsdom([ROOT, process.cwd()]);
   if (!entry) {
     console.log('render-check: jsdom not found — skipping.');
     console.log(`  install it in one of: ${paths.join(', ')}  (npm i jsdom)`);
@@ -61,86 +55,14 @@ try {
 
 /* ------------------------------- a browser-ish global scope ------------------------------- */
 
-const dom = new JSDOM(fs.readFileSync(path.join(UI, 'index.html'), 'utf8'), {
-  url: `${bridgeUrl}/`, pretendToBeVisual: true, runScripts: 'outside-only',
-});
-const { window } = dom;
-
-const errors = [];
-window.matchMedia = window.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-window.scrollTo = () => {};
-window.alert = () => {};
-window.confirm = () => false;          // never take a destructive branch while probing
-window.addEventListener('error', (e) => errors.push(`window error: ${e.message}`));
-
-// The pages persist console history and preferences in IndexedDB; a stub keeps them
-// on their real code path without needing a database.
-const memory = new Map();
-window.indexedDB = {
-  open() {
-    const req = {};
-    setTimeout(() => {
-      req.result = {
-        objectStoreNames: { contains: () => true },
-        createObjectStore: () => ({ createIndex() {} }),
-        transaction: () => ({
-          objectStore: () => ({
-            get: (k) => settle({ result: memory.get(k) }),
-            getAll: () => settle({ result: [...memory.values()] }),
-            put: (v, k) => settle({ result: (memory.set(k ?? v.id ?? v.key, v), true) }),
-            delete: (k) => settle({ result: (memory.delete(k), true) }),
-            clear: () => settle({ result: (memory.clear(), true) }),
-            index: () => ({ getAll: () => settle({ result: [...memory.values()] }) }),
-          }),
-          oncomplete: null,
-        }),
-        close() {},
-      };
-      if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
-      if (req.onsuccess) req.onsuccess({ target: req });
-    }, 0);
-    return req;
-  },
-};
-function settle(o) {
-  const r = { ...o };
-  setTimeout(() => { if (r.onsuccess) r.onsuccess({ target: r }); }, 0);
-  return r;
-}
-
-for (const k of ['window', 'document', 'location', 'HTMLElement', 'Node', 'Event', 'CustomEvent',
-                 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'matchMedia',
-                 'alert', 'confirm', 'scrollTo', 'localStorage', 'DOMParser', 'Element',
-                 'SVGElement', 'indexedDB', 'IDBKeyRange']) {
-  try { globalThis[k] = window[k]; } catch { /* read-only in this runtime; node's own will do */ }
-}
-
-// `transport.js` posts to the relative path /bridge, which Node's fetch cannot resolve.
-// Resolving it against the bridge URL is what makes the pages see real cluster data
-// rather than rendering their "unreachable" branch.
-const nodeFetch = globalThis.fetch;
-globalThis.fetch = (input, init) => {
-  const url = typeof input === 'string' && input.startsWith('/') ? bridgeUrl + input : input;
-  return nodeFetch(url, init);
-};
-
-const realError = console.error;
-console.error = (...a) => { errors.push('console.error: ' + a.map(String).join(' ').split('\n')[0]); };
+const { window, errors, load, restoreConsole } = await bootApp({ JSDOM, uiRoot: UI, bridgeUrl });
 
 /* ------------------------------------- drive the app -------------------------------------- */
 
-const load = (p) => import(path.join(UI, 'js', p));
-const state = await load('core/state.js');
 let configured = false;
 
 if (configPath) {
-  const cfgMod = await load('core/config.js');
-  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const config = cfgMod.normalize(raw, path.basename(configPath));
-  config.fileMeta = { name: path.basename(configPath), path: configPath, size: 1, lastModified: Date.now() };
-  await state.setConfig(config, configPath);
-  await state.refreshAll({ force: true });
-  for (const c of config.clusters) await state.fetchIndices(c.id, '*').catch(() => {});
+  const { config } = await applyConfig({ load, configPath });
   configured = config.clusters.length > 0;
 } else {
   console.log('render-check: no --config given — pages will draw their "no cluster" state only');
@@ -173,7 +95,7 @@ for (const name of PAGES) {
   }
 }
 
-console.error = realError;
+restoreConsole();
 if (errors.length) {
   console.error(`\n${errors.length} problem(s):`);
   for (const e of errors) console.error('  - ' + e);
