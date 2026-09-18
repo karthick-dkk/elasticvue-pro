@@ -41,7 +41,10 @@ export const DEFAULTS = {
   backupCapacity: '',
   // ECS fields the Indices page breaks daily volume down by, and watches for spikes.
   // Each must be aggregatable; a `.keyword` sub-field is tried automatically.
-  volumeFields: ['tag1', 'src_hostname'],
+  // Offered in the Volume analysis picker when a cluster names none of its own. They are
+  // only candidates: the aggregation runs on demand, one field at a time, and a name
+  // this cluster does not have reports that rather than costing anything.
+  volumeFields: ['tag1', 'fwd_tag', 'fwdtag', 'src_hostname'],
   snapshotStaleHours: 26,
   maxLogRows: 200,
   // Certificate policy: auto (OS store, else trust-on-first-use with a prompt), system (strict), insecure.

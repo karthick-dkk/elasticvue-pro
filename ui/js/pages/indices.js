@@ -166,8 +166,15 @@ function volumeAnalysisCard(c) {
     controls,
     va.error ? h('div.banner.err', { style: { margin: 0 } }, h('div', h('div.ttl', 'Analysis failed'), h('div.mono', va.error))) : null,
     spikes.length ? spikeBanner(c, spikes) : null,
-    analysis ? analysisBody(c, analysis) : va.running ? null
-      : empty(`Press Analyse to break the last ${va.days} days down by ${va.field}.`));
+    // A field the indices do not carry aggregates to nothing, which is not an error and
+    // is not zero volume either — it used to draw an empty table and look broken. Say
+    // which name was actually tried, because the field is resolved to its .keyword
+    // sub-field when there is one and that is the name that came back empty.
+    analysis && !analysis.terms.length
+      ? empty(`No values for "${analysis.resolvedField}" in the last ${va.days} days. `
+            + 'Either these indices do not carry that field, or nothing in the window has a value for it.')
+      : analysis ? analysisBody(c, analysis) : va.running ? null
+        : empty(`Press Analyse to break the last ${va.days} days down by ${va.field}.`));
 
   return card('Volume analysis', `daily volume by ${va.field}`, body,
     spikes.length ? [pill(`${spikes.length} spiking`, 'red')] : null);

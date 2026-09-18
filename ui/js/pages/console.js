@@ -10,6 +10,7 @@ import { isSnapshotMode } from '../core/snapshot.js';
 import { intent, navigateTo } from '../core/intent.js';
 import { writesUnlocked, writesAllowed, syncWrites, setWritesUnlocked, writeToggle } from '../core/writes.js';
 import { confirmDialog } from '../ui/modal.js';
+import { toast } from '../ui/menu.js';
 
 /**
  * Common requests, grouped. `w: true` marks one that changes the cluster — it needs the
@@ -305,6 +306,24 @@ async function run() {
   history = [entry, ...history].slice(0, 500);
   drawHistory();
   mount($('#c-response'), responseCard());
+
+  // The response panel sits below the fold on a small window, and a request that failed
+  // looks the same as one that has not run yet until you scroll down to it. The toast
+  // puts the outcome where the eye already is — on the button just pressed. Failures
+  // stay up twice as long, because they are the ones worth reading.
+  const took = res.tookMs ? ` · ${res.tookMs} ms` : '';
+  if (res.ok) {
+    toast(`${ui.method} ${clip(ui.path)} → ${res.status}${took}`);
+  } else {
+    toast(`${ui.method} ${clip(ui.path)} → ${res.status || res.kind || 'failed'}`
+        + `${res.message ? ` · ${clip(res.message, 60)}` : ''}`, 'err', 5200);
+  }
+}
+
+/** A long path or a long error makes a toast unreadable; the panel below keeps all of it. */
+function clip(v, max = 40) {
+  const t = String(v || '');
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
 async function saveFav() {

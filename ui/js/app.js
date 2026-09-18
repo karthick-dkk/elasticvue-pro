@@ -16,6 +16,7 @@ import { createNewConfig, editCluster, unlockSealed } from './ui/config-editor.j
 import { applyLoadedConfig } from './ui/load-config.js';
 import { authState, loginScreen, signOut } from './ui/login.js';
 import { aboutMini } from './ui/about.js';
+import { announceNewAlerts, resetAnnounced } from './core/notify.js';
 import { onSessionLost } from './core/transport.js';
 
 let coreInfo = { version: '?' };
@@ -41,7 +42,7 @@ import * as pVolume from './pages/volume.js';
 import * as pIndices from './pages/indices.js';
 import * as pLogs from './pages/logs.js';
 import * as pSnapshots from './pages/snapshots.js';
-import * as pNodes from './pages/nodes.js';
+import * as pShards from './pages/shards.js';
 import * as pConsole from './pages/console.js';
 import * as pSettings from './pages/settings.js';
 import * as pAutomation from './pages/automation.js';
@@ -56,13 +57,15 @@ import * as pAccounts from './pages/accounts.js';
  * because every other page names indices, and index names here carry customer names.
  */
 const PAGES = [
-  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
+  // Order is the order of a shift: what is wrong, then what it is wrong on, then the
+  // things you reach for to fix it, then the things you only change deliberately.
   { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  minRole: 'user' },
+  { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
   { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, minRole: 'user' },
-  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, minRole: 'user' },
+  { id: 'shards',    label: 'Shards',         icon: '☷', mod: pShards,    multi: true,  minRole: 'user' },
   { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, minRole: 'user' },
+  { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, minRole: 'user' },
   { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  minRole: 'user' },
-  { id: 'nodes',     label: 'Nodes & shards', icon: '☷', mod: pNodes,     multi: true,  minRole: 'user' },
   { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  minRole: 'user' },
   { id: 'automation', label: 'Automation',    icon: '⟳', mod: pAutomation, multi: true, minRole: 'user' },
   { id: 'accounts',  label: 'Accounts',       icon: '☺', mod: pAccounts,  multi: true,  minRole: 'admin', accountsOnly: true },
@@ -85,7 +88,7 @@ let currentPage = null;
  * when you are reading a wide table, typing a request or watching a live tail. It stays
  * on the overview, alerts, automation and the admin pages, where glancing is the point.
  */
-const STRIP_HIDDEN = new Set(['indices', 'console', 'logs', 'snapshots', 'nodes', 'volume']);
+const STRIP_HIDDEN = new Set(['indices', 'console', 'logs', 'snapshots', 'shards', 'volume']);
 
 /* --------------------------------- theming ---------------------------------- */
 async function initTheme() {
@@ -453,6 +456,9 @@ export function go(id) {
 
 async function start(config, handle) {
   await setConfig(config, handle);
+  // A different config is a different fleet. Whatever is wrong in it is the state you are
+  // arriving at, not something that just happened, so the baseline starts again here.
+  resetAnnounced();
   // Precedence: the user's own toggle (remembered) > defaults.autoRefresh in the YAML > off.
   const saved = await idb.getKV('autoRefresh');
   state.autoRefresh = (saved === true || saved === false) ? saved : (state.defaults.autoRefresh === true);
@@ -530,7 +536,12 @@ onSessionLost(() => {
 });
 
 bus.on('refreshing', () => { tickStatus(); });
-bus.on('refreshed', () => { maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); renderNav(); const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData(); });
+bus.on('refreshed', () => {
+  maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); renderNav();
+  // After the nav, so the tab badge and the toast agree about what is open.
+  announceNewAlerts();
+  const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData();
+});
 bus.on('tick', tickStatus);
 
 let offeredAuthRecovery = false;

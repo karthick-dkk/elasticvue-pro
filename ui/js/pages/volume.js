@@ -134,7 +134,19 @@ function fleetTable(reports) {
       h('td', r.snapshotRetention ? r.snapshotRetention.label : h('span.muted', 'not set')));
   });
   return card('Capacity by cluster', `${reports.length} cluster${reports.length === 1 ? '' : 's'}`,
-    table(['Cluster', 'Per day', '+30%', 'Live total', 'Used', 'Lasts', 'Live policy', 'Within policy', 'Repo size', 'Snapshot policy'],
+    // Every numeric column is marked here as well as on the cell. The cells were already
+    // td.num and right-aligned; the headers were plain strings, so each number sat under
+    // the left edge of its own title and the whole table read as if the columns had
+    // slipped. Marking one side only is the bug — table() aligns whatever it is told.
+    table(['Cluster',
+           { label: 'Per day', num: true },
+           { label: '+30%', num: true },
+           { label: 'Live total', num: true },
+           { label: 'Used', num: true },
+           { label: 'Lasts', num: true },
+           'Live policy', 'Within policy',
+           { label: 'Repo size', num: true },
+           'Snapshot policy'],
       trs, { emptyText: 'No clusters' }));
 }
 

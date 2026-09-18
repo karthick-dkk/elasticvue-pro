@@ -94,7 +94,7 @@ async function go(id) { app.go(id); await settleFor(350); }
 
 /* ------------- the status strip stays off the pages people work in ------------- */
 
-const STRIP_HIDDEN = ['indices', 'console', 'logs', 'snapshots', 'nodes', 'volume'];
+const STRIP_HIDDEN = ['indices', 'console', 'logs', 'snapshots', 'shards', 'volume'];
 const STRIP_SHOWN = ['overview', 'alerts'];
 
 for (const id of [...STRIP_HIDDEN, ...STRIP_SHOWN]) {
@@ -150,9 +150,36 @@ await go('console');
 
 /* ---------------------------- charts start unfolded ---------------------------- */
 
-await go('nodes');
-ok(shown('Heap used by node'), 'nodes: "Heap used by node" starts folded');
-ok(shown('Disk used by node'), 'nodes: "Disk used by node" starts folded');
+// The shards page replaced Nodes & shards. It has no folding panels — everything on it
+// is the working surface — so what is checked is that the surface is actually there.
+await go('shards');
+{
+  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.some((t) => t.startsWith('Shards —')), `shards: no shard table card, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Nodes'), `shards: no node strip, saw ${titles.join(' | ')}`);
+
+  const heads = [...doc.querySelectorAll('table.tbl thead th')].map((x) => x.textContent.trim());
+  for (const col of ['Index', 'Shard', 'Type', 'State', 'Node', 'Store', 'Unassigned reason']) {
+    ok(heads.includes(col), `shards: the table has no "${col}" column, saw ${heads.join(', ')}`);
+  }
+  // The page renders every selected cluster, and the fixture points two of them at the
+  // same mock — so the counts are per cluster, not absolute.
+  const shown = [...doc.querySelectorAll('section.card header h2')]
+    .filter((x) => x.textContent.startsWith('Shards —')).length;
+  const rows = doc.querySelectorAll('table.tbl tbody tr').length;
+  ok(rows >= 3 * shown, `shards: expected 3 shards on each of ${shown} cluster(s), rendered ${rows} row(s)`);
+
+  // The unassigned one is the row that matters, and it must read as unassigned rather
+  // than as a shard sitting on a node called nothing.
+  const text = doc.body.textContent;
+  ok(/unassigned/i.test(text), 'shards: the unassigned shard is not marked as such');
+  ok(/node left/i.test(text), 'shards: the unassigned reason is not shown');
+
+  // A started shard can be moved; an unassigned one has nowhere to move from.
+  const moves = [...doc.querySelectorAll('button')].filter((b) => b.textContent === 'Move…').length;
+  ok(moves === 2 * shown,
+    `shards: expected a Move button on each of the 2 started shards per cluster (${2 * shown}), found ${moves}`);
+}
 
 await go('indices');
 ok(shown('Store size by source'), 'indices: "Store size by source" starts folded');
@@ -236,12 +263,12 @@ await go('volume');
 
   await go('overview');
   state.selected = 'all';
-  navigateTo('nodes', null, { cluster: target.id });
+  navigateTo('shards', null, { cluster: target.id });
   await settleFor(350);
   ok(state.selected === target.id,
     `hand-off: selected is "${state.selected}", expected "${target.id}" — the page opened on the wrong cluster`);
-  ok((window.location.hash || '').includes('nodes'),
-    `hand-off: landed on "${window.location.hash}", expected the nodes page`);
+  ok((window.location.hash || '').includes('shards'),
+    `hand-off: landed on "${window.location.hash}", expected the shards page`);
 
   // A page that can show the whole fleet must keep the named cluster too, or the fleet
   // preference quietly puts "All clusters" back and the hand-off does nothing.
@@ -443,6 +470,66 @@ if (config.clusters.length >= 2) {
   ok(sent.length === 0, `an incomplete task must send nothing, sent ${sent.length}`);
 }
 
+/* ------------------------ new alerts announce themselves ------------------------ */
+
+// After the snapshot section, which leaves crafted state behind that this one reuses.
+{
+  const notify = await load('core/notify.js');
+  const st = await load('core/state.js');
+  const { DEFAULTS } = await load('core/config.js');
+  const said = [];
+  const spy = (msg, kind) => said.push({ msg, kind });
+
+  // Its own state: the task section above emptied state.config to run against stubs, and
+  // alerts() walks the configured clusters — with none, there is nothing to announce and
+  // this would pass by having nothing to say.
+  st.state.defaults = { ...DEFAULTS };
+  st.state.config = { clusters: [{ id: 'c1', name: 'prod', url: 'http://es:9200', enabled: true }] };
+  st.state.selected = 'all';
+  st.state.clients = new Map([['c1', { state: 'online' }]]);
+  // Something is ALREADY wrong before the first pass. That is the whole point of the
+  // baseline rule, and a clean start would let a notifier that announces everything it
+  // sees pass this by having nothing to see.
+  st.state.data = new Map([['c1', {
+    reachable: true, health: { status: 'green' }, slm: [],
+    repos: [{ name: 'already-broken', error: 'was broken before you opened the app' }],
+    snapshots: { 'already-broken': [] },
+  }]]);
+  ok(st.alerts().length === 1,
+    `the baseline needs exactly one pre-existing alert to be a real test, has ${st.alerts().length}`);
+
+  // The first pass is a baseline: whatever is already wrong is a state, not news.
+  notify.resetAnnounced();
+  const first = notify.announceNewAlerts({ notify: spy });
+  ok(first.length === 0 && said.length === 0,
+    `the first pass must announce nothing even though an alert is open, announced ${said.length}`);
+
+  // Nothing changed, so nothing is new — even though alerts() rebuilds the same list.
+  notify.announceNewAlerts({ notify: spy });
+  ok(said.length === 0, `an unchanged alert must not be announced again, got ${said.length}`);
+
+  // Break a second repository: one NEW alert beside the one that was already there.
+  const d = st.state.data.get('c1');
+  d.repos = [{ name: 'already-broken', error: 'was broken before you opened the app' },
+             { name: 'daily', error: 'connect timed out' }];
+  d.snapshots = { 'already-broken': [], daily: [] };
+  const fresh = notify.announceNewAlerts({ notify: spy });
+  ok(fresh.length === 1, `a newly broken repository should announce once, announced ${fresh.length}`);
+  ok(said.length === 1 && /daily/.test(said[0].msg), `announcement text: ${JSON.stringify(said)}`);
+
+  said.length = 0;
+  notify.announceNewAlerts({ notify: spy });
+  ok(said.length === 0, 'the same alert must not be announced on the next refresh');
+
+  // Many at once collapse to one line rather than burying the screen.
+  d.repos = ['a', 'b', 'c', 'd', 'e'].map((n) => ({ name: n, error: 'gone' }));
+  d.snapshots = {};
+  said.length = 0;
+  notify.announceNewAlerts({ notify: spy });
+  ok(said.length === 1 && /5 new alerts/.test(said[0].msg),
+    `five at once should collapse to one summary, got ${JSON.stringify(said)}`);
+}
+
 /* ------------------------------------ verdict ------------------------------------ */
 
 restoreConsole();
@@ -451,6 +538,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: strip, console target, folding, volume sheets, alert hand-off, scoped refresh, snapshot window and fleet tasks');
+console.log('ok: strip, console target, shards page, volume sheets, alert hand-off, scoped refresh, snapshot window, fleet tasks and alert toasts');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);

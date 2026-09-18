@@ -147,6 +147,18 @@ export class EsClient {
     const h = 'health,status,index,uuid,pri,rep,docs.count,docs.deleted,store.size,pri.store.size,creation.date';
     return this.json('GET', `/_cat/indices/${encodeURIComponent(pattern)}?format=json&bytes=b&expand_wildcards=open,closed&h=${encodeURIComponent(h)}`);
   }
+  /**
+   * Every shard, with the bytes it occupies and where it sits.
+   *
+   * `bytes=b` because the default is a human string that cannot be sorted or summed, and
+   * the shards page ranks by size. Unassigned shards come back with an empty node and a
+   * reason, which is the row that matters most.
+   */
+  shardsAll() {
+    return this.json('GET',
+      '/_cat/shards?format=json&bytes=b&h=index,shard,prirep,state,node,store,docs,unassigned.reason&s=index,shard');
+  }
+
   shardsUnassigned() {
     return this.json('GET', '/_cat/shards?format=json&h=index,shard,prirep,state,unassigned.reason,node&s=state');
   }

@@ -54,8 +54,10 @@ function routeFor(a) {
   const t = `${a.title} ${a.detail || ''}`.toLowerCase();
   if (/snapshot|slm/.test(t)) return { page: 'snapshots', label: 'Snapshots & SLM' };
   if (/ilm/.test(t)) return { page: 'indices', label: 'Indices' };
-  if (/shard/.test(t)) return { page: 'nodes', label: 'Nodes & shards' };
-  if (/disk/.test(t)) return { page: 'nodes', label: 'Nodes & shards' };
+  if (/shard/.test(t)) return { page: 'shards', label: 'Shards' };
+  // A disk alert is a placement problem: the page that can act on it is the one that
+  // moves shards off the full node.
+  if (/disk/.test(t)) return { page: 'shards', label: 'Shards' };
   return { page: 'overview', label: 'Clusters' };
 }
 
