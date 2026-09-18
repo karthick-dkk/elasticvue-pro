@@ -355,6 +355,94 @@ if (config.clusters.length >= 2) {
     `an unreadable repository is unknown, not empty: ${al[0] && al[0].detail}`);
 }
 
+/* -------------------- tasks: one request, applied to many clusters -------------------- */
+
+// Last of the crafted-state sections, and after the snapshot one, because it replaces the
+// clients with stubs that answer without a network.
+{
+  const st = await load('core/state.js');
+  const tasks = await load('core/tasks.js');
+  const { DEFAULTS } = await load('core/config.js');
+
+  const role = tasks.taskById('security-role');
+  const user = tasks.taskById('security-user');
+  ok(!!role && !!user, 'the role and user tasks should both exist');
+
+  // What goes on the wire.
+  const r = role.build({ name: 'log reader', cluster_privileges: 'monitor, read_ilm',
+                         index_patterns: 'logstash-*, app-*', index_privileges: 'read' });
+  ok(r.method === 'PUT' && r.path === '/_security/role/log%20reader',
+    `role path should be escaped: ${r.method} ${r.path}`);
+  ok(JSON.stringify(r.body.cluster) === JSON.stringify(['monitor', 'read_ilm']),
+    `cluster privileges should split on commas: ${JSON.stringify(r.body.cluster)}`);
+  ok(r.body.indices && r.body.indices[0].names.length === 2 && r.body.indices[0].privileges[0] === 'read',
+    `index block: ${JSON.stringify(r.body.indices)}`);
+  // An indices block with patterns but no privileges is refused by Elasticsearch, so it
+  // must not be sent at all rather than sent empty.
+  const noPriv = role.build({ name: 'x', index_patterns: 'a-*', index_privileges: '' });
+  ok(!('indices' in noPriv.body), `an indices block with no privileges must be omitted: ${JSON.stringify(noPriv.body)}`);
+
+  const u = user.build({ name: 'analyst', password: 'hunter2-hunter2', roles: 'log-reader, monitoring_user' });
+  ok(u.path === '/_security/user/analyst' && u.body.password === 'hunter2-hunter2',
+    'the user request should carry the password it was given');
+  ok(u.body.roles.length === 2, `roles should split: ${JSON.stringify(u.body.roles)}`);
+  ok(!('full_name' in u.body), 'an empty optional field should be left out entirely');
+
+  // The credential never reaches anything that displays.
+  const shown = tasks.preview(user, { name: 'analyst', password: 'hunter2-hunter2', roles: 'r' });
+  ok(shown.body.password === '••••••••', `preview must redact the password, got "${shown.body.password}"`);
+  ok(!JSON.stringify(shown).includes('hunter2'), `the password leaked into the preview: ${JSON.stringify(shown)}`);
+
+  ok(tasks.missingFields(user, { name: 'a' }).length === 2,
+    'a user with no password and no roles is missing two required fields');
+  ok(tasks.missingFields(role, { name: 'a' }).length === 0, 'a role only requires a name');
+
+  // Running it. Stub clients, so nothing reaches a cluster.
+  const sent = [];
+  const stub = (id, behaviour) => [id, {
+    request: async (method, path, body, opts) => {
+      sent.push({ id, method, path, body, allowWrites: opts && opts.allowWrites });
+      if (behaviour === 'throw') throw new Error('connection reset');
+      if (behaviour === 'refuse') return { ok: false, status: 403, message: 'action not permitted' };
+      return { ok: true, status: 200 };
+    },
+  }];
+  st.state.defaults = { ...DEFAULTS, readOnly: true };
+  st.state.config = { clusters: [] };
+  st.state.clients = new Map([stub('a', 'ok'), stub('b', 'refuse'), stub('c', 'throw'), stub('d', 'ok')]);
+
+  // The pages rendered above may have left the session unlocked, which would make the
+  // next assertion pass for the wrong reason. Put the switch back and check it landed.
+  const writes = await load('core/writes.js');
+  await writes.setWritesUnlocked(false, { confirmFirst: false });
+  ok(writes.writesAllowed() === false,
+    'the premise of the next check is a locked session, and it is not locked');
+
+  // Locked means locked: nothing is sent at all.
+  let threw = null;
+  try { await tasks.runTask(role, { name: 'x' }, ['a']); } catch (e) { threw = e; }
+  ok(threw && /locked/.test(threw.message), `a locked session must refuse before sending: ${threw && threw.message}`);
+  ok(sent.length === 0, `nothing should have been sent while locked, ${sent.length} was`);
+
+  st.state.defaults = { ...DEFAULTS, readOnly: false };   // config allows writes
+  const res = await tasks.runTask(role, { name: 'log-reader', cluster_privileges: 'monitor' },
+    ['a', 'b', 'c', 'd']);
+  ok(res.length === 4, `every cluster should get a result, got ${res.length}`);
+  ok(res[0].ok === true && res[3].ok === true,
+    'a cluster refusing must not stop the ones after it');
+  ok(res[1].ok === false && /not permitted/.test(res[1].message), `refusal: ${JSON.stringify(res[1])}`);
+  ok(res[2].ok === false && /connection reset/.test(res[2].message), `thrown error: ${JSON.stringify(res[2])}`);
+  ok(sent.length === 4 && sent.every((x) => x.allowWrites === true),
+    'every task request must carry allowWrites');
+
+  // A missing field is refused before anything is sent, not halfway through.
+  sent.length = 0;
+  threw = null;
+  try { await tasks.runTask(user, { name: 'a' }, ['a', 'd']); } catch (e) { threw = e; }
+  ok(threw && /fill in/.test(threw.message), `incomplete task: ${threw && threw.message}`);
+  ok(sent.length === 0, `an incomplete task must send nothing, sent ${sent.length}`);
+}
+
 /* ------------------------------------ verdict ------------------------------------ */
 
 restoreConsole();
@@ -363,6 +451,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: strip, console target, folding, both volume sheets, alert hand-off, scoped refresh and the snapshot window');
+console.log('ok: strip, console target, folding, volume sheets, alert hand-off, scoped refresh, snapshot window and fleet tasks');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);
