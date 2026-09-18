@@ -227,6 +227,134 @@ await go('volume');
   }
 }
 
+/* ------------- an alert hands over the cluster, not just the page ------------- */
+
+{
+  const { navigateTo } = await load('core/intent.js');
+  const state = (await load('core/state.js')).state;
+  const target = config.clusters[config.clusters.length - 1];
+
+  await go('overview');
+  state.selected = 'all';
+  navigateTo('nodes', null, { cluster: target.id });
+  await settleFor(350);
+  ok(state.selected === target.id,
+    `hand-off: selected is "${state.selected}", expected "${target.id}" — the page opened on the wrong cluster`);
+  ok((window.location.hash || '').includes('nodes'),
+    `hand-off: landed on "${window.location.hash}", expected the nodes page`);
+
+  // A page that can show the whole fleet must keep the named cluster too, or the fleet
+  // preference quietly puts "All clusters" back and the hand-off does nothing.
+  state.selected = 'all';
+  navigateTo('snapshots', null, { cluster: target.id });
+  await settleFor(350);
+  ok(state.selected === target.id,
+    `hand-off to a fleet page: selected is "${state.selected}", expected "${target.id}"`);
+
+  // No cluster named means no opinion about the selection.
+  state.selected = 'all';
+  navigateTo('overview');
+  await settleFor(300);
+  ok(state.selected === 'all', `plain navigation should not change the selection, got "${state.selected}"`);
+}
+
+/* ------------------ refresh follows the cluster picker ------------------ */
+
+if (config.clusters.length >= 2) {
+  const st = await load('core/state.js');
+  const [a, b] = config.clusters;
+  const seen = () => [st.state.data.get(a.id), st.state.data.get(b.id)];
+
+  // fetchOverview replaces the whole data object, so identity is how "was this one
+  // refreshed" is answered without instrumenting the fetch.
+  st.state.selected = a.id;
+  let [a0, b0] = seen();
+  await st.refreshAll({ force: true, selected: true });
+  let [a1, b1] = seen();
+  ok(a1 !== a0, 'refresh with one cluster selected did not refresh that cluster');
+  ok(b1 === b0, 'refresh with one cluster selected also refreshed the other one');
+
+  st.state.selected = 'all';
+  [a0, b0] = seen();
+  await st.refreshAll({ force: true, selected: true });
+  [a1, b1] = seen();
+  ok(a1 !== a0 && b1 !== b0, 'refresh on "All clusters" should refresh every cluster');
+}
+
+/* ----------- the last five snapshots, per repository, with crafted state ----------- */
+
+// Last, and deliberately: this replaces state.config and state.data wholesale, so every
+// section above has to have had its turn with the real fixture first.
+{
+  const st = await load('core/state.js');
+  const { DEFAULTS } = await load('core/config.js');
+  const DAY = 86400000;
+  const now = Date.now();
+  const snap = (id, status, ageDays) => ({
+    id, status, start: now - ageDays * DAY, end: now - ageDays * DAY, failed: 0,
+  });
+  const setup = (repos, snapshots) => {
+    st.state.defaults = { ...DEFAULTS };
+    st.state.config = { clusters: [{ id: 'c1', name: 'prod', url: 'http://es:9200', enabled: true }] };
+    st.state.selected = 'all';
+    st.state.clients = new Map([['c1', { state: 'online' }]]);
+    st.state.data = new Map([['c1', { reachable: true, health: { status: 'green' }, repos, snapshots, slm: [] }]]);
+  };
+  const snapAlerts = () => st.alerts().filter((x) => x.key.includes(':repo:'));
+
+  ok(st.SNAPSHOT_WINDOW === 5, `the snapshot window should be 5, is ${st.SNAPSHOT_WINDOW}`);
+
+  // Two repositories are two answers. One broken, one fine.
+  setup([{ name: 'daily', error: null }, { name: 'weekly', error: null }], {
+    daily: [snap('d3', 'SUCCESS', 0.2), snap('d2', 'SUCCESS', 1.2), snap('d1', 'SUCCESS', 2.2)],
+    weekly: [snap('w5', 'FAILED', 0.3), snap('w4', 'FAILED', 1.3), snap('w3', 'FAILED', 2.3),
+             snap('w2', 'SUCCESS', 3.3), snap('w1', 'SUCCESS', 4.3)],
+  });
+  let al = snapAlerts();
+  ok(al.length === 1, `two repos with one broken should raise one alert, raised ${al.length}`);
+  ok(al[0] && al[0].repo === 'weekly', `the alert should name the broken repository, named "${al[0] && al[0].repo}"`);
+  ok(al[0] && al[0].level === 'critical', `a failing repository is critical, got "${al[0] && al[0].level}"`);
+  ok(al[0] && Math.round((now - al[0].failingSince) / DAY) === 2,
+    'failing-since should be the oldest run of the failing streak, not the newest');
+  ok(al[0] && al[0].snapshot && al[0].snapshot.isNew === true,
+    'the newest run is recent, so isNew is true even though it failed');
+  ok(al[0] && !/unknown/.test(al[0].detail), `the detail printed "unknown" for a date it has: ${al[0] && al[0].detail}`);
+
+  // A failure older than the window is not this week's problem.
+  setup([{ name: 'daily', error: null }], {
+    daily: [snap('s6', 'SUCCESS', 0.2), snap('s5', 'SUCCESS', 1.2), snap('s4', 'SUCCESS', 2.2),
+            snap('s3', 'SUCCESS', 3.2), snap('s2', 'SUCCESS', 4.2), snap('s1', 'FAILED', 5.2)],
+  });
+  ok(snapAlerts().length === 0, 'a failure older than the five-run window must not raise an alert');
+
+  // A window that is entirely failures started before we looked, and says so.
+  setup([{ name: 'daily', error: null }], {
+    daily: [snap('f5', 'FAILED', 0.2), snap('f4', 'FAILED', 1.2), snap('f3', 'FAILED', 2.2),
+            snap('f2', 'FAILED', 3.2), snap('f1', 'FAILED', 4.2), snap('f0', 'FAILED', 5.2)],
+  });
+  al = snapAlerts();
+  ok(al.length === 1 && /or earlier/.test(al[0].detail),
+    `a full window of failures should say the start may be older: ${al[0] && al[0].detail}`);
+
+  // Successful but old is a stopped schedule, not a broken one.
+  setup([{ name: 'daily', error: null }], { daily: [snap('old', 'SUCCESS', 4)] });
+  al = snapAlerts();
+  ok(al.length === 1 && al[0].level === 'warning', 'a stale-but-successful repository is a warning');
+  ok(al[0] && al[0].snapshot.isNew === false, 'a four-day-old snapshot is not new');
+  ok(al[0] && /succeeded at 20/.test(al[0].detail), `the stale detail should date the run: ${al[0] && al[0].detail}`);
+
+  setup([{ name: 'daily', error: null }], { daily: [snap('good', 'SUCCESS', 0.1)] });
+  ok(snapAlerts().length === 0, 'a healthy recent repository should raise nothing');
+
+  setup([{ name: 'daily', error: null }], { daily: [snap('p', 'PARTIAL', 0.1), snap('ok', 'SUCCESS', 1.1)] });
+  ok(snapAlerts().length === 1, 'PARTIAL is a failed run');
+
+  setup([{ name: 'broken', error: 'connect timed out' }], { broken: [] });
+  al = snapAlerts();
+  ok(al.length === 1 && /unknown, not empty/.test(al[0].detail),
+    `an unreadable repository is unknown, not empty: ${al[0] && al[0].detail}`);
+}
+
 /* ------------------------------------ verdict ------------------------------------ */
 
 restoreConsole();
@@ -235,6 +363,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: status strip, REST console target, chart folding and both volume sheets behave');
+console.log('ok: strip, console target, folding, both volume sheets, alert hand-off, scoped refresh and the snapshot window');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);

@@ -454,11 +454,23 @@ export function parseIndexName(name, reSrc, row = {}) {
 
 /* --------------------------------- refreshing -------------------------------- */
 
-export async function refreshAll({ force = false } = {}) {
+/**
+ * Re-read the fleet, or just the part of it being looked at.
+ *
+ * `selected: true` follows the cluster picker — one cluster when one is chosen, the whole
+ * fleet on "All clusters". That is what the Refresh button means: refresh what is on
+ * screen, not eleven clusters because one of them is.
+ *
+ * Everything else still sweeps the fleet, deliberately. Auto-refresh feeds the alert list
+ * and the tab badge, which cover every cluster whichever one is selected, and a fleet
+ * that only updated the cluster in front of you would go quietly stale everywhere else —
+ * the failure being watched for is usually on the cluster nobody is looking at.
+ */
+export async function refreshAll({ force = false, selected = false } = {}) {
   if (state.refreshing || !state.config) return;
   state.refreshing = true;
   bus.emit('refreshing', true);
-  const targets = clusters().filter((c) => {
+  const targets = (selected ? activeClusters() : clusters()).filter((c) => {
     const cl = state.clients.get(c.id);
     return force || !cl || cl.state === 'online' || cl.state === 'unknown' || cl.canTryNow;
   });
@@ -500,7 +512,7 @@ export function stopAutoRefresh() {
  */
 export function alerts() {
   const out = [];
-  const add = (a) => out.push(a);
+  const add = (...a) => out.push(...a.filter(Boolean));
   for (const c of clusters()) {
     const d = state.data.get(c.id);
     const cl = state.clients.get(c.id);
@@ -537,6 +549,20 @@ export function alerts() {
         detail: `${sp.latest.docs.toLocaleString()} documents on ${sp.latestDay} against a ` +
                 `${Math.round(sp.baseline).toLocaleString()} average over the previous ${sp.baselineDays} days` });
     }
+    // Snapshots, per repository, over the last five runs and no further back.
+    //
+    // A repository that has been running for a year holds hundreds of snapshots, and
+    // whether the one from March failed says nothing about whether backups work today.
+    // Five is enough to tell a bad night from a broken schedule, and short enough that
+    // the answer is about now.
+    //
+    // Per repository rather than per cluster: two repositories are two different places
+    // the data is being written to, and one of them failing while the other succeeds is
+    // exactly the case a merged view hides.
+    for (const repo of d.repos || []) {
+      add(...snapshotAlertsFor(c, repo, ((d.snapshots || {})[repo.name]) || []));
+    }
+
     (d.slm || []).forEach((p) => {
       const lf = p.last_failure, ls = p.last_success;
       if (lf && (!ls || lf.time > ls.time)) add({ key: `${c.id}:slm-fail:${p.id}`, level: 'critical', cluster: c, title: `${c.name}/${p.id}: last SLM run failed`, detail: String(lf.details || '').slice(0, 160) });
@@ -549,6 +575,80 @@ export function alerts() {
   for (const a of automationAlerts((id) => clusters().find((c) => c.id === id))) add(a);
 
   return out;
+}
+
+/** Snapshot alerts look this far back, and no further. */
+export const SNAPSHOT_WINDOW = 5;
+
+const SNAP_BAD = new Set(['FAILED', 'PARTIAL']);
+const snapDay = (ms) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : 'unknown');
+
+/**
+ * What the last five snapshots in one repository say about it.
+ *
+ * Returns the alerts for that repository — never more than one, because "it is failing"
+ * and "it is stale" are the same problem seen twice and two rows for one repository is
+ * how an alert list stops being read.
+ *
+ * When something is failing, the useful figure is not that it failed but since when. That
+ * is the oldest run in the unbroken failing streak counting back from the newest: a repo
+ * that failed last night and has failed every night since reads as one problem starting
+ * then, not five. If the streak fills the whole window the start is older than we looked,
+ * and the alert says so rather than naming the fifth-oldest run as the beginning.
+ */
+function snapshotAlertsFor(c, repo, all) {
+  const key = `${c.id}:repo:${repo.name}`;
+  if (repo.error) {
+    return [{ key: `${key}:unreadable`, level: 'warning', cluster: c, repo: repo.name,
+      title: `${c.name}/${repo.name}: repository could not be read`,
+      detail: `${repo.error}. Snapshot coverage for this repository is unknown, not empty.` }];
+  }
+
+  const recent = all.slice(0, SNAPSHOT_WINDOW);   // fetchSnapshots sorts newest first
+  if (!recent.length) {
+    return [{ key: `${key}:none`, level: 'warning', cluster: c, repo: repo.name,
+      title: `${c.name}/${repo.name}: no snapshots`,
+      detail: 'The repository is registered but holds none.' }];
+  }
+
+  const latest = recent[0];
+  const staleMs = state.defaults.snapshotStaleHours * 3600 * 1000;
+  const isNew = Date.now() - latest.start <= staleMs;
+  // Carried structurally as well as in the prose so the alerts table can show the date
+  // and the new/old answer in their own column rather than making them be read out of a
+  // sentence.
+  const snapshot = {
+    repo: repo.name, id: latest.id, at: latest.start,
+    status: String(latest.status || '').toUpperCase(), isNew,
+    windowChecked: recent.length, windowTotal: all.length,
+  };
+
+  let streak = 0;
+  while (streak < recent.length && SNAP_BAD.has(String(recent[streak].status || '').toUpperCase())) streak++;
+
+  if (streak) {
+    const since = recent[streak - 1];
+    const older = streak === recent.length && all.length > recent.length;
+    return [{
+      key: `${key}:failing`, level: 'critical', cluster: c, repo: repo.name, snapshot,
+      failingSince: since.start,
+      title: `${c.name}/${repo.name}: ${streak} of the last ${recent.length} snapshots failed`,
+      detail: `Failing since ${snapDay(since.start)} (${since.id})`
+            + `${older ? ' — or earlier; every run in the window failed' : ''}. `
+            + `Newest ${latest.id} is ${snapshot.status} at ${snapDay(latest.start)}.`,
+    }];
+  }
+
+  if (!isNew) {
+    return [{
+      key: `${key}:stale`, level: 'warning', cluster: c, repo: repo.name, snapshot,
+      title: `${c.name}/${repo.name}: newest snapshot is not recent`,
+      detail: `${latest.id} succeeded at ${snapDay(latest.start)}, which is older than the `
+            + `${state.defaults.snapshotStaleHours}h this cluster allows. The last `
+            + `${recent.length} runs all succeeded, so the schedule stopped rather than broke.`,
+    }];
+  }
+  return [];
 }
 
 /** Spikes the Indices page found for this cluster, if it has been asked to look. */

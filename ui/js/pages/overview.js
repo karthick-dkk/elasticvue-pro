@@ -237,7 +237,7 @@ function summaryCard(rows, all) {
   return card('Cluster summary', sub,
     table(headers, trs, { emptyText: total ? 'No cluster matches the search' : 'No clusters configured' }),
     [h('button.btn.sm', { onclick: () => exportSummary(rows) }, 'Export CSV'),
-     isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Refresh')]);
+     isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true, selected: true }) }, 'Refresh')]);
 }
 
 function detail(c, d) {

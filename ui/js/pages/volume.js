@@ -83,7 +83,7 @@ function draw() {
         sel.value = ui.view; return sel;
       })()),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
-        h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'),
+        h('button.btn.sm', { onclick: () => refreshAll({ force: true, selected: true }) }, '↻ Refresh'),
         h('button.btn.sm.primary', {
           title: ui.view === 'summary'
             ? 'One row per cluster, every parameter as a column — the full report, not the summary above'

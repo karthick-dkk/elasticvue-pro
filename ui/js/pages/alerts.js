@@ -133,7 +133,7 @@ function draw() {
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'flex-end' } },
         h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
         h('button.btn.sm', { onclick: () => { ui.level = 'all'; ui.cluster = 'all'; ui.text = ''; ui.show = 'open'; draw(); } }, 'Clear'),
-        h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, '↻ Refresh'))),
+        h('button.btn.sm', { onclick: () => refreshAll({ force: true, selected: true }) }, '↻ Refresh'))),
 
     ui.view !== 'table' && all.length
       ? h('div', { style: { marginTop: '10px' } }, graphView(rows, all))
@@ -352,6 +352,7 @@ function alertTable(rows) {
         acked ? h('div.muted', { style: { fontSize: '10.5px' } },
           `ack ${rec.ackedBy || 'operator'} · ${ago(rec.ackedAt)}`) : null),
       h('td.muted', { style: { fontSize: '12px', maxWidth: '360px', wordBreak: 'break-word' } }, a.detail || ''),
+      h('td', snapshotCell(a)),
       h('td', acked ? pill('acknowledged', 'grey') : pill('open', a.level === 'critical' ? 'red' : 'yellow')),
       h('td', (() => {
         const btn = h('button.btn.sm.ghost', {
@@ -368,14 +369,39 @@ function alertTable(rows) {
         rowMenu([
           { label: 'Notes & comments…', icon: '💬',
             onClick: (e) => openNotes(e.target.closest('button') || e.target, a) },
-          { label: `Go to ${r.label}`, icon: ICON.console, onClick: () => navigateTo(r.page) },
+          { label: `Go to ${r.label}`, icon: ICON.console,
+            onClick: () => navigateTo(r.page, null, { cluster: a.cluster ? a.cluster.id : null }) },
           { sep: true },
           { hint: `key: ${a.key}` },
         ], { title: `Actions for ${a.title}` })))));
 
   });
-  return table(['Level', 'Cluster', 'Alert', 'Detail', 'State', 'Notes', ''], trs,
+  return table(['Level', 'Cluster', 'Alert', 'Detail', 'Snapshot', 'State', 'Notes', ''], trs,
     { emptyText: ui.show === 'open' ? 'Nothing open — every alert here is acknowledged.' : 'No alert matches the filter' });
+}
+
+/**
+ * The snapshot an alert is about: which repository, when it ran, and whether that counts
+ * as recent.
+ *
+ * In its own column rather than inside the sentence. "Is the backup current" is the
+ * question this page gets asked most, and an answer that has to be read out of prose in a
+ * detail cell is one nobody reads. Blank for every alert that is not about a snapshot —
+ * most of them.
+ */
+function snapshotCell(a) {
+  const s = a.snapshot;
+  if (!s) return h('span.muted', '–');
+  return h('div', { style: { display: 'grid', gap: '2px', minWidth: '150px' } },
+    h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+      pill(s.isNew ? 'new' : 'not new', s.isNew ? 'green' : 'yellow'),
+      h('span.mono', { style: { fontSize: '11px' } }, s.status || '')),
+    h('div.muted', { style: { fontSize: '11px' }, title: `${s.id} in ${s.repo}` },
+      `${dt(s.at)} · ${s.repo}`),
+    a.failingSince
+      ? h('div', { style: { fontSize: '11px', color: 'var(--critical)' } },
+          `failing since ${dt(a.failingSince)}`)
+      : null);
 }
 
 function exportAlerts(all) {
@@ -388,6 +414,12 @@ function exportAlerts(all) {
         url: a.cluster ? a.cluster.url : '',
         alert: a.title,
         detail: a.detail || '',
+        repository: a.snapshot ? a.snapshot.repo : '',
+        snapshot: a.snapshot ? a.snapshot.id : '',
+        snapshot_date: a.snapshot ? new Date(a.snapshot.at).toISOString() : '',
+        snapshot_status: a.snapshot ? a.snapshot.status : '',
+        snapshot_is_new: a.snapshot ? (a.snapshot.isNew ? 'yes' : 'no') : '',
+        failing_since: a.failingSince ? new Date(a.failingSince).toISOString() : '',
         state: rec.acked ? 'acknowledged' : 'open',
         acknowledged_by: rec.ackedBy || '',
         acknowledged_at: rec.ackedAt ? new Date(rec.ackedAt).toISOString() : '',

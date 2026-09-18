@@ -329,7 +329,10 @@ function renderTopbar() {
           h('input', { type: 'file', accept: '.json,application/json',
             style: { position: 'absolute', inset: '0', opacity: '0', cursor: 'pointer' },
             onchange: (e) => openSnapshot(e.target.files[0]) }))
-      : h('button.btn.sm', { onclick: () => refreshAll({ force: true }), title: 'Refresh now (r)' }, '↻ Refresh'),
+      : h('button.btn.sm', {
+          onclick: () => refreshAll({ force: true, selected: true }),
+          title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
+        }, '↻ Refresh'),
     h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme}` },
       theme === 'dark' ? '\u25D1 Dark' : theme === 'light' ? '\u25CB Light' : '\u25D2 System'),
     // Only where accounts exist. The portable build has nobody to sign out.
@@ -542,7 +545,16 @@ bus.on('data', () => { renderNav(); const p = PAGES.find((x) => x.id === current
 
 window.addEventListener('evp:navigate', (e) => {
   const id = e.detail && e.detail.page;
-  if (id && PAGES.some((p) => p.id === id)) go(id);
+  if (!id || !PAGES.some((p) => p.id === id)) return;
+  // Arriving with a cluster named means arriving AT that cluster. The fleet preference
+  // has to give way or resolveSelection puts "All clusters" straight back on a page that
+  // can show one, and the hand-off silently does nothing.
+  const wanted = e.detail && e.detail.cluster;
+  if (wanted && clusters().some((c) => c.id === wanted)) {
+    state.selected = wanted;
+    fleetView = false;
+  }
+  go(id);
 });
 
 window.addEventListener('hashchange', () => {
@@ -556,7 +568,7 @@ document.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Number keys used to jump between pages. They are gone: a stray digit moving the
   // page out from under someone is worse than the shortcut was worth.
-  if (e.key === 'r' && !isSnapshotMode()) refreshAll({ force: true });
+  if (e.key === 'r' && !isSnapshotMode()) refreshAll({ force: true, selected: true });
 });
 
 // Reload config from disk when the file changed and the window regains focus.
