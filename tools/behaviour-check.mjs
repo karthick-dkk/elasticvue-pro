@@ -568,15 +568,46 @@ await go('logs');
 
   // End to end: switch to the delay view, check the fleet, fetch, read the table.
   {
-    // The delay view follows the cluster selector, and "all" is the case worth driving:
-    // it is the only one where the fan-out actually fans out.
+    // The page must arrive on the fleet selection rather than collapsing it. It used to
+    // be marked single-cluster, which silently reduced "all" to the first cluster on the
+    // way in — and would have made the fan-out below fan out to exactly one.
     const stateMod = await load('core/state.js');
-    stateMod.state.selected = 'all';
+    ok(stateMod.state.selected === 'all',
+      `logs: opening the page left the selection on "${stateMod.state.selected}", not the fleet`);
     const fleet = stateMod.activeClusters().length;
     ok(fleet === config.clusters.length,
-      `logs: ${fleet} active clusters with "all" selected, expected ${config.clusters.length}`);
+      `logs: ${fleet} active clusters, expected ${config.clusters.length}`);
 
     const pane = doc.getElementById('view');
+
+    // The other half of making the page fleet-wide: a tail is one cluster's stream, so
+    // with several selected it must say which one it is following and let that be
+    // changed — without narrowing the fleet the delay view measures.
+    const tailPick = [...pane.querySelectorAll('label.field')]
+      .find((l) => /Tailing/.test(l.textContent));
+    ok(!!tailPick, 'logs: no tail cluster picker with several clusters selected');
+    if (tailPick) {
+      const opts = [...tailPick.querySelectorAll('option')].map((o) => o.value);
+      ok(opts.length === config.clusters.length,
+        `tail picker: ${opts.length} options for ${config.clusters.length} clusters`);
+      ok(!opts.includes('all'), 'a tail cannot follow every cluster at once');
+      const sel2 = tailPick.querySelector('select');
+      const other = opts.find((o) => o !== sel2.value);
+      sel2.value = other;
+      sel2.dispatchEvent(new window.Event('change', { bubbles: true }));
+      await settleFor(400);
+      ok(stateMod.state.selected === 'all',
+        'changing which cluster is tailed must not narrow the fleet selection');
+      // The picker is redrawn from whichever cluster the tail actually resolved to, so
+      // a tail that ignored the choice snaps the control back to the first cluster.
+      // Both fixture clusters share a URL, so the documents cannot tell them apart —
+      // this is the only observable proof the choice was honoured.
+      const after = [...pane.querySelectorAll('label.field')]
+        .find((l) => /Tailing/.test(l.textContent));
+      const now = after && after.querySelector('select').value;
+      ok(now === other, `the tail did not follow the picked cluster: shows "${now}", picked "${other}"`);
+    }
+
     const toDelay = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Log delay');
     ok(!!toDelay, 'logs: no "Log delay" view button');
     toDelay.click();

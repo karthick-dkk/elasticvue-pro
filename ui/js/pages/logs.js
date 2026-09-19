@@ -27,6 +27,15 @@ const ui = {
   field: 'any',
   term: '',
   view: 'tail',
+  /**
+   * Which cluster the live tail follows.
+   *
+   * The page is fleet-wide because the delay view is, but a tail is one stream of one
+   * cluster's documents — merging several would produce a list whose order means
+   * nothing. So the tail picks one and names it, instead of the page quietly reducing
+   * the fleet selection to a single cluster on the way in, which is what it used to do.
+   */
+  tailClusterId: '',
   size: 200,
   running: false,
   error: null,
@@ -85,7 +94,26 @@ export function render(el) {
 export function onData() {}
 export function onLeave() { stopTail(); stopWatch(); }
 
-function cluster() { return activeClusters()[0] || null; }
+/** The cluster the live tail is following: the chosen one, or the first available. */
+function cluster() {
+  const active = activeClusters();
+  return active.find((c) => c.id === ui.tailClusterId) || active[0] || null;
+}
+
+/**
+ * The tail's own cluster picker, shown only when there is a choice to make.
+ *
+ * It sets a page-local field rather than the global selector: changing which cluster is
+ * being tailed must not silently narrow the fleet the delay view is measuring.
+ */
+function tailClusterPicker() {
+  const active = activeClusters();
+  if (active.length < 2) return null;
+  const sel = h('select', { onchange: (e) => { ui.tailClusterId = e.target.value; stopTail(); search(); } },
+    ...active.map((c) => h('option', { value: c.id }, c.name)));
+  sel.value = (cluster() || {}).id || '';
+  return h('label.field', { title: 'A tail follows one cluster at a time' }, 'Tailing', sel);
+}
 
 /** Which concrete daily indices does the picked range touch? */
 function targetIndices(c) {
@@ -205,6 +233,7 @@ function draw() {
   sel.value = ui.sourceFilter;
 
   const bar = h('div.toolbar',
+    tailClusterPicker(),
     h('label.field', 'Source', sel),
     h('label.field', 'From', h('input', { type: 'datetime-local', value: ui.from, onchange: (e) => { ui.from = e.target.value; } })),
     h('label.field', 'To', h('input', { type: 'datetime-local', value: ui.to, onchange: (e) => { ui.to = e.target.value; } })),
