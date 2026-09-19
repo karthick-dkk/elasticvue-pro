@@ -189,3 +189,120 @@ test('a fleet where nothing can be analysed has nothing to fetch, and no gap', (
   const c = ld.delayCoverage([entry({ pre: noPre }), entry({ pre: unknownPre })], 'fetch');
   assert.deepEqual(c, { total: 0, ok: 0, failed: 0, skipped: 0 });
 });
+
+/* --------------------------- one device, close up --------------------------- */
+
+test('an address is recognised, a hostname is not', () => {
+  for (const v of ['10.1.2.3', '192.168.64.12', '0.0.0.0', '255.255.255.255',
+                   '2001:db8::1', 'fe80::1%eth0', '[2001:db8::1]', '::1']) {
+    assert.equal(ld.looksLikeIp(v), true, `${v} should read as an address`);
+  }
+  for (const v of ['fw-core-02', 'host.example.com', '10.1.2', '10.1.2.3.4',
+                   '256.1.1.1', '', null, 'not-an-ip', '1.2.3.4x']) {
+    assert.equal(ld.looksLikeIp(v), false, `${JSON.stringify(v)} should not read as an address`);
+  }
+});
+
+test('a hostname is looked up in the grouping field, an address is not', () => {
+  const resolved = { device: 'src_hostname.keyword', arrival: '@timestamp', eventTime: 'ingested_time',
+                     metadata: ['src_ip', 'log_type', 'host.ip'] };
+  assert.deepEqual(ld.deviceFieldsFor('fw-core-02', resolved), ['src_hostname']);
+  // The address is in src_ip even when the report groups by hostname — looking it up in
+  // the hostname field would find nothing and read as "this device has gone silent".
+  assert.deepEqual(ld.deviceFieldsFor('10.1.2.3', resolved), ['src_ip', 'host.ip']);
+});
+
+test('an address with no address field falls back rather than searching the hostname', () => {
+  const resolved = { device: 'src_hostname.keyword', arrival: '@timestamp', eventTime: 'ingested_time',
+                     metadata: ['log_type'] };
+  assert.deepEqual(ld.deviceFieldsFor('10.1.2.3', resolved), ['src_ip']);
+});
+
+test('the device query matches both the raw field and its keyword twin', () => {
+  const resolved = { device: 'src_hostname.keyword', arrival: '@timestamp', eventTime: 'ingested_time', metadata: [] };
+  const q = ld.buildDeviceQuery(resolved, { device: 'fw-core-02', size: 15 });
+  const should = q.query.bool.must[0].bool.should;
+  assert.deepEqual(should.map((c) => Object.keys(c.term)[0]).sort(), ['src_hostname', 'src_hostname.keyword']);
+  assert.equal(q.size, 15);
+  assert.equal(q.sort[0]['@timestamp'].order, 'desc');
+  assert.equal(q.track_total_hits, true);
+});
+
+test('an address query does not ask for a keyword twin it would never have', () => {
+  const resolved = { device: 'src_hostname.keyword', arrival: '@timestamp', eventTime: 'ingested_time',
+                     metadata: ['src_ip'] };
+  const q = ld.buildDeviceQuery(resolved, { device: '10.1.2.3' });
+  const should = q.query.bool.must[0].bool.should;
+  assert.deepEqual(should.map((c) => Object.keys(c.term)[0]), ['src_ip']);
+});
+
+const R = { device: 'src_hostname.keyword', arrival: '@timestamp', eventTime: 'ingested_time', metadata: [] };
+const hit = (arrival, event) => ({ _id: `${arrival}`, _index: 'logstash-2026.09.19',
+  _source: { '@timestamp': arrival, ingested_time: event } });
+
+test('a document whose clocks cannot be read is listed, not dropped', () => {
+  const docs = ld.documentDelays([
+    hit('2026-09-19T12:41:00Z', '2026-09-19T12:00:00Z'),
+    hit('2026-09-19T12:30:00Z', 'not a date'),
+  ], R);
+  assert.equal(docs.length, 2, 'the unreadable document is evidence, not noise');
+  assert.equal(docs[0].delayMinutes, 41);
+  assert.equal(docs[1].delayMinutes, null);
+  assert.equal(docs[1].status, 'ERROR', 'unmeasurable is never OK and never zero');
+});
+
+test('the close-up takes its status from the newest document', () => {
+  // Newest first, as the query sorts them. The device is delayed *now* even though most
+  // of its recent history was fine; an average would hide exactly the thing being
+  // watched for.
+  const s = ld.deviceSnapshot(ld.documentDelays([
+    hit('2026-09-19T12:45:00Z', '2026-09-19T12:00:00Z'),   // 45 — delayed
+    hit('2026-09-19T12:40:00Z', '2026-09-19T12:39:00Z'),   // 1
+    hit('2026-09-19T12:35:00Z', '2026-09-19T12:34:00Z'),   // 1
+  ], R));
+  assert.equal(s.latest, 45);
+  assert.equal(s.status, 'DELAYED');
+  assert.equal(s.median, 1);
+  assert.equal(s.max, 45);
+  assert.equal(s.min, 1);
+  assert.equal(s.measurable, 3);
+  assert.equal(s.unreadable, 0);
+});
+
+test('unreadable documents are counted but never averaged in', () => {
+  const s = ld.deviceSnapshot(ld.documentDelays([
+    hit('2026-09-19T12:41:00Z', '2026-09-19T12:00:00Z'),
+    hit('2026-09-19T12:30:00Z', ''),
+    hit('2026-09-19T12:20:00Z', ''),
+  ], R));
+  assert.equal(s.documents, 3);
+  assert.equal(s.measurable, 1);
+  assert.equal(s.unreadable, 2);
+  assert.equal(s.median, 41, 'the two unreadable documents must not pull the median to zero');
+});
+
+test('a device with nothing readable is unknown, not fine', () => {
+  const s = ld.deviceSnapshot(ld.documentDelays([hit('nope', 'nope')], R));
+  assert.equal(s.latest, null);
+  assert.equal(s.median, null);
+  assert.equal(s.status, 'ERROR');
+  assert.equal(s.trend, 'NO_TREND');
+});
+
+test('a device with no documents at all is not a zero delay', () => {
+  const s = ld.deviceSnapshot([]);
+  assert.equal(s.documents, 0);
+  assert.equal(s.latest, null);
+  assert.equal(s.status, 'ERROR');
+});
+
+test('the trend reads oldest to newest, not the order the query returned', () => {
+  // Newest first from the query; the delay has been climbing, so the trend is worsening.
+  const rising = ld.deviceSnapshot(ld.documentDelays([
+    hit('2026-09-19T13:00:00Z', '2026-09-19T12:00:00Z'),  // 60
+    hit('2026-09-19T12:55:00Z', '2026-09-19T12:00:00Z'),  // 55
+    hit('2026-09-19T12:20:00Z', '2026-09-19T12:15:00Z'),  // 5
+    hit('2026-09-19T12:10:00Z', '2026-09-19T12:08:00Z'),  // 2
+  ], R));
+  assert.equal(rising.trend, 'WORSENING', `a climbing delay read as ${rising.trend}`);
+});

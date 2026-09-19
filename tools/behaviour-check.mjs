@@ -651,6 +651,74 @@ await go('logs');
         showSel.dispatchEvent(new window.Event('change', { bubbles: true }));
         await settleFor(200);
       }
+
+      /* ------------------- one device, watched live ------------------- */
+
+      const watchRow = [...pane.querySelectorAll('table.tbl tbody tr')]
+        .find((tr) => tr.children[1] && tr.children[1].textContent.trim() === 'fw-core-02');
+      const watchBtn = watchRow && [...watchRow.querySelectorAll('button')].find((b) => b.textContent === 'Watch');
+      ok(!!watchBtn, 'delay table: no Watch button on a device row');
+      if (watchBtn) {
+        watchBtn.click();
+        await settleFor(900);
+        const live = [...pane.querySelectorAll('section.card')]
+          .find((sec) => /fw-core-02/.test((sec.querySelector('header h2') || {}).textContent || ''));
+        ok(!!live, `logs: no close-up card after pressing Watch — saw ${pane.textContent.slice(0, 160)}`);
+        if (live) {
+          ok(/matched as a hostname/.test(live.textContent),
+            'the close-up should say how the device was looked up');
+          const docRows = [...live.querySelectorAll('table.tbl tbody tr')]
+            .filter((tr) => tr.children.length === 5);
+          ok(docRows.length === 15, `close-up: ${docRows.length} document rows, expected 15`);
+          // The newest document carries the exact delay the fleet table reported, so the
+          // two views cannot disagree about what this device is doing.
+          const newest = docRows.length ? docRows[0].children[2].textContent.trim() : '(no rows)';
+          ok(newest === '41 min', `close-up: newest delay reads "${newest}", expected 41 min`);
+          ok(/delayed/.test(live.textContent), 'the close-up should carry the status');
+
+          // Pausing must stop it repeating; the button says which state it is in.
+          const pause = [...live.querySelectorAll('button')].find((b) => /Pause/.test(b.textContent));
+          ok(!!pause, 'close-up: no pause control on a view that polls');
+          if (pause) {
+            pause.click();
+            await settleFor(150);
+            const resumed = [...pane.querySelectorAll('button')].find((b) => /Resume/.test(b.textContent));
+            ok(!!resumed, 'close-up: pausing did not offer to resume');
+          }
+        }
+
+        // A device with a parser miss: the unreadable document is listed as evidence and
+        // must not be counted as a delay of zero.
+        const proxyRow = [...pane.querySelectorAll('table.tbl tbody tr')]
+          .find((tr) => tr.children[1] && tr.children[1].textContent.trim() === 'proxy-03');
+        const proxyBtn = proxyRow && [...proxyRow.querySelectorAll('button')].find((b) => b.textContent === 'Watch');
+        if (proxyBtn) {
+          proxyBtn.click();
+          await settleFor(900);
+          const live2 = [...pane.querySelectorAll('section.card')]
+            .find((sec) => /proxy-03/.test((sec.querySelector('header h2') || {}).textContent || ''));
+          ok(!!live2, 'logs: no close-up for proxy-03');
+          if (live2) {
+            ok(/unreadable/.test(live2.textContent),
+              'the close-up should say a document could not be read, not hide it');
+            const rows2 = [...live2.querySelectorAll('table.tbl tbody tr')].filter((tr) => tr.children.length === 5);
+            ok(rows2.length === 15, `close-up: ${rows2.length} rows — the unreadable document was dropped`);
+            // Guarded: a regression that empties the table should be reported as a
+            // problem, not thrown as a stack trace that stops every later case running.
+            const last = rows2.length ? rows2[rows2.length - 1].children[2].textContent.trim() : '(no rows)';
+            ok(last === 'unknown', `an unreadable document must read "unknown", read "${last}"`);
+          }
+          const close = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Close');
+          ok(!!close, 'close-up: no way to close it');
+          if (close) {
+            close.click();
+            await settleFor(200);
+            ok(![...pane.querySelectorAll('section.card')]
+              .some((sec) => /proxy-03 —/.test((sec.querySelector('header h2') || {}).textContent || '')),
+              'close-up: closing left the card on screen');
+          }
+        }
+      }
     }
   }
 

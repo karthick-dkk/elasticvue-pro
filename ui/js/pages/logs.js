@@ -11,6 +11,7 @@ import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
 import { card, empty, pill, table } from './common.js';
 import { preflight, buildSearchBody, recordFrom, summarise, delayCoverage,
+         buildDeviceQuery, documentDelays, deviceSnapshot, looksLikeIp,
          thresholds, STATUS } from '../core/log-delay.js';
 import { runBounded, cancellation, partialNote } from '../core/fleet.js';
 import { isSnapshotMode } from '../core/snapshot.js';
@@ -56,7 +57,14 @@ const delay = {
   at: 0,
   hours: 24,
   status: 'all',
+  /**
+   * One device, watched live. Null until somebody opens it — this is the only thing on
+   * the page that repeats on a timer, and it exists only while its card is on screen.
+   */
+  watch: null,             // { clusterId, device, docs, snap, error, at, running, seconds }
 };
+
+let watchTimer = null;
 
 function isoLocal(d) {
   const p = (n) => String(n).padStart(2, '0');
@@ -75,7 +83,7 @@ export function render(el) {
   if (!ui.hits.length && !ui.running) search();
 }
 export function onData() {}
-export function onLeave() { stopTail(); }
+export function onLeave() { stopTail(); stopWatch(); }
 
 function cluster() { return activeClusters()[0] || null; }
 
@@ -463,6 +471,9 @@ function delayView() {
   }
 
   return h('div', head,
+    // The close-up goes above the fleet table: it is what was just asked for, and
+    // scrolling past a hundred devices to find it would make the button feel broken.
+    delay.watch ? h('div', { style: { marginBottom: '10px' } }, watchCard()) : null,
     coverageCard(),
     delay.records ? h('div', { style: { marginTop: '10px' } }, resultsCard()) : null);
 }
@@ -531,6 +542,153 @@ function coverageCard() {
       table(['Cluster', 'Preflight', { label: 'Devices', num: true }, 'Detail'], trs)));
 }
 
+/* --------------------------- one device, watched live --------------------------- */
+
+/**
+ * How often the close-up re-asks. Fifteen seconds, not one: this is the only repeating
+ * request the app makes to a cluster, and a device that is forty minutes behind does not
+ * become interesting a second sooner for being asked four times as often.
+ */
+const WATCH_SECONDS = 15;
+
+function stopWatch() {
+  if (watchTimer) clearInterval(watchTimer);
+  watchTimer = null;
+}
+
+/** Close the close-up. The timer goes with it — nothing keeps polling off screen. */
+function closeWatch() {
+  stopWatch();
+  delay.watch = null;
+  draw();
+}
+
+/**
+ * Open the live view of one device.
+ *
+ * The device may be a hostname or an address, and which field it is looked up by depends
+ * on that — see `deviceFieldsFor`. Getting it wrong returns nothing, which on this
+ * screen reads as "this device has stopped shipping", so the decision is made in the
+ * engine and tested there rather than guessed here.
+ */
+function watchDevice(clusterId, device) {
+  const entry = delay.byCluster.get(clusterId);
+  if (!entry || !entry.pre || !entry.pre.ok) return;
+  stopWatch();
+  delay.watch = { clusterId, device, docs: null, snap: null, error: null, at: 0,
+                  running: false, seconds: WATCH_SECONDS, live: true };
+  draw();
+  pollWatch();
+  watchTimer = setInterval(() => {
+    // A card that has been closed, or a page that has been left, must not keep asking.
+    if (!delay.watch || !delay.watch.live || !host || !host.isConnected) { stopWatch(); return; }
+    pollWatch();
+  }, WATCH_SECONDS * 1000);
+}
+
+/** Pause and resume without losing what is already on screen. */
+function toggleWatchLive() {
+  if (!delay.watch) return;
+  delay.watch.live = !delay.watch.live;
+  if (delay.watch.live) pollWatch();
+  draw();
+}
+
+/** One round trip: the newest documents for this device, and what they add up to. */
+async function pollWatch() {
+  const w = delay.watch;
+  if (!w || w.running) return;
+  const c = activeClusters().find((x) => x.id === w.clusterId);
+  const entry = delay.byCluster.get(w.clusterId);
+  if (!c || !entry || !entry.pre || !entry.pre.ok) { w.error = 'This cluster is no longer available.'; draw(); return; }
+  w.running = true;
+  if (host && host.isConnected) draw();
+  try {
+    const body = buildDeviceQuery(entry.pre.resolved, {
+      device: w.device, size: 15, fields: (entry.pre.fields || null),
+    });
+    const res = await client(c.id).search(c.logIndexPattern || 'logstash-*', body,
+      { qs: 'ignore_unavailable=true&allow_no_indices=true', timeoutMs: 30000 });
+    const docs = documentDelays(((res.hits || {}).hits) || [], entry.pre.resolved, thresholds(c));
+    w.docs = docs;
+    w.snap = deviceSnapshot(docs, thresholds(c));
+    w.total = ((res.hits || {}).total || {}).value ?? null;
+    w.error = null;
+    w.at = Date.now();
+  } catch (e) {
+    const es = e.res && e.res.json && e.res.json.error;
+    // The previous documents stay on screen: they were true when they were fetched, and
+    // blanking them would turn one failed poll into "this device has no data".
+    w.error = (es && (es.reason || es.type)) || e.message || String(e);
+  } finally {
+    w.running = false;
+    if (host && host.isConnected) draw();
+  }
+}
+
+/** The close-up itself: what this one device is doing, document by document. */
+function watchCard() {
+  const w = delay.watch;
+  if (!w) return null;
+  const c = activeClusters().find((x) => x.id === w.clusterId);
+  const s = w.snap;
+
+  const head = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+    s ? pill(STATUS[s.status].label, STATUS[s.status].cls) : h('span.muted', 'asking…'),
+    s && s.latest !== null
+      ? h('b', { style: { fontSize: '15px' } }, fmtDelay(s.latest))
+      : h('span.muted', 'no measurable delay'),
+    s && s.trend !== 'NO_TREND'
+      ? pill(s.trend === 'WORSENING' ? 'getting worse' : 'improving', s.trend === 'WORSENING' ? 'red' : 'green')
+      : null,
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' } },
+      h('span.muted', { style: { fontSize: '11px' } },
+        w.running ? 'asking…' : w.at ? `updated ${ago(w.at)}` : ''),
+      h('button.btn.sm', { id: 'watch-live', onclick: toggleWatchLive },
+        w.live ? `⏸ Pause (every ${w.seconds}s)` : '▶ Resume'),
+      h('button.btn.sm', { id: 'watch-now', disabled: w.running, onclick: pollWatch }, '↻ Now'),
+      h('button.btn.sm.ghost', { id: 'watch-close', onclick: closeWatch }, 'Close')));
+
+  const figures = s ? table([], [
+    h('tr', h('td', { style: { color: 'var(--text-muted)', fontSize: '11.5px' } }, 'Newest document'),
+      h('td.mono', { style: { fontSize: '12px' } },
+        s.latest === null ? 'unknown' : fmtDelay(s.latest))),
+    h('tr', h('td', { style: { color: 'var(--text-muted)', fontSize: '11.5px' } }, 'Median of the last ' + s.measurable),
+      h('td.mono', { style: { fontSize: '12px' } }, s.median === null ? 'unknown' : fmtDelay(s.median))),
+    h('tr', h('td', { style: { color: 'var(--text-muted)', fontSize: '11.5px' } }, 'Range'),
+      h('td.mono', { style: { fontSize: '12px' } },
+        s.min === null ? 'unknown' : `${fmtDelay(s.min)} … ${fmtDelay(s.max)}`)),
+    h('tr', h('td', { style: { color: 'var(--text-muted)', fontSize: '11.5px' } }, 'Documents matched'),
+      h('td.mono', { style: { fontSize: '12px' } },
+        w.total === null ? 'unknown' : `${num(w.total)} in the window`)),
+  ]) : null;
+
+  const rows = (w.docs || []).map((d) => h('tr',
+    h('td.mono', { style: { fontSize: '11.5px' } }, d.event ? dt(d.event) : h('span.muted', 'unreadable')),
+    h('td.mono', { style: { fontSize: '11.5px' } }, d.arrival ? dt(d.arrival) : h('span.muted', 'unreadable')),
+    h('td.num', d.delayMinutes === null
+      ? h('span.muted', 'unknown')
+      : h('b', { style: { color: d.status === 'CRITICAL' ? 'var(--critical)'
+                        : d.status === 'DELAYED' ? 'var(--warning)' : 'inherit' } }, fmtDelay(d.delayMinutes))),
+    h('td', pill(STATUS[d.status].label, STATUS[d.status].cls)),
+    h('td.mono.muted', { style: { fontSize: '10.5px' } }, d.index)));
+
+  return card(`${w.device} — live`,
+    `${c ? c.name : 'unknown cluster'} · ${looksLikeIp(w.device) ? 'matched as an address' : 'matched as a hostname'}`
+    + (s && s.unreadable ? ` · ${s.unreadable} of ${s.documents} document(s) unreadable` : ''),
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      head,
+      w.error
+        ? h('div.banner.err', { style: { margin: 0, fontSize: '12px' } },
+            h('div', h('div.ttl', 'The last poll failed'), h('div.mono', w.error),
+              w.docs ? h('div.muted', { style: { fontSize: '11.5px' } },
+                'The documents below are from the last poll that worked, not from now.') : null))
+        : null,
+      figures,
+      table(['Event time', 'Arrival', { label: 'Delay', num: true }, 'Status', 'Index'], rows,
+        { emptyText: w.running ? 'Asking…' : 'No document matched this device in the index pattern.' })));
+}
+
 /** Every device across the fleet, worst first, with why and what to do about it. */
 function resultsCard() {
   const s = delay.summary;
@@ -559,7 +717,11 @@ function resultsCard() {
     h('td.num.muted', num(x.docs)),
     h('td.muted', { style: { fontSize: '11.5px' } }, x.arrival ? ago(x.arrival) : '—'),
     h('td.muted', { style: { fontSize: '11.5px', maxWidth: '320px', wordBreak: 'break-word' } },
-      x.patternNote || x.reason)));
+      x.patternNote || x.reason),
+    h('td', h('button.btn.sm', {
+      title: `Watch ${x.device} live`,
+      onclick: () => watchDevice(x.clusterId, x.device),
+    }, 'Watch'))));
 
   const tile = (k, n) => h('span', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center' } },
     pill(STATUS[k].label, STATUS[k].cls), h('b', num(n)));
@@ -582,7 +744,7 @@ function resultsCard() {
       h('div', { style: { display: 'flex', gap: '6px' } },
         h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV')),
       table(['Cluster', 'Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
-             { label: 'Docs', num: true }, 'Last seen', 'What it means'],
+             { label: 'Docs', num: true }, 'Last seen', 'What it means', ''],
         trs, { emptyText: delay.status === 'unhealthy' ? 'Every device is within threshold.' : 'No devices returned.' })));
 }
 

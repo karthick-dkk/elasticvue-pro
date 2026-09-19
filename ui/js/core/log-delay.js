@@ -403,3 +403,137 @@ export function delayCoverage(entries, phase = 'preflight') {
     skipped: list.filter((e) => !e.pre && e.state !== 'error').length,
   };
 }
+
+/* ------------------------- one device, close up ------------------------- */
+
+/**
+ * Is this an address rather than a name?
+ *
+ * It decides which field the device is looked up by, and getting it wrong means an empty
+ * result that looks like "this device has stopped shipping". Deliberately strict: a
+ * hostname that happens to be four numbers is not a thing, but a hostname containing a
+ * colon is, so IPv6 is only recognised in its real shapes.
+ */
+export function looksLikeIp(value) {
+  const v = String(value || '').trim();
+  if (!v) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
+    return v.split('.').every((o) => o.length <= 3 && Number(o) <= 255);
+  }
+  // IPv6: hex groups separated by colons, with at most one "::". Bracketed forms and a
+  // zone suffix both appear in log fields.
+  const bare = v.replace(/^\[|\]$/g, '').split('%')[0];
+  if (!bare.includes(':')) return false;
+  if ((bare.match(/::/g) || []).length > 1) return false;
+  return /^[0-9a-f:]+$/i.test(bare) && bare.split(':').filter(Boolean).every((g) => g.length <= 4);
+}
+
+/**
+ * Which fields to look a device up by.
+ *
+ * An address is not necessarily in the field the aggregation groups by — a report
+ * grouped by hostname still has the address in `src_ip` — so looking up "10.1.2.3" in
+ * the hostname field finds nothing and says the device is silent. Ported from
+ * `build_single_query` in ES_delay_finder.py, which draws the same distinction.
+ */
+export function deviceFieldsFor(value, resolved, fields) {
+  if (!looksLikeIp(value)) {
+    return [String(resolved.device || '').replace(/\.keyword$/, '')];
+  }
+  const meta = (fields && fields.metadata) || (resolved && resolved.metadata) || [];
+  // IP_LIKE is the same predicate that decides a field needs no `.keyword`, which is
+  // not a coincidence: an address field is mapped as an address, so it is both natively
+  // searchable and the place an address is found.
+  const ips = meta
+    .map((f) => String(f).replace(/\.keyword$/, ''))
+    .filter((f) => IP_LIKE.test(f));
+  return ips.length ? [...new Set(ips)] : ['src_ip'];
+}
+
+/**
+ * The search behind the close-up: the newest `size` documents for one device.
+ *
+ * Both the raw field and its `.keyword` twin are matched, because which one is the
+ * searchable one depends on a mapping this code does not get to see.
+ */
+export function buildDeviceQuery(resolved, { device, size = 15, fields = null } = {}) {
+  const names = deviceFieldsFor(device, resolved, fields);
+  const should = [];
+  for (const n of names) {
+    should.push({ term: { [n]: device } });
+    const kw = aggregatableName(n);
+    if (kw !== n) should.push({ term: { [kw]: device } });
+  }
+  return {
+    size,
+    track_total_hits: true,
+    sort: [{ [resolved.arrival]: { order: 'desc', unmapped_type: 'date' } }],
+    query: { bool: { must: [{ bool: { should, minimum_should_match: 1 } }] } },
+    _source: [resolved.arrival, resolved.eventTime,
+              ...(resolved.metadata || []).map((m) => String(m).replace(/\.keyword$/, ''))],
+  };
+}
+
+/**
+ * Per-document delay for one device, newest first.
+ *
+ * A document whose timestamps cannot both be read carries `delayMinutes: null` and is
+ * still listed — it is evidence, and dropping it would make the list look cleaner than
+ * the data is. It is the aggregate figures that exclude it, never the row.
+ */
+export function documentDelays(hits, resolved, t = DEFAULT_THRESHOLDS) {
+  return (hits || []).map((hit) => {
+    const src = (hit && hit._source) || {};
+    const arrival = Date.parse(dotted(src, resolved.arrival));
+    const event = Date.parse(dotted(src, resolved.eventTime));
+    const ok = isFinite(arrival) && isFinite(event);
+    const delayMinutes = ok ? (arrival - event) / 60000 : null;
+    return {
+      id: (hit && hit._id) || '',
+      index: (hit && hit._index) || '',
+      arrival: isFinite(arrival) ? arrival : null,
+      event: isFinite(event) ? event : null,
+      delayMinutes,
+      status: classify(delayMinutes, t),
+      meta: Object.fromEntries((resolved.metadata || []).map((m) => {
+        const plain = String(m).replace(/\.keyword$/, '');
+        return [plain, dotted(src, plain) ?? dotted(src, m) ?? ''];
+      })),
+    };
+  });
+}
+
+/**
+ * What a run of documents says about one device right now.
+ *
+ * `latest` is the newest measurable document, which is the number the status is taken
+ * from — the same definition the fleet table uses, so a device cannot read DELAYED in
+ * one place and OK in the other. `trend` needs four measurable samples and says
+ * NO_TREND below that rather than guessing from two.
+ */
+export function deviceSnapshot(docs, t = DEFAULT_THRESHOLDS) {
+  const measurable = (docs || []).filter((d) => d.delayMinutes !== null);
+  const unreadable = (docs || []).length - measurable.length;
+  if (!measurable.length) {
+    return {
+      documents: (docs || []).length, measurable: 0, unreadable,
+      latest: null, status: classify(null, t), trend: 'NO_TREND',
+      min: null, max: null, median: null,
+    };
+  }
+  const values = measurable.map((d) => d.delayMinutes);
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return {
+    documents: (docs || []).length,
+    measurable: measurable.length,
+    unreadable,
+    latest: values[0],
+    status: classify(values[0], t),
+    // Oldest to newest, which is the direction trend() reads.
+    trend: trend([...values].reverse()),
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    median: sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2,
+  };
+}

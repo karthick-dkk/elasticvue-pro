@@ -42,6 +42,44 @@ const SNAPSHOTS = Array.from({ length: 23 }, (_, i) => {
   };
 });
 
+/**
+ * The fixture's devices: one per status the classifier can produce, including the two
+ * that are easy to get wrong — a negative delay (the device's clock is ahead) and a
+ * delay sitting exactly on a whole hour, which is what a timezone misconfiguration
+ * looks like.
+ *
+ * [device, delayMinutes, logType, tag]
+ */
+const DEVICES = [
+  ['fw-edge-01',     2,    'firewall', 'acme'],
+  ['fw-core-02',     41,   'firewall', 'acme'],
+  ['proxy-03',       95,   'proxy',    'acme'],
+  ['vpn-04',         -37,  'vpn',      'beta'],
+  ['switch-05',      330,  'syslog',   'beta'],   // 5h30 — not a whole hour
+  ['router-06',      300,  'syslog',   'beta'],   // exactly 5h — timezone shape
+];
+
+/**
+ * The field/value pairs a single-device query is looking for, or null if this is not
+ * one.
+ *
+ * The field matters. A real cluster searching `src_ip` for a hostname finds nothing, so
+ * a fixture that matches on the value alone would let a page look a device up in the
+ * wrong field and still look correct here — which is the class of bug this fixture has
+ * had before.
+ */
+function termClauses(body) {
+  const must = (((body.query || {}).bool || {}).must) || [];
+  const out = [];
+  for (const m of must) {
+    for (const c of ((m.bool || {}).should) || []) {
+      const [field, value] = Object.entries(c.term || {})[0] || [];
+      if (typeof value === 'string' && value) out.push({ field: String(field).replace(/\.keyword$/, ''), value });
+    }
+  }
+  return out.length ? out : null;
+}
+
 const routes = [
   [(u) => u === '/', () => ({ cluster_name: 'mock', cluster_uuid: 'mock-uuid',
     version: { number: '8.13.4', lucene_version: '9.10.0' } })],
@@ -171,6 +209,44 @@ const routes = [
   [(u) => u.includes('/_search'), (hit) => {
     let body = {};
     try { body = JSON.parse(hit.body || '{}'); } catch { /* fall through to the hit list */ }
+
+    // The close-up: the newest documents for one device, looked up by hostname or by
+    // address. Answered from the same DEVICES table the aggregation uses, so the fixture
+    // cannot tell one story per device in the fleet table and a different one here.
+    const clauses = termClauses(body);
+    if (clauses) {
+      // src_hostname holds the name; src_ip holds the address. Asking the wrong field
+      // for the wrong kind of value matches nothing, exactly as a real cluster would.
+      const idx = DEVICES.findIndex(([name], i) => clauses.some(({ field, value }) =>
+        (field === 'src_hostname' && value === name) || (field === 'src_ip' && value === `10.0.0.${i + 1}`)));
+      if (idx < 0) {
+        return { took: 2, timed_out: false, hits: { total: { value: 0, relation: 'eq' }, hits: [] } };
+      }
+      const [device, mins, logType, tag] = DEVICES[idx];
+      const size = Math.min(Number(body.size) || 15, 50);
+      const now = Date.now();
+      const hits = Array.from({ length: size }, (_, n) => {
+        const arrival = now - 60000 - n * 60000;
+        // A little wobble, deterministic so a re-run says the same thing. The newest
+        // document keeps the exact delay the fleet table reported for this device.
+        const wobble = n === 0 ? 0 : ((n * 7) % 5) - 2;
+        const event = arrival - (mins + wobble) * 60000;
+        const src = {
+          '@timestamp': new Date(arrival).toISOString(),
+          ingested_time: new Date(event).toISOString(),
+          src_hostname: device,
+          src_ip: `10.0.0.${idx + 1}`,
+          tag1: tag, fwdtag: `fwd-${tag}`, ClientID: tag.toUpperCase(),
+          branch: tag === 'acme' ? 'HQ' : 'DR', log_type: logType,
+        };
+        // One parser miss, on the oldest document of one device: the UI must list it
+        // rather than drop it, and must not count it as a zero delay.
+        if (device === 'proxy-03' && n === size - 1) delete src.ingested_time;
+        return { _index: `logstash-${tag}-2026.09.09`, _id: `${device}-${n}`, _source: src };
+      });
+      return { took: 4, timed_out: false,
+               hits: { total: { value: 100 + Math.round(Math.abs(mins)), relation: 'eq' }, hits } };
+    }
     // Log delay: terms on the device field with a top_hits sub-agg per bucket. Devices
     // are shaped to cover every status the classifier can produce, including the two that
     // are easy to get wrong — a negative delay (device clock ahead) and a delay sitting
@@ -178,15 +254,6 @@ const routes = [
     if (body.aggs && body.aggs.devices) {
       const now = Date.now();
       const iso = (ms) => new Date(ms).toISOString();
-      // [device, delayMinutes, logType, tag]
-      const DEVICES = [
-        ['fw-edge-01',     2,    'firewall', 'acme'],
-        ['fw-core-02',     41,   'firewall', 'acme'],
-        ['proxy-03',       95,   'proxy',    'acme'],
-        ['vpn-04',         -37,  'vpn',      'beta'],
-        ['switch-05',      330,  'syslog',   'beta'],   // 5h30 — not a whole hour
-        ['router-06',      300,  'syslog',   'beta'],   // exactly 5h — timezone shape
-      ];
       const buckets = DEVICES.map(([device, mins, logType, tag]) => {
         const arrival = now - 60000;
         const event = arrival - mins * 60000;
