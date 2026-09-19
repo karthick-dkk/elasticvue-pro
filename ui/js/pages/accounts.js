@@ -90,7 +90,8 @@ function clusterUsersCard() {
     if (!got) return h('div', head, h('div.muted', { style: { fontSize: '11.5px' } }, 'not read yet'));
     if (got.error) {
       return h('div', head,
-        h('div.muted', { style: { fontSize: '11.5px', color: 'var(--warning)' } }, got.error));
+        h('div', { style: { fontSize: '11.5px', color: 'var(--warning)' } }, got.error),
+        got.fix ? h('div.muted', { style: { fontSize: '11px' } }, got.fix) : null);
     }
     const trs = got.users.map((u) => h('tr',
       h('td', h('b', u.name),
@@ -123,6 +124,14 @@ async function loadClusterUsers(id) {
   cu.loading.delete(id); draw();
 }
 
+/** A labelled rule between two groups of cards that are about different things. */
+function sectionBreak(title, sub) {
+  return h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px', margin: '18px 0 2px' } },
+    h('h3', { style: { margin: 0, fontSize: '13px', letterSpacing: '.02em' } }, title),
+    h('span.muted', { style: { fontSize: '11.5px' } }, sub),
+    h('div', { style: { flex: 1, borderBottom: '1px solid var(--border)', marginBottom: '4px' } }));
+}
+
 function draw() {
   if (!host || !host.isConnected) return;
   const admins = ui.users.filter((u) => u.role === 'admin' && !u.disabled).length;
@@ -143,6 +152,8 @@ function draw() {
         h('span.muted', { style: { fontSize: '11px' } },
           ui.caller ? `signed in as ${ui.caller.name}` : ''))),
 
+    sectionBreak('On this installation', 'who can sign in to ElasticVue Pro, and the tokens that stand in for them'),
+
     h('div', { style: { marginTop: '10px' } },
       card('ElasticVue users', `${ui.users.length} who can sign in to this app`,
         table(['Name', 'Role', 'Created', ''], ui.users.map((u) => h('tr',
@@ -160,9 +171,14 @@ function draw() {
             }, '×')))),
           { emptyText: 'No accounts yet.' }))),
 
-    h('div', { style: { marginTop: '10px' } }, clusterUsersCard()),
+    ui.apiTokens ? h('div', { style: { marginTop: '10px' } }, tokensCard()) : notHostedNote(),
 
-    ui.apiTokens ? tokensCard() : notHostedNote(),
+    // A visible line between the two, because everything above it is a credential for
+    // this app and everything below it is a credential for a cluster. They are stored in
+    // different places, they are changed in different places, and the only thing they
+    // have in common is the word "user".
+    sectionBreak('On the clusters', 'accounts that sign in to Elasticsearch itself'),
+    h('div', { style: { marginTop: '10px' } }, clusterUsersCard()),
   );
 }
 

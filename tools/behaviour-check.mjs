@@ -166,8 +166,13 @@ await go('shards');
   // same mock — so the counts are per cluster, not absolute.
   const shown = [...doc.querySelectorAll('section.card header h2')]
     .filter((x) => x.textContent.startsWith('Shards —')).length;
-  const rows = doc.querySelectorAll('table.tbl tbody tr').length;
-  ok(rows >= 3 * shown, `shards: expected 3 shards on each of ${shown} cluster(s), rendered ${rows} row(s)`);
+  // Scoped to the shard tables: the page also carries a node table per cluster now, and
+  // counting every row on the page conflates the two.
+  const shardRows = [...doc.querySelectorAll('section.card')]
+    .filter((sec) => (sec.querySelector('header h2') || {}).textContent?.startsWith('Shards —'))
+    .reduce((n, sec) => n + sec.querySelectorAll('table.tbl tbody tr').length, 0);
+  ok(shardRows === 3 * shown,
+    `shards: expected 3 shards on each of ${shown} cluster(s), rendered ${shardRows} row(s)`);
 
   // The unassigned one is the row that matters, and it must read as unassigned rather
   // than as a shard sitting on a node called nothing.
@@ -186,6 +191,28 @@ await go('shards');
     ok(heads.includes(col), `shards: the node table has no "${col}" column, saw ${heads.join(', ')}`);
   }
   ok(/master/i.test(doc.body.textContent), 'shards: the master node is not marked');
+
+  // The honeycomb: one cell per shard, which is the point — a table of several hundred
+  // rows answers "what are the values", not "how many are wrong".
+  ok(titles.includes('Shard states'), `shards: no honeycomb card, saw ${titles.join(' | ')}`);
+  const cells = doc.querySelectorAll('polygon').length;
+  ok(cells === shardRows, `shards: ${cells} honeycomb cells for ${shardRows} shards — should be one each`);
+  const svgs = [...doc.querySelectorAll('svg')];
+  ok(svgs.length >= 1 && /^0 0 \d/.test(svgs[0].getAttribute('viewBox') || ''),
+    'shards: the honeycomb has no usable viewBox');
+  // It shrinks to fit rather than running off the page.
+  const vh = Number((svgs[0].getAttribute('viewBox') || '0 0 0 0').split(' ')[3]);
+  ok(vh > 0 && vh <= 300, `shards: the honeycomb is ${vh}px tall — it should fit above the fold`);
+
+  // Clicking a cell filters the table to that index, so the two halves are one tool.
+  const shardRowsNow = () => [...doc.querySelectorAll('section.card')]
+    .filter((sec) => (sec.querySelector('header h2') || {}).textContent?.startsWith('Shards —'))
+    .reduce((n, sec) => n + sec.querySelectorAll('table.tbl tbody tr').length, 0);
+  const before = shardRowsNow();
+  doc.querySelector('polygon').dispatchEvent(new window.Event('click', { bubbles: true }));
+  await settleFor(250);
+  const after = shardRowsNow();
+  ok(after < before, `shards: clicking a honeycomb cell did not filter the table (${before} → ${after})`);
 }
 
 await go('indices');
@@ -569,6 +596,38 @@ if (config.clusters.length >= 2) {
     'accounts: the generic "Accounts" card is back — the two kinds of user are merged again');
   ok([...pane.querySelectorAll('button')].some((b) => b.textContent === '+ Create'),
     'accounts: no "+ Create" button on the cluster users card');
+
+  // The three are told apart by labelled bands: app credentials above, cluster ones below.
+  const bands = [...pane.querySelectorAll('h3')].map((x) => x.textContent);
+  ok(bands.includes('On this installation'), `accounts: no installation band, saw ${bands.join(' | ')}`);
+  ok(bands.includes('On the clusters'), `accounts: no cluster band, saw ${bands.join(' | ')}`);
+}
+
+/* ------- a cluster with security off says so, not "HTTP 500" ------- */
+
+{
+  const cuMod = await load('ui/cluster-users.js');
+  const st = await load('core/state.js');
+  const err = (reason) => {
+    const e = new Error('HTTP 500 Internal Server Error');
+    e.res = { status: 500, json: { error: { reason } } };
+    return e;
+  };
+  st.state.clients = new Map([['x', { securityUsers: async () => { throw err(
+    'Security must be explicitly enabled when using a [basic] license. Enable security by '
+    + 'setting [xpack.security.enabled] to [true] in the elasticsearch.yml file and restart the node.'); } }]]);
+  let r = await cuMod.fetchClusterUsers('x');
+  ok(/switched off/.test(r.error), `security-off should be named, got "${r.error}"`);
+  ok(!/500/.test(r.error), `the status line must not be the message: "${r.error}"`);
+  ok(/xpack\.security\.enabled/.test(r.fix || ''), `the fix should name the setting, got "${r.fix}"`);
+
+  st.state.clients = new Map([['x', { securityUsers: async () => { throw err('no handler found for uri [/_security/user]'); } }]]);
+  r = await cuMod.fetchClusterUsers('x');
+  ok(/no security API/.test(r.error), `an OSS build should be named, got "${r.error}"`);
+
+  st.state.clients = new Map([['x', { securityUsers: async () => { throw err('security_exception: action unauthorized'); } }]]);
+  r = await cuMod.fetchClusterUsers('x');
+  ok(/may not read/.test(r.error), `a privilege problem should be named, got "${r.error}"`);
 }
 
 /* ------------- the create dialog asks for what the kind needs ------------- */

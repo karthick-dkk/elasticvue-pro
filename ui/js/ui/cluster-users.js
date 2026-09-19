@@ -28,7 +28,7 @@ import { ensureWrites } from '../core/writes.js';
  */
 export async function fetchClusterUsers(clusterId) {
   const cl = client(clusterId);
-  if (!cl) return { users: null, error: 'not connected' };
+  if (!cl) return { users: null, error: 'not connected', fix: null };
   try {
     const res = await cl.securityUsers();
     const users = Object.values(res || {}).map((u) => ({
@@ -39,15 +39,37 @@ export async function fetchClusterUsers(clusterId) {
       email: u.email || '',
       reserved: !!(u.metadata && u.metadata._reserved),
     })).sort((a, b) => a.name.localeCompare(b.name));
-    return { users, error: null };
+    return { users, error: null, fix: null };
   } catch (e) {
-    const m = String(e.message || e);
-    return {
-      users: null,
-      error: /security|400|404/i.test(m)
-        ? 'Security is not enabled on this cluster, or the account cannot read the native realm.'
-        : m,
-    };
+    // Elasticsearch puts the reason in the body; the thrown message is only the status
+    // line. Reading the status line alone turned "security is switched off on this
+    // cluster" into "HTTP 500 Internal Server Error", which sends you looking for a fault
+    // in the app instead of at a setting in elasticsearch.yml.
+    const es = e.res && e.res.json && e.res.json.error;
+    const reason = (es && (es.reason || es.type)) || e.message || String(e);
+
+    if (/security must be explicitly enabled|xpack\.security\.enabled/i.test(reason)) {
+      return {
+        users: null,
+        error: 'Security is switched off on this cluster, so it has no accounts of its own.',
+        fix: 'Set xpack.security.enabled: true in elasticsearch.yml and restart the node.',
+      };
+    }
+    if (/no handler found for uri/i.test(reason)) {
+      return {
+        users: null,
+        error: 'This build of Elasticsearch has no security API.',
+        fix: 'The native realm needs a distribution with X-Pack — OSS builds do not have one.',
+      };
+    }
+    if (/security_exception|unauthorized|403/i.test(reason)) {
+      return {
+        users: null,
+        error: 'This account may not read the native realm.',
+        fix: 'Reading users needs the manage_security privilege.',
+      };
+    }
+    return { users: null, error: reason, fix: null };
   }
 }
 

@@ -16,6 +16,7 @@ import { card, statTile, table, empty, pill, connectionBanner } from './common.j
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
+import { honeycomb, STATUS } from '../lib/charts.js';
 
 let host = null;
 const ui = { index: '', node: 'all', state: 'all', limit: 300 };
@@ -108,9 +109,52 @@ function block(c) {
         unassigned.length ? 'not placed on any node' : 'every shard is placed'),
       statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
+    combCard(c, all),
     nodesCard(c, d),
     accountingCard(c, d),
     shardsCard(c, d, all, raw, started));
+}
+
+/**
+ * Every shard as one cell, coloured by state.
+ *
+ * The table below is the right tool once you know which shard you want. This is for
+ * before that: a few hundred rows is a scroll nobody does, and "are any of them unhappy,
+ * and is it one index or all of them" is answered here in a glance. Clicking a cell
+ * filters the table to that index, so the two halves work as one.
+ */
+function combCard(c, all) {
+  if (all.length < 2) return null;
+  const colour = (st) => (st === 'STARTED' ? STATUS.good
+    : st === 'RELOCATING' || st === 'INITIALIZING' ? STATUS.warning
+    : st === 'UNASSIGNED' ? STATUS.critical : 'var(--surface-3)');
+
+  // Unhealthy first, so a handful of bad cells among hundreds are together and visible
+  // rather than scattered through the grid in index order.
+  const rank = (s) => (s.state === 'UNASSIGNED' ? 0 : s.state === 'STARTED' ? 2 : 1);
+  const items = [...all].sort((a, b) => rank(a) - rank(b) || a.index.localeCompare(b.index))
+    .map((s) => ({
+      key: `${s.index}/${s.shard}/${s.primary ? 'p' : 'r'}`,
+      label: `${s.index}[${s.shard}] ${s.primary ? 'primary' : 'replica'}`,
+      state: s.state.toLowerCase(),
+      color: colour(s.state),
+      detail: s.node ? `on ${s.node}${s.store ? ` · ${bytes(s.store)}` : ''}`
+                     : (s.reason ? s.reason.replace(/_/g, ' ').toLowerCase() : 'not placed'),
+    }));
+
+  const counts = all.reduce((m, s) => { m[s.state] = (m[s.state] || 0) + 1; return m; }, {});
+  const sub = Object.entries(counts).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${num(v)} ${k.toLowerCase()}`).join(' · ');
+
+  return card('Shard states', sub,
+    honeycomb(items, {
+      legendFor: [
+        { label: 'started', color: STATUS.good },
+        { label: 'moving', color: STATUS.warning },
+        { label: 'unassigned', color: STATUS.critical },
+      ],
+      onSelect: (it) => { ui.index = String(it.key).split('/')[0]; draw(); },
+    }));
 }
 
 /** Everything _cat/nodes knows, which is what "is this node healthy" is answered from. */

@@ -180,6 +180,89 @@ export function coverageStrip(days, opts = {}) {
   return el;
 }
 
+/* --------------------------------- honeycomb ---------------------------------- */
+
+/**
+ * One cell per thing, coloured by state — a whole population at a glance.
+ *
+ * For the case a table is worst at: several hundred items where the question is not
+ * "what are the values" but "how many are wrong, and are the wrong ones clustered". A
+ * cluster with four hundred shards is four hundred rows nobody scrolls; as a grid, one
+ * red cell among green is found before you have finished reading the heading.
+ *
+ * Hexagons rather than squares, offset every other row. A square grid reads as rows and
+ * columns and invites you to look for meaning in them — a position in a honeycomb reads
+ * as nothing but a slot, which is the truth here: the order is arbitrary.
+ *
+ * Cells shrink to fit rather than wrapping past the fold, down to a floor where a cell is
+ * still a target you can hover. Past that the grid is capped and says how many it did not
+ * draw, because a honeycomb of ten thousand is a texture, not a chart.
+ *
+ * @param items [{ key, label, state, color, detail }]
+ * @param opts  { max, cell, width, onSelect, legendFor }
+ */
+export function honeycomb(items, opts = {}) {
+  const el = h('div.chart');
+  if (!items.length) return mount(el, h('div.tbl-empty', 'Nothing to show'));
+
+  const cap = opts.max || 1200;
+  const shown = items.slice(0, cap);
+  const width = opts.width || 900;
+
+  // Hex geometry: pointy-top, so a row advances by 3/4 of the height and every other row
+  // is offset by half a width.
+  const size = Math.max(opts.min || 7, Math.min(opts.cell || 16, hexFor(shown.length, width)));
+  const w = size * 2, hgt = Math.sqrt(3) * size;
+  const perRow = Math.max(1, Math.floor((width - w / 2) / (w * 0.75)));
+  const rows = Math.ceil(shown.length / perRow);
+  const W = perRow * w * 0.75 + w / 2;
+  const H = rows * hgt + hgt / 2;
+
+  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`,
+    style: { width: '100%', maxWidth: `${W}px`, height: `${H}px` } });
+
+  shown.forEach((it, i) => {
+    const col = i % perRow, row = Math.floor(i / perRow);
+    const cx = w / 2 + col * w * 0.75;
+    const cy = hgt / 2 + row * hgt + (col % 2 ? hgt / 2 : 0);
+    const pts = [];
+    for (let k = 0; k < 6; k++) {
+      const a = (Math.PI / 180) * (60 * k);
+      pts.push(`${(cx + size * Math.cos(a)).toFixed(2)},${(cy + size * Math.sin(a)).toFixed(2)}`);
+    }
+    s.append(svg('polygon', {
+      points: pts.join(' '),
+      style: { fill: it.color || 'var(--surface-3)', stroke: 'var(--surface-1)', strokeWidth: 1,
+               cursor: opts.onSelect ? 'pointer' : 'default' },
+      onmousemove: (e) => tooltip.show(
+        h('div', h('b', it.label), it.state ? tipRow('State', it.state) : null,
+          it.detail ? tipRow('', it.detail) : null), e.clientX, e.clientY),
+      onmouseleave: () => tooltip.hide(),
+      onclick: opts.onSelect ? () => opts.onSelect(it) : null,
+    }));
+  });
+
+  el.append(s);
+  if (items.length > shown.length) {
+    el.append(h('div.muted', { style: { fontSize: '10.5px', marginTop: '4px' } },
+      `showing ${num(shown.length)} of ${num(items.length)} — filter to see the rest`));
+  }
+  if (opts.legendFor) el.append(legend(opts.legendFor));
+  return el;
+}
+
+/** The largest cell that still fits `n` of them in one width without going off the page. */
+function hexFor(n, width) {
+  // Solved by trying: cheap, and the alternative is a quadratic nobody will check.
+  for (let size = 16; size > 4; size--) {
+    const w = size * 2;
+    const perRow = Math.max(1, Math.floor((width - w / 2) / (w * 0.75)));
+    const rows = Math.ceil(n / perRow);
+    if (rows * Math.sqrt(3) * size <= 260) return size;
+  }
+  return 5;
+}
+
 export function legend(entries) {
   return h('div.legend', ...entries.map((e) => h('span', h('i', { style: { background: e.color } }), e.label)));
 }
