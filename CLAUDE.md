@@ -22,7 +22,9 @@ jump hosts. Also runs hosted on Linux behind nginx — same core, same UI.
 
 ```bash
 node tools/check-ui.mjs                               # imports resolve
-node tools/render-check.mjs --config <fixture.json>   # all 9 pages render
+node tools/unit-check.mjs                             # pure arithmetic, no DOM
+node tools/render-check.mjs --config <fixture.json>   # all 11 pages render
+node tools/behaviour-check.mjs --config <fixture.json> # and the ones with behaviour
 cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 deploy/trial.sh                                       # hosted stack, four security properties
 ```

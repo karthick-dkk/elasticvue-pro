@@ -141,3 +141,227 @@ export async function preflight(client, cluster) {
     };
   }
 }
+
+/* ------------------------------- classification ------------------------------- */
+
+/** Defaults from the tool this is ported from; overridable per cluster. */
+export const DEFAULT_THRESHOLDS = {
+  delayMinutes: 30,
+  criticalMinutes: 60,
+  tzToleranceMinutes: 3,
+  veryLongMinutes: 24 * 60,
+};
+
+export function thresholds(cluster) {
+  const t = (cluster && cluster.delayThresholds) || {};
+  return {
+    delayMinutes: num(t.delayMinutes, DEFAULT_THRESHOLDS.delayMinutes),
+    criticalMinutes: num(t.criticalMinutes, DEFAULT_THRESHOLDS.criticalMinutes),
+    tzToleranceMinutes: num(t.tzToleranceMinutes, DEFAULT_THRESHOLDS.tzToleranceMinutes),
+    veryLongMinutes: num(t.veryLongMinutes, DEFAULT_THRESHOLDS.veryLongMinutes),
+  };
+}
+const num = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+
+/**
+ * What a delay means.
+ *
+ * Order matters. A negative delay is not a small delay — it is a device whose clock is
+ * ahead of real time, which is a different fault with a different fix, so it is tested
+ * before the "is it big" questions. A delay that cannot be computed at all is ERROR, and
+ * a device that sent nothing is NO_DATA; neither is zero.
+ */
+export const STATUS = {
+  OK: { label: 'ok', cls: 'green' },
+  DELAYED: { label: 'delayed', cls: 'yellow' },
+  CRITICAL: { label: 'critical', cls: 'red' },
+  CLOCK_AHEAD: { label: 'clock ahead', cls: 'orange' },
+  ERROR: { label: 'error', cls: 'grey' },
+  NO_DATA: { label: 'no data', cls: 'grey' },
+};
+
+export function classify(delayMinutes, t = DEFAULT_THRESHOLDS) {
+  if (delayMinutes === null || delayMinutes === undefined || !isFinite(delayMinutes)) return 'ERROR';
+  if (delayMinutes <= -t.delayMinutes) return 'CLOCK_AHEAD';
+  if (delayMinutes >= t.criticalMinutes) return 'CRITICAL';
+  if (delayMinutes >= t.delayMinutes) return 'DELAYED';
+  return 'OK';
+}
+
+/** Why it is in that state, in the words an operator would use. */
+export function reasonFor(status, trend = 'NO_TREND') {
+  const base = {
+    OK: 'Healthy — within threshold',
+    DELAYED: 'Pipeline lag: forwarder batching or network latency',
+    CRITICAL: 'Severe lag: forwarder backlog, pipeline backpressure, or device clock behind',
+    CLOCK_AHEAD: 'Device clock is ahead of real time (NTP)',
+    ERROR: 'Timestamp missing or unparseable (parser)',
+    NO_DATA: 'No logs received in the window',
+  }[status] || status;
+  if (trend === 'WORSENING' && (status === 'DELAYED' || status === 'CRITICAL')) {
+    return `${base} — the backlog is growing`;
+  }
+  if (trend === 'IMPROVING' && (status === 'DELAYED' || status === 'CRITICAL')) {
+    return `${base} — the queue is draining`;
+  }
+  return base;
+}
+
+/** What to do about it. */
+export function fixFor(status) {
+  return {
+    OK: 'None',
+    DELAYED: 'Reduce the forwarder flush interval; check the site link; tune Logstash batch and workers',
+    CRITICAL: 'Check the forwarder queue and service; Logstash backpressure; Elasticsearch write rejections; NTP on the device',
+    CLOCK_AHEAD: 'Fix NTP and timezone on the source device, and the parser date filter',
+    ERROR: 'Fix the parser, or point eventTime at the field your pipeline actually writes',
+    NO_DATA: 'Verify the device and its forwarder are alive and shipping',
+  }[status] || '';
+}
+
+/**
+ * Which way it is moving, from a series of delays oldest-first.
+ *
+ * Compares the first half against the second rather than first-against-last, because one
+ * outlying sample at either end should not decide the answer. Fewer than four samples is
+ * NO_TREND: two points make a line through noise, not a trend.
+ */
+export function trend(series, minChangePct = 20) {
+  const xs = (series || []).filter((v) => typeof v === 'number' && isFinite(v));
+  if (xs.length < 4) return 'NO_TREND';
+  const mid = Math.floor(xs.length / 2);
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  const first = mean(xs.slice(0, mid));
+  const second = mean(xs.slice(mid));
+  if (Math.abs(first) < 1 && Math.abs(second) < 1) return 'NO_TREND';
+  const base = Math.max(Math.abs(first), 1);
+  const changePct = ((second - first) / base) * 100;
+  if (changePct >= minChangePct) return 'WORSENING';
+  if (changePct <= -minChangePct) return 'IMPROVING';
+  return 'NO_TREND';
+}
+
+/**
+ * What the shape of the delay suggests, beyond how big it is.
+ *
+ * The one worth having: a delay within a few minutes of a whole number of hours is almost
+ * never a queue. Queues drift; timezone offsets do not. A device an exact hour behind has
+ * its clock or its parser in the wrong zone, and telling someone to tune their forwarder
+ * would send them to fix the wrong thing.
+ */
+export function analysePattern(delayMinutes, t = DEFAULT_THRESHOLDS) {
+  if (delayMinutes === null || delayMinutes === undefined || !isFinite(delayMinutes)) {
+    return { pattern: '-', note: '' };
+  }
+  const abs = Math.abs(delayMinutes);
+  const hours = abs / 60;
+  const nearestHour = Math.round(hours);
+  const offBy = Math.abs(hours - nearestHour) * 60;
+
+  if (nearestHour >= 1 && offBy <= t.tzToleranceMinutes) {
+    const dir = delayMinutes > 0 ? 'behind' : 'ahead';
+    return {
+      pattern: 'timezone',
+      note: `within ${Math.round(offBy)} min of exactly ${nearestHour}h ${dir} — a timezone or NTP offset, not a queue`,
+    };
+  }
+  if (abs >= t.veryLongMinutes) {
+    return { pattern: 'very-long', note: `more than ${Math.round(t.veryLongMinutes / 60)}h — likely a replay or a stalled forwarder` };
+  }
+  return { pattern: '-', note: '' };
+}
+
+/* --------------------------------- the record --------------------------------- */
+
+/**
+ * One device's delay, built from a terms bucket and its top_hits document.
+ *
+ * Every figure the rest of the app shows comes from here, so the arithmetic exists once.
+ * A document missing either timestamp yields a null delay and ERROR — never a zero, which
+ * would sort as healthy and read as measured.
+ */
+export function recordFrom(bucket, resolved, t = DEFAULT_THRESHOLDS) {
+  const hit = ((((bucket || {}).latest || {}).hits || {}).hits || [])[0];
+  const src = (hit && hit._source) || {};
+  const arrival = Date.parse(dotted(src, resolved.arrival));
+  const event = Date.parse(dotted(src, resolved.eventTime));
+
+  const ok = isFinite(arrival) && isFinite(event);
+  const delayMinutes = ok ? (arrival - event) / 60000 : null;
+  const status = classify(delayMinutes, t);
+  const { pattern, note } = analysePattern(delayMinutes, t);
+
+  return {
+    device: bucket.key,
+    docs: bucket.doc_count || 0,
+    arrival: isFinite(arrival) ? arrival : null,
+    event: isFinite(event) ? event : null,
+    delayMinutes,
+    status,
+    pattern,
+    patternNote: note,
+    trend: 'NO_TREND',
+    reason: reasonFor(status),
+    fix: fixFor(status),
+    meta: Object.fromEntries((resolved.metadata || []).map((m) => {
+      const plain = String(m).replace(/\.keyword$/, '');
+      return [plain, dotted(src, plain) ?? dotted(src, m) ?? ''];
+    })),
+  };
+}
+
+const dotted = (o, path) => String(path || '').split('.').reduce((v, k) => (v == null ? v : v[k]), o);
+
+/**
+ * The search the analysis runs.
+ *
+ * One terms aggregation over the device field with a top_hits picking the newest document
+ * per device. `size` bounds the device count; a fleet with more devices than that reports
+ * the shortfall rather than silently showing a subset.
+ */
+export function buildSearchBody(resolved, { from, to, size = 500 } = {}) {
+  return {
+    size: 0,
+    query: { bool: { filter: [{ range: { [resolved.arrival]: { gte: from, lte: to, format: 'strict_date_optional_time' } } }] } },
+    aggs: {
+      devices: {
+        terms: { field: resolved.device, size, order: { _count: 'desc' } },
+        aggs: {
+          latest: {
+            top_hits: {
+              size: 1,
+              sort: [{ [resolved.arrival]: { order: 'desc' } }],
+              _source: [resolved.arrival, resolved.eventTime,
+                        ...(resolved.metadata || []).map((m) => String(m).replace(/\.keyword$/, ''))],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Roll a set of records into the counts the summary shows. */
+export function summarise(records) {
+  const by = { OK: 0, DELAYED: 0, CRITICAL: 0, CLOCK_AHEAD: 0, ERROR: 0, NO_DATA: 0 };
+  let worst = null;
+  for (const r of records) {
+    by[r.status] = (by[r.status] || 0) + 1;
+    if (r.delayMinutes !== null && (worst === null || r.delayMinutes > worst.delayMinutes)) worst = r;
+  }
+  const measured = records.filter((r) => r.delayMinutes !== null).map((r) => r.delayMinutes);
+  return {
+    devices: records.length,
+    by,
+    unhealthy: by.DELAYED + by.CRITICAL + by.CLOCK_AHEAD,
+    // Unknown rather than zero when nothing could be measured.
+    median: measured.length ? median(measured) : null,
+    worst,
+  };
+}
+
+function median(xs) {
+  const a = [...xs].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}

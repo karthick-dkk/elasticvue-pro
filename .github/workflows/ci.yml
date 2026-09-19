@@ -45,6 +45,12 @@ jobs:
       - name: parse modules and resolve imports
         run: node tools/check-ui.mjs
 
+      # Pure arithmetic — delay classification, trend, pattern detection. No DOM, no
+      # bridge, no fixture, so it runs in under a second and the fine-grained cases
+      # actually get written. node:test is stdlib; this adds no dependency.
+      - name: unit tests
+        run: node tools/unit-check.mjs
+
       # Static checks cannot see a call to something that was never imported at all.
       # Rendering every page against the real core does — and it has to render pages with
       # data in them, or every page just draws "No cluster selected" and proves nothing.

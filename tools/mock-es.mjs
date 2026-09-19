@@ -161,9 +161,58 @@ const routes = [
     settings: { 'index.number_of_replicas': '1', 'index.refresh_interval': '1s' } } })],
   // Field-volume aggregation: terms split by day, plus the day totals. One value spikes
   // on the latest complete day so the 40% rule has something to catch.
+  // _bulk: echo back the shape the sink checks — item count and an errors flag.
+  [(u) => u.includes('/_bulk'), ({ body }) => {
+    const lines = String(body || '').split('\n').filter(Boolean);
+    const n = Math.floor(lines.length / 2);
+    return { took: 4, errors: false,
+             items: Array.from({ length: n }, () => ({ index: { status: 201, result: 'created' } })) };
+  }],
   [(u) => u.includes('/_search'), (hit) => {
     let body = {};
     try { body = JSON.parse(hit.body || '{}'); } catch { /* fall through to the hit list */ }
+    // Log delay: terms on the device field with a top_hits sub-agg per bucket. Devices
+    // are shaped to cover every status the classifier can produce, including the two that
+    // are easy to get wrong — a negative delay (device clock ahead) and a delay sitting
+    // exactly on a whole-hour boundary, which is what timezone misconfiguration looks like.
+    if (body.aggs && body.aggs.devices) {
+      const now = Date.now();
+      const iso = (ms) => new Date(ms).toISOString();
+      // [device, delayMinutes, logType, tag]
+      const DEVICES = [
+        ['fw-edge-01',     2,    'firewall', 'acme'],
+        ['fw-core-02',     41,   'firewall', 'acme'],
+        ['proxy-03',       95,   'proxy',    'acme'],
+        ['vpn-04',         -37,  'vpn',      'beta'],
+        ['switch-05',      330,  'syslog',   'beta'],   // 5h30 — not a whole hour
+        ['router-06',      300,  'syslog',   'beta'],   // exactly 5h — timezone shape
+      ];
+      const buckets = DEVICES.map(([device, mins, logType, tag]) => {
+        const arrival = now - 60000;
+        const event = arrival - mins * 60000;
+        return {
+          key: device,
+          doc_count: 100 + Math.round(Math.abs(mins)),
+          latest: { hits: { total: { value: 1 }, hits: [{
+            _index: 'logstash-acme-2026.09.09',
+            _source: {
+              '@timestamp': iso(arrival),
+              ingested_time: iso(event),
+              src_hostname: device,
+              src_ip: `10.0.0.${DEVICES.findIndex((d) => d[0] === device) + 1}`,
+              tag1: tag,
+              fwdtag: `fwd-${tag}`,
+              ClientID: tag.toUpperCase(),
+              branch: tag === 'acme' ? 'HQ' : 'DR',
+              log_type: logType,
+            },
+          }] } },
+        };
+      });
+      return { took: 12, timed_out: false, hits: { total: { value: 0 }, hits: [] },
+               aggregations: { devices: { buckets, sum_other_doc_count: 0 } } };
+    }
+
     if (body.aggs && body.aggs.terms) {
       const DAYS = 14;
       // UTC midnight, as a real date_histogram buckets by default.
@@ -224,7 +273,7 @@ http.createServer((req, res) => {
   req.on('end', () => {
     const url = req.url;
     res.setHeader('content-type', 'application/json');
-    if (req.method !== 'GET' && req.method !== 'HEAD' && !url.includes('_search')) {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !url.includes('_search') && !url.includes('_bulk')) {
       return res.end(JSON.stringify({ acknowledged: true }));   // fixture: writes are no-ops
     }
     const hit = routes.find(([match]) => match(url));
