@@ -10,6 +10,7 @@ import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } 
 import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
 import { card, empty, pill } from './common.js';
+import { preflight, aggregatableName } from '../core/log-delay.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { jsonView } from '../lib/jsonview.js';
 
@@ -22,6 +23,7 @@ const ui = {
   query: '',
   field: 'any',
   term: '',
+  view: 'tail',
   size: 200,
   running: false,
   error: null,
@@ -32,6 +34,12 @@ const ui = {
   resolved: [],
   tail: false,
   expanded: new Set(),
+};
+
+/** Preflight result for the delay view — asked on demand, never on render. */
+const delay = {
+  running: false,
+  result: null,
 };
 
 function isoLocal(d) {
@@ -161,6 +169,7 @@ function draw() {
   const c = cluster();
   if (isSnapshotMode()) return mount(host, snapshotNotice('The log explorer'));
   if (!c) return mount(host, empty('No cluster selected'));
+  if (ui.view === 'delay') return mount(host, viewSwitch(), delayView(c));
   const known = state.indices.get(c.id) || [];
   const sourceNames = [...new Set(known.filter((r) => r.source).map((r) => r.source))].sort();
 
@@ -204,7 +213,7 @@ function draw() {
         h('code.inline', ui.resolved.list.slice(0, 4).join(', ') + (ui.resolved.list.length > 4 ? ` +${ui.resolved.list.length - 4} more` : '')))
     : null;
 
-  mount(host, bar, resolvedNote,
+  mount(host, viewSwitch(), bar, resolvedNote,
     ui.error ? h('div.banner.err', h('div', h('div.ttl', 'Search failed'), h('div.mono', ui.error))) : null,
     card('Documents over time',
       `${num(ui.total)}${ui.totalRelation === 'gte' ? '+' : ''} matching · query took ${dur(ui.tookMs)}`,
@@ -214,6 +223,102 @@ function draw() {
             onSelect: (b) => { const w = ui.buckets.length > 1 ? ui.buckets[1].t - ui.buckets[0].t : 60000;
               ui.from = isoLocal(new Date(b.t)); ui.to = isoLocal(new Date(b.t + w)); search(); } })),
     h('div', { style: { marginTop: '14px' } }, hitsCardWrapper()));
+}
+
+/* ------------------------------- log delay ------------------------------- */
+
+/**
+ * Two views of the same logs: what is arriving, and whether it is arriving late.
+ *
+ * One page because they answer the same question at different resolutions — "is this
+ * device shipping" and "is it shipping on time" — and jumping between pages to ask both
+ * is how one of them stops being asked.
+ */
+function viewSwitch() {
+  const btn = (id, label, title) => h(`button.btn.sm${ui.view === id ? '.primary' : ''}`, {
+    title, onclick: () => { ui.view = id; draw(); if (id === 'delay') runPreflight(); },
+  }, label);
+  return h('div', { style: { display: 'flex', gap: '4px', marginBottom: '10px' } },
+    btn('tail', 'Live tail', 'Search and follow documents as they arrive'),
+    btn('delay', 'Log delay', 'How far behind real time each device is shipping'));
+}
+
+/**
+ * Whether this cluster can be analysed for delay, and what is missing when it cannot.
+ *
+ * The preflight runs on demand, not on render: it is one call, but the delay analysis it
+ * guards is expensive and nothing here should start that without being asked.
+ */
+async function runPreflight() {
+  const c = cluster();
+  if (!c) return;
+  delay.running = true; delay.result = null; draw();
+  try {
+    delay.result = await preflight(client(c.id), c);
+  } finally {
+    delay.running = false;
+    if (host && host.isConnected) draw();
+  }
+}
+
+function delayView(c) {
+  const r = delay.result;
+  const head = h('div.toolbar',
+    h('span.muted', { style: { fontSize: '11.5px' } },
+      'Delay is arrival time minus the time the event actually happened, per device.'),
+    h('div', { style: { marginLeft: 'auto' } },
+      h('button.btn.sm.primary', { disabled: delay.running, onclick: runPreflight },
+        delay.running ? 'Checking\u2026' : r ? '\u21bb Re-check' : 'Check this cluster')));
+
+  if (delay.running && !r) return h('div', head, card('Log delay', c.name, empty('Asking the cluster which fields it has\u2026')));
+  if (!r) return h('div', head, card('Log delay', c.name, empty('Press Check to see whether this cluster can be analysed.')));
+
+  if (r.unknown) {
+    return h('div', head, card('Log delay', c.name,
+      h('div.banner.warn', { style: { margin: 0 } },
+        h('div', h('div.ttl', 'Could not ask this cluster'),
+          h('div.mono', { style: { fontSize: '11.5px' } }, r.error || 'no answer'),
+          h('div', { style: { fontSize: '12px', marginTop: '4px' } },
+            'Unknown, not empty \u2014 the fields may be there; the question did not get through.')))));
+  }
+
+  const row = (label, value, ok) => h('div', { style: { display: 'flex', gap: '8px', alignItems: 'baseline', fontSize: '12px' } },
+    h('span', { style: { width: '15px', color: ok ? 'var(--good)' : 'var(--critical)' } }, ok ? '\u2713' : '\u2717'),
+    h('span.muted', { style: { width: '110px' } }, label),
+    h('span.mono', value || '\u2014'));
+
+  const f = r.fields;
+  const body = h('div', { style: { display: 'grid', gap: '10px' } },
+    r.ok
+      ? h('div.banner', { style: { margin: 0 } },
+          h('div', h('div.ttl', 'This cluster can be analysed'),
+            h('div', { style: { fontSize: '12px' } },
+              `Grouping by ${r.resolved.device}, event time from ${r.resolved.eventTime}, arrival from ${r.resolved.arrival}.`)))
+      : h('div.banner.warn', { style: { margin: 0 } },
+          h('div', h('div.ttl', 'This cluster cannot be analysed for delay'),
+            h('div', { style: { fontSize: '12px' } },
+              'These fields are not mapped in ', h('code.inline', c.logIndexPattern || 'logstash-*'), ':'),
+            h('div.mono', { style: { fontSize: '11.5px', marginTop: '3px', wordBreak: 'break-all' } },
+              r.missing.join(', ')),
+            h('div', { style: { fontSize: '12px', marginTop: '5px' } },
+              'Set ', h('code.inline', 'delayFields'), ' on this cluster to the names your parser produces. ',
+              'Nothing is being reported as zero \u2014 the analysis simply cannot run here.'))),
+
+    h('div', { style: { display: 'grid', gap: '3px' } },
+      h('div.muted', { style: { fontSize: '11px' } }, 'what was looked for'),
+      row('Device', r.resolved.device || aggregatableName(f.device), !!r.resolved.device),
+      row('Event time', r.resolved.eventTime || f.eventTime.join(' / '), !!r.resolved.eventTime),
+      row('Arrival', r.resolved.arrival || f.arrival, !!r.resolved.arrival)),
+
+    r.metadataMissing && r.metadataMissing.length
+      ? h('div.muted', { style: { fontSize: '11.5px' } },
+          `${r.resolved.metadata.length} of ${f.metadata.length} context field(s) present. `
+          + `Absent: ${r.metadataMissing.join(', ')} \u2014 those columns would be blank.`)
+      : f.metadata.length
+        ? h('div.muted', { style: { fontSize: '11.5px' } }, `All ${f.metadata.length} context fields present.`)
+        : null);
+
+  return h('div', head, card('Log delay', `${c.name} \u00b7 ${c.url}`, body));
 }
 
 const pick = (src, keys) => { for (const k of keys) { const v = k.split('.').reduce((o, p) => (o == null ? o : o[p]), src); if (v !== undefined && v !== null) return v; } return undefined; };

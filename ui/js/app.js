@@ -63,7 +63,7 @@ const PAGES = [
   { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
   { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, minRole: 'user' },
   { id: 'shards',    label: 'Nodes & shards', icon: '☷', mod: pShards,    multi: true,  minRole: 'user' },
-  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, minRole: 'user' },
+  { id: 'logs',      label: 'Live logs & Log delay', icon: '▶', mod: pLogs, multi: false, minRole: 'user' },
   { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, minRole: 'user' },
   { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  minRole: 'user' },
   { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  minRole: 'user' },

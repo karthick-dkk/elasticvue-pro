@@ -49,6 +49,19 @@ export const DEFAULTS = {
   // "which host", "which tag" — and spelling it as Lucene every time is a way to mistype
   // a field name and get zero hits that look like zero data.
   logSearchFields: ['tag1', 'fwd_tag', 'fwdtag', 'src_ip', 'src_hostname', 'message'],
+
+  // Log delay: which field names the analysis needs on a cluster.
+  //
+  // `device` is what delay is grouped by, `eventTime` are the candidates for "when the
+  // event actually happened" tried in order, and `metadata` are carried through for
+  // context. They are per-cluster because two clusters can parse the same logs into
+  // different shapes — one estate ships Filebeat ECS, another a custom parser — and a
+  // single hard-coded set would silently analyse neither.
+  delayFields: {
+    device: 'src_hostname',
+    eventTime: ['ingested_time', 'event_created', 'event.created'],
+    metadata: ['parser_tag', 'fwdtag', 'src_ip', 'tag1', 'ClientID', 'branch', 'log_type'],
+  },
   snapshotStaleHours: 26,
   maxLogRows: 200,
   // Certificate policy: auto (OS store, else trust-on-first-use with a prompt), system (strict), insecure.
@@ -160,6 +173,7 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       // repository. "30d", "90 days", "3M", "6 months", "1y" or a bare number of days.
       volumeFields: normFields(c.volumeFields || c.volume_fields || defaults.volumeFields),
       logSearchFields: normFields(c.logSearchFields || c.log_search_fields || defaults.logSearchFields),
+      delayFields: normDelayFields(c.delayFields || c.delay_fields, defaults.delayFields),
       liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
       snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
       backupCapacity: c.backupCapacity || c.backup_capacity || defaults.backupCapacity || '',
@@ -171,6 +185,16 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
 }
 
 /** `tag1, src_hostname` or a YAML list — either way, a clean array of field names. */
+/** A partial delayFields block overrides only the parts it names. */
+function normDelayFields(v, defaults) {
+  const d = v && typeof v === 'object' ? v : {};
+  return {
+    device: String(d.device || defaults.device),
+    eventTime: normFields(d.eventTime || d.event_time || defaults.eventTime),
+    metadata: normFields(d.metadata || defaults.metadata),
+  };
+}
+
 function normFields(v) {
   if (!v) return [];
   const list = Array.isArray(v) ? v : String(v).split(',');

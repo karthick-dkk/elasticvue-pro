@@ -365,6 +365,79 @@ await go('volume');
   }
 }
 
+/* ------------------- log delay: can this cluster be analysed? ------------------- */
+
+await go('logs');
+{
+  const ld = await load('core/log-delay.js');
+
+  // The rule that makes a preflight worth having: the aggregation runs on .keyword, so
+  // checking the base name would pass and the query that follows would return nothing.
+  ok(ld.aggregatableName('src_hostname') === 'src_hostname.keyword', 'text field should gain .keyword');
+  ok(ld.aggregatableName('tag1.keyword') === 'tag1.keyword', 'an already-keyword name must not be doubled');
+  ok(ld.aggregatableName('src_ip') === 'src_ip', 'an ip-like field must not gain .keyword');
+  ok(ld.aggregatableName('ClientID') === 'ClientID', 'ClientID is mapped keyword directly');
+  ok(ld.aggregatableName('') === '', 'an empty field name stays empty');
+
+  // decide() is the part with the rules in it, exercised without a cluster.
+  const fields = ld.resolveFields({ timeField: '@timestamp' });
+  const caps = (names) => ({ fields: Object.fromEntries(names.map((n) => [n, { keyword: {} }])) });
+
+  let d = ld.decide(fields, caps(['src_hostname.keyword', 'ingested_time', '@timestamp']));
+  ok(d.ok === true, `all three present should be analysable: ${JSON.stringify(d.missing)}`);
+  ok(d.resolved.eventTime === 'ingested_time', `first available event-time wins: ${d.resolved.eventTime}`);
+
+  d = ld.decide(fields, caps(['src_hostname.keyword', 'event_created', '@timestamp']));
+  ok(d.ok === true && d.resolved.eventTime === 'event_created',
+    'a later event-time candidate should be accepted');
+
+  d = ld.decide(fields, caps(['ingested_time', '@timestamp']));
+  ok(d.ok === false && d.missing.includes('src_hostname.keyword'),
+    `a missing device field must refuse and name it: ${JSON.stringify(d.missing)}`);
+
+  d = ld.decide(fields, caps(['src_hostname.keyword', '@timestamp']));
+  ok(d.ok === false && d.missing.length === 3,
+    `no event-time candidate should name all three: ${JSON.stringify(d.missing)}`);
+
+  d = ld.decide(fields, caps([]));
+  ok(d.ok === false, 'an empty cluster must never be analysable');
+  ok(d.resolved.device === null && d.resolved.eventTime === null,
+    'nothing resolved when nothing is present');
+
+  // Metadata absence narrows the result; it must not refuse the analysis.
+  const withMeta = ld.resolveFields({ delayFields: { device: 'src_hostname', eventTime: ['ingested_time'], metadata: ['tag1', 'parser_tag'] } });
+  d = ld.decide(withMeta, caps(['src_hostname.keyword', 'ingested_time', '@timestamp', 'tag1.keyword']));
+  ok(d.ok === true, 'a missing context field must not refuse the analysis');
+  ok(d.metadataMissing.includes('parser_tag.keyword'), `absent context should be named: ${JSON.stringify(d.metadataMissing)}`);
+  ok(d.resolved.metadata.includes('tag1.keyword'), 'present context should be resolved');
+
+  // End to end against the mock, which maps a parsed-log shape.
+  const st = await load('core/state.js');
+  const target = config.clusters[0];
+  const live = await ld.preflight(st.client(target.id), { ...target, logIndexPattern: 'logstash-*' });
+  ok(live.unknown === false, `the mock should answer _field_caps: ${live.error}`);
+  ok(live.ok === true, `the mock should be analysable, missing: ${JSON.stringify(live.missing)}`);
+  ok(live.resolved.device === 'src_hostname.keyword', `resolved device: ${live.resolved.device}`);
+
+  // A cluster that cannot be asked is unknown, never "no fields". Two ways to fail to
+  // ask, and both must land on unknown: no client at all, and a client that throws.
+  const dead = await ld.preflight(null, target);
+  ok(dead.unknown === true && dead.ok === false, 'no client should be unknown, not a refusal');
+
+  const refusing = { fieldCaps: async () => {
+    const e = new Error('HTTP 503 Service Unavailable');
+    e.res = { status: 503, json: { error: { reason: 'all shards failed' } } };
+    throw e;
+  } };
+  const thrown = await ld.preflight(refusing, target);
+  ok(thrown.unknown === true, 'a cluster that refuses the call is unknown, not "no fields"');
+  ok(thrown.ok === false, 'unknown is never analysable');
+  ok(/all shards failed/.test(thrown.error || ''),
+    `the cluster's own reason should survive, got "${thrown.error}"`);
+  ok(thrown.missing.length === 0,
+    'an unasked cluster must not claim fields are missing — it does not know');
+}
+
 /* ------------- an alert hands over the cluster, not just the page ------------- */
 
 {
@@ -796,6 +869,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: strip, console target, shards, volume sheets, alert hand-off, scoped refresh, snapshot window, tasks, toasts and the accounts split');
+console.log('ok: strip, console, shards, volume, hand-off, refresh, snapshots, tasks, toasts, accounts split and the log-delay preflight');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);

@@ -88,6 +88,20 @@ const routes = [
       'heap.percent': '38', 'ram.percent': '52', cpu: '4', load_1m: '0.3',
       'disk.used': '21000000000', 'disk.avail': '79000000000', 'disk.total': '100000000000',
       'disk.used_percent': '21', uptime: '10d' }])],
+  // _field_caps: the log-delay preflight asks this before it aggregates. Only the names
+  // it was asked about AND that this fixture "has" come back — real _field_caps omits
+  // what it cannot find rather than returning it empty, and the preflight reads absence
+  // from the map, so a fixture that echoed every requested name would make the refusal
+  // path untestable.
+  [(u) => u.includes('/_field_caps'), ({ url }) => {
+    const asked = new URLSearchParams(url.split('?')[1] || '').get('fields') || '';
+    const fields = {};
+    for (const name of asked.split(',').map((x) => x.trim()).filter(Boolean)) {
+      const type = FIELD_TYPES[name];
+      if (type) fields[name] = { [type]: { type, searchable: true, aggregatable: type !== 'text' } };
+    }
+    return { indices: ['logstash-acme-2026.09.09'], fields };
+  }],
   [(u) => u.startsWith('/_cat/indices'), () => INDICES],
   [(u) => u.startsWith('/_cat/shards'), () => ([
     { index: 'logstash-acme-2026.09.09', shard: '0', prirep: 'p', state: 'STARTED', node: 'node-1', store: '2500000000' },
@@ -183,6 +197,26 @@ const routes = [
   ] }, aggregations: { over_time: { buckets: [] } } };
   }],
 ];
+
+/**
+ * What this fixture pretends to have mapped.
+ *
+ * Deliberately a parsed-log shape rather than the Filebeat ECS the dev cluster ships, so
+ * the delay preflight has something it can say yes to. `parser_tag` is left out on
+ * purpose: a metadata field that is absent is a real case and the page reports it
+ * without refusing the whole analysis.
+ */
+const FIELD_TYPES = {
+  '@timestamp': 'date',
+  ingested_time: 'date',
+  'src_hostname.keyword': 'keyword',
+  src_ip: 'ip',
+  'tag1.keyword': 'keyword',
+  'fwdtag.keyword': 'keyword',
+  ClientID: 'keyword',
+  'branch.keyword': 'keyword',
+  'log_type.keyword': 'keyword',
+};
 
 http.createServer((req, res) => {
   let body = '';

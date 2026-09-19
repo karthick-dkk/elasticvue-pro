@@ -169,6 +169,18 @@ export class EsClient {
    * occupy disk that nothing accounts for, which is what makes the allocation figures and
    * the index list disagree.
    */
+  /**
+   * Which of these fields exist, and what they are.
+   *
+   * The preflight for anything that aggregates. Elasticsearch does not error on a field
+   * that is not mapped — a terms agg on one returns zero buckets — so asking first is the
+   * only way to tell "nothing matched" apart from "I cannot see this field".
+   */
+  fieldCaps(pattern, fields) {
+    return this.json('GET',
+      `/${encodeURIComponent(pattern)}/_field_caps?ignore_unavailable=true&fields=${encodeURIComponent(fields.join(','))}`);
+  }
+
   danglingIndices() { return this.json('GET', '/_dangling'); }
 
   /**
