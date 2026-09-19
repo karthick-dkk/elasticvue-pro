@@ -5,8 +5,6 @@ import { bytes, num, ago } from '../lib/fmt.js';
 import { state, clusters, activeClusters, fetchIndices } from '../core/state.js';
 import { card, collapsible, pill, statTile, empty, table } from './common.js';
 import { activeRules, runAutomation, resultsFor, allProposals, allBlocked, isRunning, lastRunAt, canArm } from '../core/automation.js';
-import { TASKS, taskById, missingFields, preview, runTask } from '../core/tasks.js';
-import { writeToggle, writesAllowed } from '../core/writes.js';
 import { deleteIndices, closeIndices } from '../ui/index-actions.js';
 import { ruleBuilder } from '../ui/rule-builder.js';
 import { putRule, removeRule, loadRules } from '../core/user-rules.js';
@@ -16,16 +14,6 @@ import { navigateTo } from '../core/intent.js';
 
 let host = null;
 const ui = { showBlocked: true };
-
-/**
- * The task form's state.
- *
- * `values` holds what has been typed, including the password while the form is open. It
- * is cleared the moment a run finishes — the credential exists for exactly as long as it
- * takes to send, and a page that keeps it around for a re-run is a page that keeps it
- * around.
- */
-const taskUi = { id: TASKS[0].id, values: {}, targets: new Set(), running: false, results: null, ran: null };
 
 export function render(el) {
   host = el;
@@ -86,150 +74,7 @@ function draw() {
         h('div.ttl', arm.ok ? 'Arming available' : 'These rules propose. They never act on their own.'),
         h('div', arm.reason))),
 
-    h('div', { style: { marginTop: '10px' } }, taskCard()),
-
     ...activeRules().map((rule) => ruleCard(rule, list)));
-}
-
-/* ----------------------------------- tasks ----------------------------------- */
-
-/**
- * A task, the clusters to apply it to, and what happened on each.
- *
- * The rules above answer "what is wrong here"; this answers "make this true everywhere",
- * which is the other half of running a fleet and the half that otherwise gets done by
- * hand in the REST console, eleven times, slightly differently.
- */
-function taskCard() {
-  const task = taskById(taskUi.id) || TASKS[0];
-  const all = clusters();
-  const chosen = all.filter((c) => taskUi.targets.has(c.id));
-  const missing = missingFields(task, taskUi.values);
-  const picker = h('select', {
-    onchange: (e) => { taskUi.id = e.target.value; taskUi.values = {}; taskUi.results = null; draw(); },
-  }, ...TASKS.map((t) => h('option', { value: t.id }, t.title)));
-  picker.value = task.id;
-
-  const fields = task.fields.map((f) => h('label.field', f.label,
-    h('input', {
-      type: f.type === 'password' ? 'password' : 'text',
-      value: taskUi.values[f.name] || '',
-      placeholder: f.placeholder || '',
-      autocomplete: f.type === 'password' ? 'new-password' : 'off',
-      spellcheck: false,
-      // No redraw per keystroke: it would rebuild the inputs and lose the caret.
-      oninput: (e) => { taskUi.values[f.name] = e.target.value; refreshTaskFoot(); },
-    }),
-    f.hint ? h('span.muted', { style: { fontSize: '10.5px' } }, f.hint) : null));
-
-  const clusterList = h('div', { style: { display: 'grid', gap: '3px', maxHeight: '190px', overflowY: 'auto' } },
-    ...all.map((c) => h('label', {
-      style: { display: 'flex', gap: '7px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' },
-    },
-      h('input', { type: 'checkbox', checked: taskUi.targets.has(c.id),
-        onchange: (e) => {
-          if (e.target.checked) taskUi.targets.add(c.id); else taskUi.targets.delete(c.id);
-          refreshTaskFoot();
-        } }),
-      h('span', c.name),
-      h('span.mono.muted', { style: { fontSize: '10.5px' } }, c.url))));
-
-  const shown = preview(task, taskUi.values);
-  const body = h('div', { style: { display: 'grid', gap: '12px' } },
-    h('div.sec', { style: { fontSize: '12.5px' } }, task.why),
-
-    h('div.grid.c2', { style: { alignItems: 'start' } },
-      h('div', { style: { display: 'grid', gap: '8px' } },
-        h('label.field', 'Task', picker), ...fields),
-      h('div', { style: { display: 'grid', gap: '6px' } },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-          h('b', { style: { fontSize: '12px' } }, 'Apply to'),
-          h('button.btn.sm.ghost', { onclick: () => { all.forEach((c) => taskUi.targets.add(c.id)); draw(); } }, 'all'),
-          h('button.btn.sm.ghost', { onclick: () => { taskUi.targets.clear(); draw(); } }, 'none')),
-        clusterList)),
-
-    // What will be sent, before it is sent. The password is replaced here, not at the
-    // point of display — see preview().
-    h('div', { style: { display: 'grid', gap: '4px' } },
-      h('span.muted', { style: { fontSize: '11px' } }, 'the request each selected cluster will receive'),
-      h('pre.mono', { style: { fontSize: '11px', margin: 0, padding: '8px', background: 'var(--surface-2)',
-                               borderRadius: '4px', overflowX: 'auto' } },
-        `${shown.method} ${shown.path}\n${JSON.stringify(shown.body, null, 2)}`)),
-
-    h('div#task-foot', taskFoot(task, chosen, missing)),
-    taskUi.results ? resultTable(all) : null);
-
-  return card('Tasks', 'one request, applied to the clusters you pick', body,
-    [writeToggle(draw)]);
-
-  function refreshTaskFoot() { drawTaskFoot(task, chosenNow(), missingNow(task)); }
-  function chosenNow() { return clusters().filter((c) => taskUi.targets.has(c.id)); }
-  function missingNow(t) { return missingFields(t, taskUi.values); }
-}
-
-/** The run button and why it is disabled, re-rendered without rebuilding the inputs. */
-function drawTaskFoot(task, chosen, missing) {
-  const el = document.getElementById('task-foot');
-  if (el) mount(el, taskFoot(task, chosen, missing));
-}
-
-function taskFoot(task, chosen, missing) {
-  const allowed = writesAllowed();
-  const ready = allowed && !missing.length && chosen.length > 0 && !taskUi.running;
-  const why = taskUi.running ? 'running…'
-    : !allowed ? 'writes are locked — allow them above'
-    : missing.length ? `fill in ${missing.join(', ')}`
-    : !chosen.length ? 'pick at least one cluster'
-    : `${task.summarise(taskUi.values)} on ${chosen.length} cluster${chosen.length === 1 ? '' : 's'}`;
-  return h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
-    h('button.btn.primary', { disabled: !ready, onclick: () => execute(task, chosen) },
-      taskUi.running ? 'Running…' : 'Run task'),
-    h('span.muted', { style: { fontSize: '11.5px' } }, why));
-}
-
-function resultTable(all) {
-  const byId = new Map(all.map((c) => [c.id, c]));
-  const trs = taskUi.results.map((r) => {
-    const c = byId.get(r.clusterId);
-    return h('tr',
-      h('td', c ? c.name : r.clusterId),
-      h('td', r.ok ? pill('applied', 'green') : pill('failed', 'red')),
-      h('td.muted', { style: { fontSize: '11.5px' } }, r.message));
-  });
-  const okN = taskUi.results.filter((r) => r.ok).length;
-  return h('div', { style: { display: 'grid', gap: '4px' } },
-    h('span.muted', { style: { fontSize: '11px' } },
-      `${taskUi.ran} · ${okN} applied, ${taskUi.results.length - okN} failed`),
-    table(['Cluster', 'Result', 'Detail'], trs, { emptyText: 'nothing ran' }));
-}
-
-async function execute(task, chosen) {
-  const ok = await confirmDialog(
-    `Run "${task.title}" on ${chosen.length} cluster${chosen.length === 1 ? '' : 's'}?`,
-    `${task.summarise(taskUi.values)}\n\n`
-    + `${chosen.map((c) => `  ${c.name}  ${c.url}`).join('\n')}\n\n`
-    + 'Each cluster is done in turn. One refusing does not stop the rest, and the report '
-    + 'below will say which took it.',
-    { yes: `run on ${chosen.length}`, danger: true });
-  if (!ok) return;
-
-  taskUi.running = true;
-  taskUi.results = null;
-  draw();
-  try {
-    const res = await runTask(task, taskUi.values, chosen.map((c) => c.id));
-    taskUi.results = res;
-    taskUi.ran = `ran ${new Date().toISOString().replace('T', ' ').slice(0, 16)}`;
-  } catch (e) {
-    taskUi.results = chosen.map((c) => ({ clusterId: c.id, ok: false, status: 0, message: e.message }));
-    taskUi.ran = 'refused before sending';
-  } finally {
-    taskUi.running = false;
-    // The credential goes the moment the run is over. The rest of the form stays, so a
-    // near-identical task does not have to be retyped from scratch.
-    for (const f of task.fields) if (f.type === 'password') delete taskUi.values[f.name];
-    draw();
-  }
 }
 
 function ruleCard(rule, list) {

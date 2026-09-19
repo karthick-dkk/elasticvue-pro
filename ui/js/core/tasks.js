@@ -86,6 +86,37 @@ export const TASKS = [
     },
     summarise: (v) => `user "${v.name}" with ${csv(v.roles).length} role(s)`,
   },
+  {
+    id: 'security-api-key',
+    title: 'Create an API key',
+    why: 'A credential for a script or an exporter rather than a person. It carries its own '
+       + 'privileges, can be given an expiry, and is shown once — Elasticsearch will not '
+       + 'reveal it again.',
+    danger: 'credential',
+    docs: 'POST /_security/api_key',
+    fields: [
+      { name: 'name', label: 'Key name', required: true, placeholder: 'zabbix-exporter' },
+      { name: 'roles', label: 'Roles to inherit', placeholder: 'log-reader',
+        hint: 'comma separated; leave empty to inherit everything the caller can do' },
+      { name: 'expiration', label: 'Expires after', placeholder: '90d',
+        hint: 'e.g. 30d, 12h — leave empty for a key that never expires' },
+    ],
+    build(v) {
+      const body = { name: v.name };
+      const roles = csv(v.roles);
+      // An empty descriptor means "everything the caller has", which is what Elasticsearch
+      // does with no role_descriptors at all — so it is left out rather than sent empty.
+      if (roles.length) {
+        body.role_descriptors = Object.fromEntries(roles.map((r) => [r, { cluster: [], indices: [] }]));
+      }
+      if (v.expiration) body.expiration = v.expiration;
+      return { method: 'POST', path: '/_security/api_key', body };
+    },
+    summarise: (v) => `API key "${v.name}"`,
+    // The key comes back in the response and is never retrievable again, so the runner
+    // keeps it for the report instead of throwing it away with the rest.
+    keep: (res) => (res && res.value && res.value.encoded ? { encoded: res.value.encoded, id: res.value.id } : null),
+  },
 ];
 
 export function taskById(id) { return TASKS.find((t) => t.id === id) || null; }
@@ -104,12 +135,15 @@ export function missingFields(task, values) {
  * here rather than at the call site so a new task cannot forget it.
  */
 export function preview(task, values) {
+  // build() interpolates the name straight into the path, so an untyped form previewed
+  // as PUT /_security/user/undefined — which reads like a bug in the request rather than
+  // a field nobody has filled in yet. The placeholder says what will go there instead.
   const { method, path, body } = task.build(values);
   const safe = body && typeof body === 'object' ? { ...body } : body;
   if (safe && typeof safe === 'object') {
     for (const k of Object.keys(safe)) if (SECRET.has(k)) safe[k] = '••••••••';
   }
-  return { method, path, body: safe };
+  return { method, path: path.replace(/undefined$/, '…'), body: safe };
 }
 
 /**
@@ -143,6 +177,9 @@ export async function runTask(task, values, clusterIds, { onProgress } = {}) {
         status: res.status || 0,
         // The core's own refusal reads better than the HTTP status it did not reach.
         message: res.ok ? 'applied' : (res.message || res.kind || `HTTP ${res.status}`),
+        // An API key is in the response and nowhere else ever again, so a task that says
+        // it needs something from the reply gets to keep it. Everything else drops it.
+        kept: res.ok && task.keep ? task.keep(res) : null,
       });
     } catch (e) {
       out.push({ clusterId: id, ok: false, status: 0, message: e.message || String(e) });

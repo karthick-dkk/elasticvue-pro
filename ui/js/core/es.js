@@ -154,6 +154,27 @@ export class EsClient {
    * the shards page ranks by size. Unassigned shards come back with an empty node and a
    * reason, which is the row that matters most.
    */
+  /**
+   * The cluster's own accounts and roles.
+   *
+   * Native-realm only: these are the users Elasticsearch stores itself. A cluster using
+   * LDAP or SAML answers with just the built-ins, and one with security switched off
+   * refuses outright — both are worth showing as what they are rather than as an empty
+   * list, so the caller gets the error instead of a silent nothing.
+   */
+  securityUsers() { return this.json('GET', '/_security/user'); }
+  securityRoles() { return this.json('GET', '/_security/role'); }
+
+  deleteSecurityUser(name) {
+    return this.json('DELETE', `/_security/user/${encodeURIComponent(name)}`, null,
+      { allowWrites: true, timeoutMs: 30000 });
+  }
+
+  setSecurityUserEnabled(name, on) {
+    return this.json('PUT', `/_security/user/${encodeURIComponent(name)}/_${on ? 'enable' : 'disable'}`,
+      null, { allowWrites: true, timeoutMs: 30000 });
+  }
+
   shardsAll() {
     return this.json('GET',
       '/_cat/shards?format=json&bytes=b&h=index,shard,prirep,state,node,store,docs,unassigned.reason&s=index,shard');

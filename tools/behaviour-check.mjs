@@ -221,14 +221,16 @@ await go('volume');
     const WANT = ['ClientName', 'ES Host', 'Current Per Day Volume', 'Daily Volume +30%',
       'Current Live Storage', 'Live Used', 'Current Live Storage Store Upto',
       'Required Live Storage for 30days', 'Required Live Storage for 90days',
+      'Live Indices From', 'Live Indices To',
       'Current Backup Storage', 'Backup Storage Type',
-      'Required Backup Storage for 365 days', 'Current Backup storage Store upto'];
+      'Required Backup Storage for 365 days', 'Current Backup storage Store upto',
+      'Snapshot Indices From', 'Snapshot Indices To'];
     h = sheetHeaders();
-    ok(h.length === 13, `volume: the client plan should have 13 columns, has ${h.length}`);
+    ok(h.length === 17, `volume: the client plan should have 17 columns, has ${h.length}`);
     WANT.forEach((w, i) => ok(h[i] && h[i].startsWith(w),
       `volume: client column ${i} is "${h[i]}", expected "${w}"`));
     ok(JSON.stringify(groupBand()) === JSON.stringify(
-      ['Client×1', '×1', 'Volume×2', 'Live storage×5', 'Backup storage×4']),
+      ['Client×1', '×1', 'Volume×2', 'Live storage×7', 'Backup storage×6']),
       `volume: the client plan's group band reads ${groupBand().join(' ')}`);
 
     const rows = doc.querySelectorAll('table.sheet tbody tr').length;
@@ -240,10 +242,11 @@ await go('volume');
     ok(cli && /^client-storage-plan-\d{4}-\d{2}-\d{2}\.csv$/.test(cli.name),
       `volume: the client export is named "${cli && cli.name}"`);
     const hdr = cli ? cli.text.split('\n')[0].split(',') : [];
-    ok(hdr.length === 14, `volume: the client CSV has ${hdr.length} headers, expected 13 + "Generated at"`);
+    ok(hdr.length === 18, `volume: the client CSV has ${hdr.length} headers, expected 17 + "Generated at"`);
     ok(hdr[0] === 'ClientName', `volume: the client CSV starts with "${hdr[0]}"`);
     ok(hdr[2] === 'Current Per Day Volume (GB)', `volume: client CSV column 2 is "${hdr[2]}"`);
-    ok(hdr[12] === 'Current Backup storage Store upto (days)', `volume: client CSV column 12 is "${hdr[12]}"`);
+    ok(hdr[14] === 'Current Backup storage Store upto (days)', `volume: client CSV column 14 is "${hdr[14]}"`);
+    ok(hdr[16] === 'Snapshot Indices To', `volume: client CSV column 16 is "${hdr[16]}"`);
     ok(cli && cli.text.split('\n').length === config.clusters.length + 1,
       `volume: the client CSV has ${cli && cli.text.split('\n').length} lines`);
 
@@ -530,6 +533,63 @@ if (config.clusters.length >= 2) {
     `five at once should collapse to one summary, got ${JSON.stringify(said)}`);
 }
 
+/* -------------- accounts keeps the two kinds of user apart -------------- */
+
+// Rendered directly rather than navigated to: the page is admin-only, and go() correctly
+// refuses it for a session without that role — which would leave this checking Alerts.
+{
+  const accounts = await load('pages/accounts.js');
+  const pane = doc.getElementById('view');
+  while (pane.firstChild) pane.removeChild(pane.firstChild);
+  accounts.render(pane);
+  await settleFor(500);
+
+  const titles = [...pane.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('ElasticVue users'),
+    `accounts: no "ElasticVue users" card, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Cluster users'),
+    `accounts: no "Cluster users" card, saw ${titles.join(' | ')}`);
+  // The two must not be merged back into one "Accounts" table: an app login and a cluster
+  // login are different credentials and one list implies they are not.
+  ok(!titles.includes('Accounts'),
+    'accounts: the generic "Accounts" card is back — the two kinds of user are merged again');
+  ok([...pane.querySelectorAll('button')].some((b) => b.textContent === '+ Create'),
+    'accounts: no "+ Create" button on the cluster users card');
+}
+
+/* ------------- the create dialog asks for what the kind needs ------------- */
+
+{
+  const tasks = await load('core/tasks.js');
+  const byId = (id) => tasks.taskById(id);
+  const names = (t) => t.fields.map((f) => f.name);
+
+  ok(byId('security-api-key'), 'there should be an API key task');
+  ok(!names(byId('security-role')).includes('password'),
+    'a role must not ask for a password');
+  ok(names(byId('security-user')).includes('password'),
+    'a user must ask for a password');
+  ok(!names(byId('security-api-key')).includes('password'),
+    'an API key must not ask for a password');
+  ok(names(byId('security-api-key')).includes('expiration'),
+    'an API key should offer an expiry');
+
+  // The screenshot bug: an untyped form previewed as PUT /_security/user/undefined.
+  const shown = tasks.preview(byId('security-user'), {});
+  ok(!/undefined/.test(shown.path), `an empty form still previews "undefined": ${shown.path}`);
+  ok(shown.path.endsWith('…'), `an empty name should preview as a placeholder: ${shown.path}`);
+
+  // An API key comes back in the response and nowhere else, so the runner keeps it.
+  const key = byId('security-api-key');
+  ok(typeof key.keep === 'function', 'the API key task must keep the key from the response');
+  ok(key.keep({ value: { encoded: 'abc', id: '1' } }).encoded === 'abc',
+    'keep() should lift the encoded key out of the response');
+  ok(key.keep({ value: {} }) === null, 'keep() should return null when there is no key');
+  const noRoles = key.build({ name: 'k' });
+  ok(!('role_descriptors' in noRoles.body),
+    `no roles means inherit the caller's, so the descriptor block is omitted: ${JSON.stringify(noRoles.body)}`);
+}
+
 /* ------------------------------------ verdict ------------------------------------ */
 
 restoreConsole();
@@ -538,6 +598,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: strip, console target, shards page, volume sheets, alert hand-off, scoped refresh, snapshot window, fleet tasks and alert toasts');
+console.log('ok: strip, console target, shards, volume sheets, alert hand-off, scoped refresh, snapshot window, tasks, toasts and the accounts split');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);

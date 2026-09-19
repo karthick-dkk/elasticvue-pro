@@ -483,10 +483,16 @@ const CLIENT_VIEW = [
   { from: 'Current live storage store upto',    group: 'Live storage',   label: 'Current Live Storage Store Upto' },
   { from: 'Disk needed for 30 days',            group: 'Live storage',   label: 'Required Live Storage for 30days' },
   { from: 'Disk needed for 90 days',            group: 'Live storage',   label: 'Required Live Storage for 90days' },
+  { from: 'Oldest index day',                   group: 'Live storage',   label: 'Live Indices From' },
+  { from: 'Newest index day',                   group: 'Live storage',   label: 'Live Indices To' },
   { from: 'Backup space available',             group: 'Backup storage', label: 'Current Backup Storage' },
   { from: 'Where backups go',                   group: 'Backup storage', label: 'Backup Storage Type' },
   { from: 'Backup space required for 365 days', group: 'Backup storage', label: 'Required Backup Storage for 365 days' },
   { from: 'Days the backup size buys',          group: 'Backup storage', label: 'Current Backup storage Store upto' },
+  // Read from the dates inside the index names, not from when the snapshot ran — the
+  // question "how far back can I restore to" is about the data, not the schedule.
+  { from: 'Oldest index day backed up',         group: 'Backup storage', label: 'Snapshot Indices From' },
+  { from: 'Newest index day backed up',         group: 'Backup storage', label: 'Snapshot Indices To' },
 ];
 
 export const CLIENT_COLUMNS = CLIENT_VIEW.map(({ from, group, label }) => {

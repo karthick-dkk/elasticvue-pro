@@ -14,17 +14,25 @@ import { h, mount } from '../lib/dom.js';
 import { bridge } from '../core/transport.js';
 import { card, pill, statTile, empty, table } from './common.js';
 import { modal, field, text, select, val, confirmDialog } from '../ui/modal.js';
+import { clusters } from '../core/state.js';
+import { fetchClusterUsers, createDialog, removeClusterUser } from '../ui/cluster-users.js';
 
 const MIN_PASSWORD = 10;   // must match auth::MIN_PASSWORD
 
 let host = null;
 const ui = { users: [], tokens: [], caller: null, apiTokens: false, err: '', freshSecret: null };
+/** Cluster accounts are read per cluster, on demand — one call each, not on every render. */
+const cu = { byCluster: {}, loading: new Set() };
 
 export function render(el) {
   host = el;
   el.classList.add('dense');
   draw();
   load();
+  // One _security/user call per cluster, on arrival rather than on every render. A
+  // cluster with security off answers with an error, which is cached the same way — it
+  // should be asked once, not on a loop.
+  clusters().forEach((c) => { if (!cu.byCluster[c.id] && !cu.loading.has(c.id)) loadClusterUsers(c.id); });
 }
 export function onData() { /* accounts do not change when cluster data does */ }
 
@@ -55,6 +63,66 @@ function roleCell(role) {
   return h('span', { title: ROLE_HELP[role] || '' }, pill(role, cls));
 }
 
+/* ------------------------- the cluster's own accounts ------------------------- */
+
+/**
+ * Elasticsearch accounts, per cluster.
+ *
+ * Kept firmly apart from the list above, because two different things are called "user"
+ * here: an ElasticVue account signs in to this app and its role decides which pages it
+ * sees; an Elasticsearch account signs in to a cluster and its roles decide which indices
+ * it can read. Neither implies the other, and showing them in one table would suggest
+ * they do.
+ */
+function clusterUsersCard() {
+  const all = clusters();
+  if (!all.length) return card('Cluster users', 'no clusters configured', empty('Add a cluster first.'));
+
+  const blocks = all.map((c) => {
+    const got = cu.byCluster[c.id];
+    const head = h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '6px' } },
+      h('b', { style: { fontSize: '12.5px' } }, c.name),
+      h('span.mono.muted', { style: { fontSize: '10.5px' } }, c.url),
+      h('div', { style: { marginLeft: 'auto' } },
+        h('button.btn.sm.ghost', { onclick: () => loadClusterUsers(c.id) },
+          cu.loading.has(c.id) ? 'Reading…' : '↻')));
+
+    if (!got) return h('div', head, h('div.muted', { style: { fontSize: '11.5px' } }, 'not read yet'));
+    if (got.error) {
+      return h('div', head,
+        h('div.muted', { style: { fontSize: '11.5px', color: 'var(--warning)' } }, got.error));
+    }
+    const trs = got.users.map((u) => h('tr',
+      h('td', h('b', u.name),
+        u.reserved ? h('span.muted', { style: { marginLeft: '6px', fontSize: '10.5px' } }, '(built-in)') : null,
+        !u.enabled ? h('span.muted', { style: { marginLeft: '6px', fontSize: '10.5px' } }, '(disabled)') : null),
+      h('td', h('span.mono', { style: { fontSize: '11px' } }, (u.roles || []).join(', ') || '–')),
+      h('td.muted', { style: { fontSize: '11.5px' } }, u.fullName || u.email || ''),
+      h('td', { style: { textAlign: 'right' } },
+        h('button.btn.sm.ghost', {
+          // A built-in account cannot be deleted and Elasticsearch says so with a 400;
+          // refusing here is a clearer answer than relaying that.
+          disabled: u.reserved,
+          title: u.reserved ? 'Built-in accounts cannot be removed' : `Remove ${u.name} from ${c.name}`,
+          onclick: () => removeClusterUser(c.id, u.name, { onDone: () => loadClusterUsers(c.id) }),
+        }, '×'))));
+    return h('div', head,
+      table(['Name', 'Roles', '', ''], trs, { emptyText: 'No native-realm accounts on this cluster.' }));
+  });
+
+  return card('Cluster users', 'accounts on the Elasticsearch clusters themselves',
+    h('div', { style: { display: 'grid', gap: '10px' } }, ...blocks),
+    [h('button.btn.sm.primary', {
+      onclick: () => createDialog({ onDone: () => all.forEach((c) => loadClusterUsers(c.id)) }),
+    }, '+ Create')]);
+}
+
+async function loadClusterUsers(id) {
+  cu.loading.add(id); draw();
+  cu.byCluster[id] = await fetchClusterUsers(id);
+  cu.loading.delete(id); draw();
+}
+
 function draw() {
   if (!host || !host.isConnected) return;
   const admins = ui.users.filter((u) => u.role === 'admin' && !u.disabled).length;
@@ -69,14 +137,14 @@ function draw() {
       statTile('Guests', String(ui.users.filter((u) => u.role === 'guest').length), 'dashboard only')),
 
     h('div.toolbar',
-      h('button.btn.sm.primary', { onclick: () => editUser(null) }, '+ New account'),
+      h('button.btn.sm.primary', { onclick: () => editUser(null) }, '+ New ElasticVue user'),
       h('button.btn.sm', { onclick: load }, '↻ Reload'),
       h('div', { style: { marginLeft: 'auto' } },
         h('span.muted', { style: { fontSize: '11px' } },
           ui.caller ? `signed in as ${ui.caller.name}` : ''))),
 
     h('div', { style: { marginTop: '10px' } },
-      card('Accounts', `${ui.users.length} on this installation`,
+      card('ElasticVue users', `${ui.users.length} who can sign in to this app`,
         table(['Name', 'Role', 'Created', ''], ui.users.map((u) => h('tr',
           h('td', h('b', u.name), u.disabled ? h('span.muted', { style: { marginLeft: '6px', fontSize: '11px' } }, '(disabled)') : null),
           h('td', roleCell(u.role)),
@@ -91,6 +159,8 @@ function draw() {
               onclick: () => removeUser(u),
             }, '×')))),
           { emptyText: 'No accounts yet.' }))),
+
+    h('div', { style: { marginTop: '10px' } }, clusterUsersCard()),
 
     ui.apiTokens ? tokensCard() : notHostedNote(),
   );
