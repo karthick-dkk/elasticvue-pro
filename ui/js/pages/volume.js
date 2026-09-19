@@ -4,14 +4,14 @@
 import { h, mount, $, activatable } from '../lib/dom.js';
 import { bytes, num, ago, dt, toCsv, download, plural } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices } from '../core/state.js';
-import { card, collapsible, pill, statTile, table, empty } from './common.js';
+import { card, collapsible, pill, table, empty } from './common.js';
 import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
 import { volumeReport, reportRows, SHEET_COLUMNS, CLIENT_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
 import { popover } from '../ui/menu.js';
 
 let host = null;
-const ui = { measuring: new Set(), view: 'sheet', sort: 'name', dir: 1 };
+const ui = { measuring: new Set(), view: 'summary', sort: 'name', dir: 1 };
 /** Measured repository sizes, per cluster. Elasticsearch does not report this cheaply. */
 const repoBytes = new Map();
 
@@ -57,37 +57,26 @@ function draw() {
   if (!list.length) return mount(host, empty('No cluster selected'));
   const reports = list.map(reportFor);
 
-  const totalPerDay = reports.reduce((s, r) => s + r.perDayGB, 0);
-  const totalLive = reports.reduce((s, r) => s + r.liveTotalGB, 0);
-  const shortest = reports.filter((r) => r.liveSufficientDays !== null)
-    .sort((a, b) => a.liveSufficientDays - b.liveSufficientDays)[0];
-  const failing = reports.filter((r) => r.liveRetentionMet === false).length;
+  const viewBtn = (id, label, title) => h(`button.btn.sm${ui.view === id ? '.primary' : ''}`, {
+    title, onclick: () => { ui.view = id; draw(); },
+  }, label);
 
   mount(host,
-    h('div.grid.c4', { style: { marginBottom: '10px' } },
-      statTile('Fleet ingest', `${totalPerDay.toFixed(1)} GB`, 'per day, all clusters'),
-      statTile('Live storage', `${totalLive.toFixed(0)} GB`, plural(list.length, 'cluster')),
-      statTile('Runs out first', shortest ? `${Math.floor(shortest.liveSufficientDays)} d` : '–',
-        shortest ? shortest.cluster.name : 'no disk data'),
-      statTile('Retention at risk', String(failing),
-        failing ? 'cluster(s) cannot hold their policy' : 'all within policy')),
-
     h('div.toolbar',
       h('span.muted', { style: { fontSize: '11.5px' } },
         `updated ${ago(state.lastRefresh)} · per-day volume from the dated indices, today excluded`),
-      h('label.field', 'View', (() => {
-        const sel = h('select', { onchange: (e) => { ui.view = e.target.value; draw(); } },
-          h('option', { value: 'sheet' }, 'Spreadsheet — every parameter'),
-          h('option', { value: 'client' }, 'Client storage plan — 13 columns'),
-          h('option', { value: 'summary' }, 'Summary table'));
-        sel.value = ui.view; return sel;
-      })()),
+      // Three buttons rather than a dropdown: there are three views, one is always on, and
+      // which one is showing is then visible without opening anything.
+      h('div', { style: { display: 'flex', gap: '4px' } },
+        viewBtn('summary', 'Summary', 'One line per cluster — the figures that get asked for'),
+        viewBtn('sheet', 'Full report', `Every parameter — ${SHEET_COLUMNS.length} columns`),
+        viewBtn('client', 'Client plan', `The storage plan — ${CLIENT_COLUMNS.length} columns`)),
       h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
         h('button.btn.sm', { onclick: () => refreshAll({ force: true, selected: true }) }, '↻ Refresh'),
         h('button.btn.sm.primary', {
           title: ui.view === 'summary'
             ? 'One row per cluster, every parameter as a column — the full report, not the summary above'
-            : `One row per cluster, the ${activeView().cols().length} columns of this view — the shape a spreadsheet wants`,
+            : `One row per cluster, the ${activeView().cols().length} columns of this view`,
           onclick: () => exportWide(reports, activeView()),
         }, 'Export CSV'),
         h('button.btn.sm', {

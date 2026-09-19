@@ -179,6 +179,13 @@ await go('shards');
   const moves = [...doc.querySelectorAll('button')].filter((b) => b.textContent === 'Move…').length;
   ok(moves === 2 * shown,
     `shards: expected a Move button on each of the 2 started shards per cluster (${2 * shown}), found ${moves}`);
+
+  // The node half, which this page lost when it stopped being "Nodes & shards".
+  ok(titles.includes('Nodes'), `shards: no Nodes card, saw ${titles.join(' | ')}`);
+  for (const col of ['Node', 'Roles', 'Version', 'Heap', 'RAM', 'CPU', 'Load 1m/5m', 'Disk', 'Uptime']) {
+    ok(heads.includes(col), `shards: the node table has no "${col}" column, saw ${heads.join(', ')}`);
+  }
+  ok(/master/i.test(doc.body.textContent), 'shards: the master node is not marked');
 }
 
 await go('indices');
@@ -194,6 +201,17 @@ ok(panel('Repositories') && panel('Repositories').querySelector('.body').hidden,
 
 await go('volume');
 {
+  const viewBtn = (label) => [...doc.querySelectorAll('button')].find((b) => b.textContent === label);
+  // Three buttons, not a dropdown, and the summary is what the page opens on.
+  for (const label of ['Summary', 'Full report', 'Client plan']) {
+    ok(!!viewBtn(label), `volume: no "${label}" view button`);
+  }
+  ok(!!panel('Capacity by cluster'), 'volume: the page should open on the summary table');
+  ok(![...doc.querySelectorAll('.stat')].some((x) => /FLEET INGEST/i.test(x.textContent)),
+    'volume: the fleet stat tiles are back');
+
+  viewBtn('Full report').click();
+  await settleFor(220);
   let h = sheetHeaders();
   ok(h.some((x) => x.startsWith('Current live storage store upto')),
     `volume: the renamed column is missing — got ${h.slice(5, 10).join(' | ')}`);
@@ -211,11 +229,8 @@ await go('volume');
   ok(full && full.text.includes('Current live storage store upto (days)'),
     'volume: the renamed column did not reach the CSV');
 
-  const sel = [...doc.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'client'));
-  ok(!!sel, 'volume: the View select does not offer the client storage plan');
-  if (sel) {
-    sel.value = 'client';
-    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  {
+    viewBtn('Client plan').click();
     await settleFor(220);
 
     const WANT = ['ClientName', 'ES Host', 'Current Per Day Volume', 'Daily Volume +30%',
@@ -250,8 +265,7 @@ await go('volume');
     ok(cli && cli.text.split('\n').length === config.clusters.length + 1,
       `volume: the client CSV has ${cli && cli.text.split('\n').length} lines`);
 
-    sel.value = 'summary';
-    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    viewBtn('Summary').click();
     await settleFor(200);
     ok(!!panel('Capacity by cluster'), 'volume: the summary view did not render');
   }
@@ -588,6 +602,64 @@ if (config.clusters.length >= 2) {
   const noRoles = key.build({ name: 'k' });
   ok(!('role_descriptors' in noRoles.body),
     `no roles means inherit the caller's, so the descriptor block is omitted: ${JSON.stringify(noRoles.body)}`);
+}
+
+/* --------------- the master and the disk that nothing accounts for --------------- */
+
+{
+  const st = await load('core/state.js');
+  const { DEFAULTS } = await load('core/config.js');
+  const base = (nodes, extra = {}) => {
+    st.state.defaults = { ...DEFAULTS };
+    st.state.config = { clusters: [{ id: 'c1', name: 'prod', url: 'http://es:9200', enabled: true }] };
+    st.state.selected = 'all';
+    st.state.clients = new Map([['c1', { state: 'online' }]]);
+    st.state.indices = new Map();
+    st.state.data = new Map([['c1', {
+      reachable: true, health: { status: 'green' }, slm: [], repos: [], snapshots: {},
+      nodes, master: (nodes.find((n) => n.master === '*') || {}).name || null, ...extra,
+    }]]);
+  };
+  const keys = () => st.alerts().map((a) => a.key);
+
+  // No master at all is critical.
+  base([{ name: 'n1', master: '-' }, { name: 'n2', master: '-' }]);
+  ok(keys().includes('c1:no-master'), `a cluster with no master should be critical: ${keys().join(', ')}`);
+  ok(st.alerts().find((a) => a.key === 'c1:no-master').level === 'critical', 'no-master must be critical');
+
+  // A master that has always been this one is not news.
+  base([{ name: 'n1', master: '*' }, { name: 'n2', master: '-' }]);
+  ok(!keys().some((k) => k.startsWith('c1:master-changed')),
+    `a steady master should raise nothing: ${keys().join(', ')}`);
+
+  // One that just moved is.
+  base([{ name: 'n2', master: '*' }, { name: 'n1', master: '-' }],
+    { masterChangedFrom: 'n1', masterChangedAt: Date.now() - 60000 });
+  const moved = st.alerts().find((a) => a.key.startsWith('c1:master-changed'));
+  ok(!!moved && moved.level === 'critical', `a master election should be critical: ${keys().join(', ')}`);
+  ok(moved && /from n1 to n2/.test(moved.title), `the alert should name both: ${moved && moved.title}`);
+
+  // And one that moved a week ago is history, not an alert.
+  base([{ name: 'n2', master: '*' }],
+    { masterChangedFrom: 'n1', masterChangedAt: Date.now() - 8 * 86400000 });
+  ok(!keys().some((k) => k.startsWith('c1:master-changed')),
+    'an election from last week should have aged out');
+
+  // Disk Elasticsearch holds against disk the indices explain.
+  base([{ name: 'n1', master: '*' }], { disk: { indicesBytes: 100 * 1024 ** 3, nodes: [] } });
+  st.state.indices.set('c1', [{ index: 'a', size: 30 * 1024 ** 3 }]);
+  const gap = st.alerts().find((a) => a.key === 'c1:disk-unaccounted');
+  ok(!!gap, `a 70 GB gap should be reported: ${keys().join(', ')}`);
+  ok(gap && /not accounted for/.test(gap.title), `gap title: ${gap && gap.title}`);
+
+  // Agreeing closely is the normal case and says nothing.
+  st.state.indices.set('c1', [{ index: 'a', size: 99 * 1024 ** 3 }]);
+  ok(!keys().includes('c1:disk-unaccounted'), 'a 1% difference is not worth an alert');
+
+  // No index list means unknown, not "all of it is unaccounted for".
+  st.state.indices = new Map();
+  ok(!keys().includes('c1:disk-unaccounted'),
+    'without an index list the gap is unknown and must not be reported as the whole of it');
 }
 
 /* ------------------------------------ verdict ------------------------------------ */

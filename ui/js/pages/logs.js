@@ -20,6 +20,8 @@ const ui = {
   sourceFilter: 'all',
   from: '', to: '',
   query: '',
+  field: 'any',
+  term: '',
   size: 200,
   running: false,
   error: null,
@@ -92,6 +94,20 @@ async function search({ silent = false } = {}) {
   const filters = [{ range: { [c.timeField]: { gte, lte, format: 'strict_date_optional_time' } } }];
   const must = ui.query.trim() ? [{ query_string: { query: ui.query.trim(), analyze_wildcard: true, default_field: '*' } }] : [];
 
+  // The field picker, as a second clause rather than text spliced into the Lucene box —
+  // a value containing a space or a colon would otherwise change what the query means.
+  //
+  // Both the field and its .keyword are searched because which one exists depends on the
+  // mapping, and `lenient` keeps a field this index does not have from failing the whole
+  // search: no hits for that clause is the honest answer, an error is not.
+  const term = ui.term.trim();
+  if (term) {
+    must.push(ui.field === 'any'
+      ? { query_string: { query: term, analyze_wildcard: true, default_field: '*', lenient: true } }
+      : { query_string: { query: term, analyze_wildcard: true, lenient: true,
+                          fields: [ui.field, `${ui.field}.keyword`] } });
+  }
+
   const body = {
     size: Number(ui.size) || 100,
     track_total_hits: 10000,
@@ -157,7 +173,17 @@ function draw() {
     h('label.field', 'Source', sel),
     h('label.field', 'From', h('input', { type: 'datetime-local', value: ui.from, onchange: (e) => { ui.from = e.target.value; } })),
     h('label.field', 'To', h('input', { type: 'datetime-local', value: ui.to, onchange: (e) => { ui.to = e.target.value; } })),
-    h('label.field', 'Lucene query', h('input', { type: 'search', value: ui.query, placeholder: 'level:ERROR AND host:web*', style: { minWidth: '260px' },
+    h('label.field', 'Field', (() => {
+      const fields = (c.logSearchFields && c.logSearchFields.length) ? c.logSearchFields : [];
+      const f = h('select', { onchange: (e) => { ui.field = e.target.value; if (ui.term.trim()) search(); } },
+        h('option', { value: 'any' }, 'Any field'),
+        ...fields.map((n) => h('option', { value: n }, n)));
+      f.value = ui.field; return f;
+    })()),
+    h('label.field', 'Value', h('input', { type: 'search', value: ui.term, placeholder: 'web-01, 10.0.*, timeout',
+      style: { minWidth: '180px' },
+      oninput: (e) => { ui.term = e.target.value; }, onkeydown: (e) => { if (e.key === 'Enter') search(); } })),
+    h('label.field', 'Lucene query', h('input', { type: 'search', value: ui.query, placeholder: 'level:ERROR AND host:web*', style: { minWidth: '220px' },
       oninput: (e) => { ui.query = e.target.value; }, onkeydown: (e) => { if (e.key === 'Enter') search(); } })),
     h('label.field', 'Rows', h('input', { type: 'number', min: '10', max: '2000', step: '10', value: String(ui.size), style: { width: '84px' },
       onchange: (e) => { ui.size = Number(e.target.value) || 200; } })),

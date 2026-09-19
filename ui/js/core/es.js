@@ -162,6 +162,15 @@ export class EsClient {
    * refuses outright — both are worth showing as what they are rather than as an empty
    * list, so the caller gets the error instead of a silent nothing.
    */
+  /**
+   * Indices whose data is on disk but which the cluster state does not know about.
+   *
+   * Usually the remains of a node that was removed while an index still lived on it. They
+   * occupy disk that nothing accounts for, which is what makes the allocation figures and
+   * the index list disagree.
+   */
+  danglingIndices() { return this.json('GET', '/_dangling'); }
+
   securityUsers() { return this.json('GET', '/_security/user'); }
   securityRoles() { return this.json('GET', '/_security/role'); }
 

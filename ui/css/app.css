@@ -570,7 +570,9 @@ body.popup { width: 330px; background: var(--surface-1); }
 
 /* A short-lived confirmation, so an action that closes its own panel still says it
    happened. Fades itself out; never needs dismissing. */
-.toast-wrap { position: fixed; z-index: 90; right: 16px; bottom: 16px; display: grid; gap: 8px; }
+/* Top right: the bottom-right corner is where the page's own content ends up on a
+   short window, and a toast there covers the thing it is telling you about. */
+.toast-wrap { position: fixed; z-index: 90; right: 16px; top: 56px; display: grid; gap: 8px; }
 .toast {
   background: var(--surface-1); border: 1px solid var(--border-strong);
   border-left: 3px solid var(--good); border-radius: var(--radius);
@@ -579,8 +581,9 @@ body.popup { width: 330px; background: var(--surface-1); }
 }
 .toast.warn { border-left-color: var(--warning); }
 .toast.err  { border-left-color: var(--critical); }
-.toast.out  { opacity: 0; transform: translateY(4px); transition: opacity .25s, transform .25s; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.toast.out  { opacity: 0; transform: translateY(-4px); transition: opacity .25s, transform .25s; }
+/* Anchored at the top, so it arrives from above rather than sliding up from nowhere. */
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
 /* Reduced motion. The spinner is an infinite rotation that runs through every refresh
    cycle, which is exactly the kind of movement this query exists to stop. Transitions

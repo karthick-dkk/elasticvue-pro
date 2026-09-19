@@ -1,6 +1,8 @@
 /** Application state, refresh loop and auto-reconnect. */
 
 import { EsClient, primeWorker, setBadge, requestStats } from './es.js';
+// lib/fmt is a leaf: no cycle, and two alert sentences need to read like the rest of the UI.
+import { bytes as bytesish, ago } from '../lib/fmt.js';
 // Cyclic with field-volume.js, which needs client() from here. Safe because both sides
 // only touch the other inside functions, never while the modules are evaluating.
 import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
@@ -205,6 +207,30 @@ export function buildClusterData(id, prev, raw) {
     };
   }
   out.nodes = nodes.ok ? nodes.value : [];
+
+  // Who is master, and whether that changed since the last look.
+  //
+  // A master election is not a fault on its own, but it is never nothing: it means the
+  // old master left, was partitioned off, or was restarted, and whatever else went wrong
+  // in that window usually starts there. The previous holder is remembered so the alert
+  // can say what it changed from — "master is node-3" is not news, "master moved from
+  // node-1 to node-3" is.
+  if (nodes.ok) {
+    const now = (out.nodes.find((n) => String(n.master || '').trim() === '*') || {}).name || null;
+    out.master = now;
+    if (prev.master && now && prev.master !== now) {
+      out.masterChangedFrom = prev.master;
+      out.masterChangedAt = Date.now();
+    } else {
+      // Carried forward so the alert survives the refreshes after the election itself.
+      out.masterChangedFrom = prev.masterChangedFrom || null;
+      out.masterChangedAt = prev.masterChangedAt || null;
+    }
+  } else {
+    out.master = prev.master || null;
+    out.masterChangedFrom = prev.masterChangedFrom || null;
+    out.masterChangedAt = prev.masterChangedAt || null;
+  }
   out.ilm = ilm.ok ? ilm.value : null;
   out.ilmErrorCount = ilmErr.ok && ilmErr.value && ilmErr.value.indices ? Object.keys(ilmErr.value.indices).length : 0;
   out.ilmErrors = ilmErr.ok && ilmErr.value ? ilmErr.value.indices || {} : {};
@@ -549,6 +575,35 @@ export function alerts() {
         detail: `${sp.latest.docs.toLocaleString()} documents on ${sp.latestDay} against a ` +
                 `${Math.round(sp.baseline).toLocaleString()} average over the previous ${sp.baselineDays} days` });
     }
+    // Who holds the master role, and whether it just changed hands.
+    if (d.master === null && d.nodes && d.nodes.length) {
+      add({ key: `${c.id}:no-master`, level: 'critical', cluster: c,
+        title: `${c.name}: no master node`,
+        detail: `${d.nodes.length} node(s) answered but none holds the master role. The cluster `
+              + 'cannot accept changes to its state until one is elected.' });
+    } else if (d.masterChangedAt && Date.now() - d.masterChangedAt < MASTER_ALERT_HOURS * 3600 * 1000) {
+      add({ key: `${c.id}:master-changed:${d.masterChangedFrom}->${d.master}`, level: 'critical', cluster: c,
+        title: `${c.name}: master moved from ${d.masterChangedFrom} to ${d.master}`,
+        detail: `Elected ${ago(d.masterChangedAt)}. The previous master left, was cut off or was `
+              + 'restarted; anything else that went wrong around then probably started there.' });
+    }
+
+    // Disk Elasticsearch holds that no index accounts for.
+    {
+      const acct = diskAccounting(d, state.indices.get(c.id));
+      if (acct.material) {
+        const dang = danglingFor(c.id);
+        const named = dang && dang.indices && dang.indices.length
+          ? ` ${dang.indices.length} dangling index(es): ${dang.indices.slice(0, 3).map((x) => x.index_name).join(', ')}.`
+          : dang ? ' No dangling indices, so it is orphaned shard data rather than a lost index.'
+                 : ' Open Nodes & shards to check for dangling indices.';
+        add({ key: `${c.id}:disk-unaccounted`, level: 'warning', cluster: c,
+          title: `${c.name}: ${bytesish(acct.gap)} of disk is not accounted for by any index`,
+          detail: `Elasticsearch holds ${bytesish(acct.held)} on its data path but the index list `
+                + `totals ${bytesish(acct.accounted)}.${named}` });
+      }
+    }
+
     // Snapshots, per repository, over the last five runs and no further back.
     //
     // A repository that has been running for a year holds hundreds of snapshots, and
@@ -576,6 +631,41 @@ export function alerts() {
 
   return out;
 }
+
+/** How long a master election stays worth an alert. */
+export const MASTER_ALERT_HOURS = 24;
+
+/**
+ * Disk that Elasticsearch holds but no open or closed index accounts for.
+ *
+ * `_cat/allocation` reports what the data path occupies; `_cat/indices` reports what the
+ * indices in the cluster state occupy. They should agree closely. When allocation is
+ * materially larger, the difference is data on disk that the cluster state does not
+ * account for — a dangling index left by a removed node, or shard directories orphaned by
+ * a failed relocation. That is disk nobody is going to reclaim by deleting an index,
+ * because there is no index to delete.
+ *
+ * Reported as unknown rather than zero when either figure is missing: a missing index
+ * list would otherwise make the whole of allocation look unaccounted for.
+ */
+export const DISK_GAP_MIN_BYTES = 1024 ** 3;     // a gigabyte
+export const DISK_GAP_MIN_RATIO = 0.05;          // and at least 5% of what ES holds
+
+export function diskAccounting(d, indices) {
+  const held = d && d.disk ? Number(d.disk.indicesBytes) || 0 : 0;
+  if (!held || !Array.isArray(indices) || !indices.length) {
+    return { known: false, held, accounted: 0, gap: 0, material: false };
+  }
+  const accounted = indices.reduce((sum, i) => sum + (Number(i.size) || 0), 0);
+  const gap = held - accounted;
+  const material = gap > DISK_GAP_MIN_BYTES && gap > held * DISK_GAP_MIN_RATIO;
+  return { known: true, held, accounted, gap, material };
+}
+
+/** Dangling indices, per cluster — read by the Nodes & shards page, on demand. */
+const dangling = new Map();
+export function setDangling(clusterId, v) { dangling.set(clusterId, v); }
+export function danglingFor(clusterId) { return dangling.get(clusterId) || null; }
 
 /** Snapshot alerts look this far back, and no further. */
 export const SNAPSHOT_WINDOW = 5;

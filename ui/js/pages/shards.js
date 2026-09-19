@@ -1,19 +1,19 @@
 /**
- * Page — shards: where every shard is, and moving it somewhere else.
+ * Page — nodes and shards: what the cluster is made of, and moving pieces of it.
  *
- * This replaced "Nodes & shards", which led with node health and treated shards as a list
- * of things that had gone wrong. Shards are the unit of work: an index is only as
- * available as its shards, a full disk is a shard-placement problem, and a yellow cluster
- * is a shard that has nowhere to go. So they lead, and the nodes appear as what they are
- * here — the places a shard can be put, with the disk left to put it on.
+ * Shards lead because they are the unit of work: an index is only as available as its
+ * shards, a full disk is a placement problem, and a yellow cluster is a shard with
+ * nowhere to go. The nodes are here in full underneath — roles, heap, load, disk — both
+ * because choosing where to move a shard needs them and because "which node is master,
+ * and is it struggling" is asked at the same moment as "where is this shard".
  */
 
-import { h, mount, $ } from '../lib/dom.js';
+import { h, mount } from '../lib/dom.js';
 import { bytes, num, pct, compact } from '../lib/fmt.js';
-import { state, clusters, activeClusters, client, refreshAll } from '../core/state.js';
+import { state, clusters, activeClusters, client, refreshAll, fetchIndices,
+         diskAccounting, setDangling, danglingFor } from '../core/state.js';
 import { card, statTile, table, empty, pill, connectionBanner } from './common.js';
-import { modal, field, select, val } from '../ui/modal.js';
-import { confirmDialog } from '../ui/modal.js';
+import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
 
@@ -27,9 +27,35 @@ export function render(el) {
   host = el;
   el.classList.add('dense');
   draw();
-  activeClusters().forEach((c) => { if (!shards.has(c.id)) load(c); });
+  refresh();
 }
-export function onData() { if (host && host.isConnected) draw(); }
+export function onData() {
+  if (!host || !host.isConnected) return;
+  draw();
+  refresh();
+}
+
+/**
+ * Load anything not loaded yet.
+ *
+ * Re-checked on every visit and every data event, not only on the first render. The first
+ * version cached the result — including a failure — for the life of the page module, so a
+ * cluster that was still connecting when you first opened this page stayed blank until a
+ * full reload, while every other page filled in. A failure is worth keeping only until
+ * there is a reason to think it would go differently.
+ */
+function refresh() {
+  for (const c of activeClusters()) {
+    const got = shards.get(c.id);
+    const worthRetrying = !got || (got.error && isReachable(c.id));
+    if (worthRetrying && !loading.has(c.id)) load(c);
+    // The index list is what the disk accounting is compared against; only the Indices
+    // page fetches it otherwise.
+    if (!state.indices.get(c.id)) fetchIndices(c.id, '*').catch(() => {});
+  }
+}
+
+const isReachable = (id) => !!(state.data.get(id) || {}).reachable;
 
 async function load(c) {
   const cl = client(c.id);
@@ -42,6 +68,15 @@ async function load(c) {
   } finally {
     loading.delete(c.id); draw();
   }
+  // Only worth asking when the figures disagree; the answer decides what the gap is.
+  try {
+    const acct = diskAccounting(state.data.get(c.id) || {}, state.indices.get(c.id));
+    if (acct.material) {
+      const res = await cl.danglingIndices();
+      setDangling(c.id, { indices: (res && res.dangling_indices) || [], at: Date.now() });
+      draw();
+    }
+  } catch (_) { /* the alert says to look here; it does not depend on this succeeding */ }
 }
 
 function draw() {
@@ -58,28 +93,125 @@ function block(c) {
   if (!d.reachable) return connectionBanner(c, () => refreshAll({ force: true, selected: true }));
 
   const raw = shards.get(c.id);
-  if (loading.has(c.id) && !raw) return card(c.name, c.url, empty('Reading the shard table…'));
-  if (raw && raw.error) {
-    return card(c.name, c.url, h('div.banner.err', { style: { margin: 0 } },
-      h('div', h('div.ttl', 'Could not read the shard table'), h('div.mono', raw.error))));
-  }
   const all = Array.isArray(raw) ? raw.map(normalise) : [];
 
   const started = all.filter((s) => s.state === 'STARTED');
   const moving = all.filter((s) => s.state === 'RELOCATING' || s.state === 'INITIALIZING');
   const unassigned = all.filter((s) => s.state === 'UNASSIGNED');
+  const nodes = d.nodes || [];
 
   return h('div', { style: { display: 'grid', gap: '10px' } },
     h('div.grid.c4',
-      statTile('Shards', num(all.length), `${c.name}`),
-      statTile('Started', num(started.length),
-        all.length ? pct((started.length / all.length) * 100, 1) : '–'),
-      statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight'),
+      statTile('Nodes', num(nodes.length), d.master ? `master ${d.master}` : 'no master elected'),
+      statTile('Shards', num(all.length), c.name),
       statTile('Unassigned', num(unassigned.length),
-        unassigned.length ? 'not placed on any node' : 'every shard is placed')),
+        unassigned.length ? 'not placed on any node' : 'every shard is placed'),
+      statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
-    nodeStrip(c, d, all),
-    shardTable(c, d, all));
+    nodesCard(c, d),
+    accountingCard(c, d),
+    shardsCard(c, d, all, raw, started));
+}
+
+/** Everything _cat/nodes knows, which is what "is this node healthy" is answered from. */
+function nodesCard(c, d) {
+  const nodes = d.nodes || [];
+  if (!nodes.length) return card('Nodes', 'none reported', empty('The cluster did not return a node list.'));
+  const alloc = (d.disk && d.disk.nodes) || [];
+
+  const trs = nodes.map((n) => {
+    const a = alloc.find((x) => x.node === n.name) || {};
+    const used = Number(n['disk.used']) || Number(a['disk.used']) || 0;
+    const total = Number(n['disk.total']) || Number(a['disk.total']) || 0;
+    const p = total ? (used / total) * 100 : NaN;
+    const heap = Number(n['heap.percent']);
+    const isMaster = String(n.master || '').trim() === '*';
+    return h('tr',
+      h('td', h('div', { style: { fontWeight: 620 } }, n.name,
+        isMaster ? h('span', { style: { marginLeft: '6px' } }, pill('master', 'blue')) : null),
+        h('div.mono.muted', { style: { fontSize: '10.5px' } }, n.ip || '')),
+      h('td', h('span.mono', { style: { fontSize: '11px' }, title: roleTitle(n['node.role']) },
+        n['node.role'] || '–')),
+      h('td.muted', { style: { fontSize: '11.5px' } }, n.version || ''),
+      h('td.num', isFinite(heap) ? heapCell(heap, n) : '–'),
+      h('td.num', n['ram.percent'] ? `${n['ram.percent']}%` : '–'),
+      h('td.num', n.cpu ? `${n.cpu}%` : '–'),
+      h('td.num.muted', `${n.load_1m || '–'} / ${n.load_5m || '–'}`),
+      h('td', diskBar(used, total, p, Number(a.shards) || null)),
+      h('td.muted', { style: { fontSize: '11.5px' } }, n.uptime || ''));
+  });
+
+  return card('Nodes', `${nodes.length} node(s)${d.master ? ` · master ${d.master}` : ' · no master'}`,
+    table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
+           { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
+      trs, { emptyText: 'No nodes returned' }));
+}
+
+function heapCell(p, n) {
+  const colour = p >= 85 ? 'var(--critical)' : p >= 75 ? 'var(--warning)' : 'inherit';
+  const cur = Number(n['heap.current']), max = Number(n['heap.max']);
+  return h('span', { style: { color: colour, fontWeight: p >= 75 ? 640 : 400 },
+    title: isFinite(cur) && isFinite(max) ? `${bytes(cur)} of ${bytes(max)}` : '' }, `${p}%`);
+}
+
+function diskBar(used, total, p, shardCount) {
+  if (!total) return h('span.muted', '–');
+  const colour = p >= 90 ? 'var(--critical)' : p >= 80 ? 'var(--warning)' : 'var(--good)';
+  return h('div', { style: { display: 'grid', gap: '3px', minWidth: '170px' } },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '11px' } },
+      h('span', `${p.toFixed(1)}%`),
+      h('span.muted', `${bytes(total - used)} free${shardCount !== null ? ` · ${num(shardCount)} shards` : ''}`)),
+    h('div.bar-mini', h('i', { style: { width: `${Math.min(100, Math.max(1.5, p))}%`, background: colour } })));
+}
+
+/**
+ * The letters _cat/nodes uses for roles, spelled out.
+ *
+ * "cdfhilmrstw" is not readable, and the difference between a node that holds data and
+ * one that only coordinates is the first thing you want when a shard will not place.
+ */
+const ROLE_LETTERS = {
+  c: 'cold', d: 'data', f: 'frozen', h: 'hot', i: 'ingest', l: 'machine learning',
+  m: 'master-eligible', r: 'remote cluster client', s: 'content', t: 'transform',
+  v: 'voting only', w: 'warm', '-': 'coordinating only',
+};
+function roleTitle(letters) {
+  return [...String(letters || '')].map((x) => ROLE_LETTERS[x] || x).join(', ');
+}
+
+/**
+ * Disk Elasticsearch holds against disk any index accounts for.
+ *
+ * Shown only when they disagree materially. Agreeing is the normal case and a card saying
+ * "these two numbers match" every time is a card nobody reads.
+ */
+function accountingCard(c, d) {
+  const acct = diskAccounting(d, state.indices.get(c.id));
+  if (!acct.known || !acct.material) return null;
+  const dang = danglingFor(c.id);
+  const rows = (dang && dang.indices) || [];
+
+  return card('Disk not accounted for', `${bytes(acct.gap)} more on disk than the index list explains`,
+    h('div', { style: { display: 'grid', gap: '8px' } },
+      h('div.banner.warn', { style: { margin: 0 } },
+        h('div',
+          h('div.ttl', `Elasticsearch holds ${bytes(acct.held)}; the indices total ${bytes(acct.accounted)}`),
+          h('div', { style: { fontSize: '12px' } },
+            'Data on the data path that the cluster state does not account for. Usually a dangling '
+            + 'index left by a node that was removed, or shard directories orphaned by a failed '
+            + 'relocation — disk that deleting an index will not reclaim, because there is no '
+            + 'index to delete.'))),
+      dang === null
+        ? h('div.muted', { style: { fontSize: '12px' } }, 'Checking for dangling indices…')
+        : rows.length
+          ? table(['Dangling index', 'UUID', 'Since'], rows.map((r) => h('tr',
+              h('td.mono', r.index_name),
+              h('td.mono.muted', { style: { fontSize: '10.5px' } }, r.index_uuid),
+              h('td.muted', { style: { fontSize: '11.5px' } }, r.creation_date_millis
+                ? new Date(r.creation_date_millis).toISOString().slice(0, 10) : ''))))
+          : h('div.muted', { style: { fontSize: '12px' } },
+              'No dangling indices, so the gap is orphaned shard data rather than a lost index. '
+              + 'A rolling restart of the affected node clears directories it no longer owns.')));
 }
 
 /** _cat gives strings; everything downstream wants the numbers as numbers. */
@@ -126,7 +258,23 @@ function nodeStrip(c, d, all) {
     h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap' } }, ...tiles));
 }
 
-function shardTable(c, d, all) {
+function shardsCard(c, d, all, raw, started) {
+  // Every reason the table can be empty, said out loud. "Nothing here" was indisputably
+  // the worst of the states this page could be in: it looks the same whether the listing
+  // failed, has not been asked for yet, or genuinely came back with no shards.
+  const why = loading.has(c.id) ? 'Reading the shard table…'
+    : raw && raw.error ? null
+    : raw === undefined ? 'The shard table has not been read yet.'
+    : !all.length ? 'Elasticsearch returned no shards for this cluster.'
+    : null;
+  if (raw && raw.error) {
+    return card(`Shards — ${c.name}`, 'could not be read',
+      h('div', { style: { display: 'grid', gap: '8px' } },
+        h('div.banner.err', { style: { margin: 0 } },
+          h('div', h('div.ttl', 'The shard listing failed'), h('div.mono', raw.error))),
+        h('div', h('button.btn.sm', { onclick: () => load(c) }, '↻ Try again'))));
+  }
+
   const nodeNames = [...new Set(all.map((s) => s.node).filter(Boolean))].sort();
   const states = [...new Set(all.map((s) => s.state))].sort();
 
@@ -181,8 +329,9 @@ function shardTable(c, d, all) {
   const sub = `${num(filtered.length)} of ${num(all.length)} shard(s)`
     + (shown.length < filtered.length ? ` · showing the first ${num(shown.length)}` : '');
 
-  return card(`Shards — ${c.name}`, sub,
+  return card(`Shards — ${c.name}`, why || sub,
     h('div', controls,
+      why ? h('div', { style: { padding: '14px' } }, empty(why)) : null,
       table(['Index', { label: 'Shard', num: true }, 'Type', 'State', 'Node',
              { label: 'Store', num: true }, { label: 'Docs', num: true }, 'Unassigned reason', ''],
         trs, { emptyText: all.length ? 'No shard matches the filter' : 'No shards reported' }),
