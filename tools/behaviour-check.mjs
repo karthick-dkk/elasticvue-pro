@@ -424,6 +424,60 @@ await go('logs');
   const dead = await ld.preflight(null, target);
   ok(dead.unknown === true && dead.ok === false, 'no client should be unknown, not a refusal');
 
+  // End to end: switch to the delay view, press Fetch, read the table.
+  {
+    const pane = doc.getElementById('view');
+    const toDelay = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Log delay');
+    ok(!!toDelay, 'logs: no "Log delay" view button');
+    toDelay.click();
+    await settleFor(700);
+
+    const fetchBtn = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Fetch latest details');
+    ok(!!fetchBtn, `logs: no Fetch button — preflight said: ${pane.textContent.slice(0, 120)}`);
+    if (fetchBtn) {
+      fetchBtn.click();
+      await settleFor(1400);
+      const trs = [...pane.querySelectorAll('table.tbl tbody tr')];
+      ok(trs.length === 6, `delay table: ${trs.length} rows, the fixture has 6 devices`);
+
+      const byDevice = Object.fromEntries(trs.map((tr) => {
+        const c = [...tr.children].map((td) => td.textContent.trim());
+        return [c[0], { status: c[1], delay: c[2], pattern: c[3], means: c[6] }];
+      }));
+      ok(byDevice['fw-edge-01'] && byDevice['fw-edge-01'].status === 'ok', `2 min should be ok: ${JSON.stringify(byDevice['fw-edge-01'])}`);
+      ok(byDevice['fw-core-02'] && byDevice['fw-core-02'].status === 'delayed', '41 min should be delayed');
+      ok(byDevice['proxy-03'] && byDevice['proxy-03'].status === 'critical', '95 min should be critical');
+      ok(byDevice['vpn-04'] && byDevice['vpn-04'].status === 'clock ahead',
+        `-37 min must be clock ahead, not critical: ${JSON.stringify(byDevice['vpn-04'])}`);
+      ok(byDevice['vpn-04'] && byDevice['vpn-04'].delay.startsWith('-'), 'a negative delay must render negative');
+
+      // The discrimination that justifies the pattern code at all.
+      ok(byDevice['router-06'] && byDevice['router-06'].pattern === 'timezone',
+        `exactly 5h should read as a timezone offset: ${JSON.stringify(byDevice['router-06'])}`);
+      ok(byDevice['switch-05'] && byDevice['switch-05'].pattern !== 'timezone',
+        `5h30 is a queue, not an offset: ${JSON.stringify(byDevice['switch-05'])}`);
+
+      // Worst first — a critical device at the bottom of the list is a device nobody sees.
+      const first = [...trs[0].children][1].textContent.trim();
+      ok(first === 'critical', `the first row should be the worst, was "${first}"`);
+
+      // Filtering to unhealthy drops the healthy one and keeps the clock-ahead one.
+      const showSel = [...pane.querySelectorAll('select')].find((x) => [...x.options].some((o) => o.value === 'unhealthy'));
+      ok(!!showSel, 'delay view: no unhealthy filter');
+      if (showSel) {
+        showSel.value = 'unhealthy';
+        showSel.dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settleFor(250);
+        const after = [...pane.querySelectorAll('table.tbl tbody tr')].map((tr) => tr.children[0].textContent.trim());
+        ok(!after.includes('fw-edge-01'), `the healthy device should be filtered out: ${after.join(', ')}`);
+        ok(after.includes('vpn-04'), 'a clock-ahead device counts as unhealthy');
+        showSel.value = 'all';
+        showSel.dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settleFor(200);
+      }
+    }
+  }
+
   const refusing = { fieldCaps: async () => {
     const e = new Error('HTTP 503 Service Unavailable');
     e.res = { status: 503, json: { error: { reason: 'all shards failed' } } };

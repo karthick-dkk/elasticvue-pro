@@ -9,8 +9,9 @@ import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } from '../lib/fmt.js';
 import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
-import { card, empty, pill } from './common.js';
-import { preflight, aggregatableName } from '../core/log-delay.js';
+import { card, empty, pill, table } from './common.js';
+import { preflight, aggregatableName, buildSearchBody, recordFrom, summarise,
+         thresholds, STATUS } from '../core/log-delay.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { jsonView } from '../lib/jsonview.js';
 
@@ -40,6 +41,13 @@ const ui = {
 const delay = {
   running: false,
   result: null,
+  fetching: false,
+  records: null,
+  summary: null,
+  error: null,
+  at: 0,
+  hours: 24,
+  status: 'all',
 };
 
 function isoLocal(d) {
@@ -263,12 +271,29 @@ async function runPreflight() {
 
 function delayView(c) {
   const r = delay.result;
+  const canFetch = r && r.ok && !r.unknown;
   const head = h('div.toolbar',
     h('span.muted', { style: { fontSize: '11.5px' } },
       'Delay is arrival time minus the time the event actually happened, per device.'),
-    h('div', { style: { marginLeft: 'auto' } },
-      h('button.btn.sm.primary', { disabled: delay.running, onclick: runPreflight },
-        delay.running ? 'Checking\u2026' : r ? '\u21bb Re-check' : 'Check this cluster')));
+    canFetch ? h('label.field', 'Window', (() => {
+      const sel = h('select', { onchange: (e) => { delay.hours = Number(e.target.value); } },
+        ...[1, 6, 24, 72, 168].map((n) => h('option', { value: String(n) },
+          n < 24 ? `${n} hour${n === 1 ? '' : 's'}` : `${n / 24} day${n === 24 ? '' : 's'}`)));
+      sel.value = String(delay.hours); return sel;
+    })()) : null,
+    canFetch ? h('label.field', 'Show', (() => {
+      const sel = h('select', { onchange: (e) => { delay.status = e.target.value; draw(); } },
+        h('option', { value: 'all' }, 'Every device'),
+        h('option', { value: 'unhealthy' }, 'Only unhealthy'));
+      sel.value = delay.status; return sel;
+    })()) : null,
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
+      h('button.btn.sm', { disabled: delay.running, onclick: runPreflight },
+        delay.running ? 'Checking\u2026' : r ? '\u21bb Re-check' : 'Check this cluster'),
+      canFetch
+        ? h('button.btn.sm.primary', { disabled: delay.fetching, onclick: () => fetchDelay(c) },
+            delay.fetching ? 'Fetching\u2026' : delay.records ? '\u21bb Fetch again' : 'Fetch latest details')
+        : null));
 
   if (delay.running && !r) return h('div', head, card('Log delay', c.name, empty('Asking the cluster which fields it has\u2026')));
   if (!r) return h('div', head, card('Log delay', c.name, empty('Press Check to see whether this cluster can be analysed.')));
@@ -318,7 +343,104 @@ function delayView(c) {
         ? h('div.muted', { style: { fontSize: '11.5px' } }, `All ${f.metadata.length} context fields present.`)
         : null);
 
-  return h('div', head, card('Log delay', `${c.name} \u00b7 ${c.url}`, body));
+  return h('div', head,
+    card('Log delay', `${c.name} \u00b7 ${c.url}`, body),
+    delay.error
+      ? h('div', { style: { marginTop: '10px' } },
+          h('div.banner.err', { style: { margin: 0 } },
+            h('div', h('div.ttl', 'The delay query failed'), h('div.mono', delay.error))))
+      : null,
+    delay.records ? h('div', { style: { marginTop: '10px' } }, resultsCard(c)) : null);
+}
+
+/**
+ * Run the analysis. Only ever from a click — it is one aggregation per cluster with a
+ * document fetch per device, and nothing that expensive should start because a page
+ * rendered or a timer fired.
+ */
+async function fetchDelay(c) {
+  const r = delay.result;
+  if (!r || !r.ok) return;
+  delay.fetching = true; delay.error = null; draw();
+  try {
+    const t = thresholds(c);
+    const body = buildSearchBody(r.resolved, {
+      from: `now-${delay.hours}h`, to: 'now', size: 500,
+    });
+    const res = await client(c.id).search(c.logIndexPattern || 'logstash-*', body,
+      { qs: 'ignore_unavailable=true&allow_no_indices=true', timeoutMs: 60000 });
+    const buckets = (((res.aggregations || {}).devices || {}).buckets) || [];
+    delay.records = buckets.map((b) => recordFrom(b, r.resolved, t));
+    delay.summary = summarise(delay.records);
+    // Devices beyond the terms size are not in the answer. Saying so beats implying the
+    // list is everything.
+    delay.summary.truncated = ((res.aggregations || {}).devices || {}).sum_other_doc_count || 0;
+    delay.at = Date.now();
+  } catch (e) {
+    const es = e.res && e.res.json && e.res.json.error;
+    delay.error = (es && (es.reason || es.type)) || e.message || String(e);
+    delay.records = null; delay.summary = null;
+  } finally {
+    delay.fetching = false;
+    if (host && host.isConnected) draw();
+  }
+}
+
+/** The devices, worst first, with why and what to do about it. */
+function resultsCard(c) {
+  const s = delay.summary;
+  const all = delay.records;
+  const rows = delay.status === 'unhealthy'
+    ? all.filter((x) => x.status === 'DELAYED' || x.status === 'CRITICAL' || x.status === 'CLOCK_AHEAD')
+    : all;
+
+  // Worst first: a critical device at the bottom of an alphabetical list is a device
+  // nobody sees.
+  const rank = { CRITICAL: 0, DELAYED: 1, CLOCK_AHEAD: 2, ERROR: 3, NO_DATA: 4, OK: 5 };
+  const sorted = [...rows].sort((a, b) =>
+    (rank[a.status] - rank[b.status]) || ((b.delayMinutes ?? -1e9) - (a.delayMinutes ?? -1e9)));
+
+  const trs = sorted.map((x) => h('tr',
+    h('td.mono', x.device),
+    h('td', pill(STATUS[x.status].label, STATUS[x.status].cls)),
+    h('td.num', x.delayMinutes === null
+      ? h('span.muted', 'unknown')
+      : h('b', { style: { color: x.status === 'CRITICAL' ? 'var(--critical)'
+                        : x.status === 'DELAYED' ? 'var(--warning)' : 'inherit' } },
+          fmtDelay(x.delayMinutes))),
+    h('td', x.pattern === '-' ? h('span.muted', '\u2014')
+      : h('span', { title: x.patternNote }, pill(x.pattern, 'orange'))),
+    h('td.num.muted', num(x.docs)),
+    h('td.muted', { style: { fontSize: '11.5px' } }, x.arrival ? ago(x.arrival) : '\u2014'),
+    h('td.muted', { style: { fontSize: '11.5px', maxWidth: '320px', wordBreak: 'break-word' } },
+      x.patternNote || x.reason)));
+
+  const tile = (k, n) => h('span', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center' } },
+    pill(STATUS[k].label, STATUS[k].cls), h('b', num(n)));
+
+  return card(`Devices \u2014 ${c.name}`,
+    `${num(s.devices)} device(s) \u00b7 ${s.median === null ? 'no measurable delay' : `median ${fmtDelay(s.median)}`}`
+    + ` \u00b7 fetched ${ago(delay.at)}`,
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' } },
+        ...Object.entries(s.by).filter(([, n]) => n > 0).map(([k, n]) => tile(k, n))),
+      s.truncated
+        ? h('div.muted', { style: { fontSize: '11.5px' } },
+            `${num(s.truncated)} document(s) fall outside the top 500 devices \u2014 this list is not every device.`)
+        : null,
+      table(['Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
+             { label: 'Docs', num: true }, 'Last seen', 'What it means'],
+        trs, { emptyText: delay.status === 'unhealthy' ? 'Every device is within threshold.' : 'No devices returned.' })));
+}
+
+/** Minutes are unreadable past an hour or two. */
+function fmtDelay(mins) {
+  const sign = mins < 0 ? '-' : '';
+  const m = Math.abs(mins);
+  if (m < 90) return `${sign}${m.toFixed(m < 10 ? 1 : 0)} min`;
+  const h2 = m / 60;
+  if (h2 < 48) return `${sign}${h2.toFixed(1)} h`;
+  return `${sign}${(h2 / 24).toFixed(1)} d`;
 }
 
 const pick = (src, keys) => { for (const k of keys) { const v = k.split('.').reduce((o, p) => (o == null ? o : o[p]), src); if (v !== undefined && v !== null) return v; } return undefined; };
