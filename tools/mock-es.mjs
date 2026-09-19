@@ -14,6 +14,7 @@
 import http from 'node:http';
 
 const port = Number(process.argv[2]) || 9299;
+const bind = process.env.MOCK_BIND || '127.0.0.1';
 const DAY = 86400000;
 
 const index = (name, size, status = 'open', health = 'green') => ({
@@ -346,4 +347,8 @@ http.createServer((req, res) => {
     const hit = routes.find(([match]) => match(url));
     res.end(JSON.stringify(hit ? hit[1]({ body, url }) : { acknowledged: true, url }));
   });
-}).listen(port, '127.0.0.1', () => console.log(`mock elasticsearch on http://127.0.0.1:${port}`));
+// Loopback by default, and that default is deliberate: a fixture that answers anything
+// on every interface is one an unrelated thing on the network can find and believe. Set
+// MOCK_BIND=0.0.0.0 only to let a container reach it — which is what verifying the
+// hosted stack against it needs, and nothing else should.
+}).listen(port, bind, () => console.log(`mock elasticsearch on http://${bind}:${port}`));
