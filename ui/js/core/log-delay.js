@@ -365,3 +365,41 @@ function median(xs) {
   const m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 }
+
+/**
+ * What a fleet-wide run actually covered.
+ *
+ * This is the arithmetic behind "6 of 9 clusters answered", and it lives here rather
+ * than in the page because getting it wrong is the failure this whole feature has to
+ * avoid: a device list assembled from four clusters, presented as if it were nine, is a
+ * number somebody makes a decision from. Counting it in one tested place is the only way
+ * the coverage line and the table can be guaranteed to agree.
+ *
+ * `entries` is one per cluster, in whatever shape the page holds: `{ state, pre,
+ * records }`. `phase` is `'preflight'` — did we manage to ask — or `'fetch'` — did we
+ * manage to measure. They have different denominators: a cluster that cannot be analysed
+ * is a complete answer to the first question and not a candidate for the second, so
+ * counting it as a gap in the fetch would make a healthy fleet look broken.
+ *
+ * @returns {{total:number, ok:number, failed:number, skipped:number}}
+ */
+export function delayCoverage(entries, phase = 'preflight') {
+  const list = [...entries];
+  if (phase === 'fetch') {
+    const candidates = list.filter((e) => e.pre && e.pre.ok && !e.pre.unknown);
+    return {
+      total: candidates.length,
+      ok: candidates.filter((e) => e.records).length,
+      failed: candidates.filter((e) => e.state === 'failed').length,
+      skipped: candidates.filter((e) => !e.records && e.state !== 'failed').length,
+    };
+  }
+  return {
+    total: list.length,
+    // A preflight that came back is an answer whether or not it was a happy one: "this
+    // cluster cannot be analysed" is knowledge. Only "we never asked" is a gap.
+    ok: list.filter((e) => e.pre).length,
+    failed: list.filter((e) => e.state === 'error').length,
+    skipped: list.filter((e) => !e.pre && e.state !== 'error').length,
+  };
+}

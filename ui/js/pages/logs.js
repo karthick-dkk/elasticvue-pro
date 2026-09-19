@@ -10,8 +10,9 @@ import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } 
 import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
 import { card, empty, pill, table } from './common.js';
-import { preflight, aggregatableName, buildSearchBody, recordFrom, summarise,
+import { preflight, buildSearchBody, recordFrom, summarise, delayCoverage,
          thresholds, STATUS } from '../core/log-delay.js';
+import { runBounded, cancellation, partialNote } from '../core/fleet.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { jsonView } from '../lib/jsonview.js';
 
@@ -37,12 +38,19 @@ const ui = {
   expanded: new Set(),
 };
 
-/** Preflight result for the delay view — asked on demand, never on render. */
+/**
+ * The delay view's state, which is fleet-wide: every cluster is asked, so every cluster
+ * needs its own answer — including "we never got to this one", which is the state that
+ * stops a stopped run being read as a clean one.
+ */
 const delay = {
-  running: false,
-  result: null,
-  fetching: false,
-  records: null,
+  running: false,          // the coverage check is in flight
+  fetching: false,         // the details fan-out is in flight
+  token: null,             // the stop button for whichever of those is running
+  cancelled: false,
+  progress: { done: 0, total: 0 },
+  byCluster: new Map(),    // cluster id -> { state, pre, records, truncated, error, fetchError }
+  records: null,           // every cluster's devices, merged
   summary: null,
   error: null,
   at: 0,
@@ -176,8 +184,10 @@ function quick(label, ms) {
 function draw() {
   const c = cluster();
   if (isSnapshotMode()) return mount(host, snapshotNotice('The log explorer'));
+  // The delay view is fleet-wide and draws its own "no cluster" state, so it is reached
+  // before the single-cluster guard the live tail needs.
+  if (ui.view === 'delay') return mount(host, viewSwitch(), delayView());
   if (!c) return mount(host, empty('No cluster selected'));
-  if (ui.view === 'delay') return mount(host, viewSwitch(), delayView(c));
   const known = state.indices.get(c.id) || [];
   const sourceNames = [...new Set(known.filter((r) => r.source).map((r) => r.source))].sort();
 
@@ -250,144 +260,279 @@ function viewSwitch() {
     btn('tail', 'Live tail', 'Search and follow documents as they arrive'),
     btn('delay', 'Log delay', 'How far behind real time each device is shipping'));
 }
+/* ------------------------- the delay view, across the fleet ------------------------- */
 
 /**
- * Whether this cluster can be analysed for delay, and what is missing when it cannot.
+ * How many clusters are asked at once.
  *
- * The preflight runs on demand, not on render: it is one call, but the delay analysis it
- * guards is expensive and nothing here should start that without being asked.
+ * Three, not "all of them": the clusters people point this at are the ones already under
+ * load, and the delay query is a terms aggregation with a top_hits per bucket. Four
+ * simultaneous copies of that is a noticeable thing to do to somebody's production
+ * cluster, and this page exists to watch it, not to be the reason it is slow.
  */
-async function runPreflight() {
-  const c = cluster();
-  if (!c) return;
-  delay.running = true; delay.result = null; draw();
-  try {
-    delay.result = await preflight(client(c.id), c);
-  } finally {
-    delay.running = false;
-    if (host && host.isConnected) draw();
-  }
+const FAN_OUT = 3;
+
+/** An entry per cluster, in the order the fleet is listed. */
+function delayRows() {
+  return activeClusters().map((c) => ({ c, d: delay.byCluster.get(c.id) || { state: 'idle' } }));
 }
 
-function delayView(c) {
-  const r = delay.result;
-  const canFetch = r && r.ok && !r.unknown;
+function setEntry(id, patch) {
+  delay.byCluster.set(id, { ...(delay.byCluster.get(id) || {}), ...patch });
+}
+
+/** Stop a fan-out that is still going. The work already in flight still reports. */
+function stopDelay() {
+  if (delay.token) delay.token.cancel();
+}
+
+/**
+ * Ask every cluster whether it can be analysed at all.
+ *
+ * On demand, never on render: it is one call per cluster, and the analysis it guards is
+ * far more than that. Results are drawn as they land, so eight clusters do not look like
+ * a hung page for the length of three round trips.
+ */
+async function runPreflight() {
+  const list = activeClusters();
+  if (!list.length || delay.running) return;
+  const token = cancellation();
+  delay.token = token;
+  delay.running = true;
+  delay.cancelled = false;
+  delay.progress = { done: 0, total: list.length };
+  delay.byCluster = new Map(list.map((c) => [c.id, { state: 'waiting' }]));
+  // A new coverage check invalidates the devices drawn from the last one.
+  delay.records = null; delay.summary = null; delay.at = 0;
+  draw();
+
+  const out = await runBounded(list, (c) => preflight(client(c.id), c), {
+    limit: FAN_OUT,
+    token,
+    onSettled: (s, p) => {
+      setEntry(s.item.id, s.error
+        ? { state: 'error', error: s.error.message || String(s.error) }
+        : { state: 'checked', pre: s.value });
+      delay.progress = { done: p.done, total: p.total };
+      if (host && host.isConnected) draw();
+    },
+  });
+
+  // Naming what was never asked is the whole point of doing this in one place: a cluster
+  // that is missing from the coverage table because somebody pressed Stop must not look
+  // like a cluster that answered.
+  for (const { item } of out.skipped) setEntry(item.id, { state: 'skipped' });
+  delay.running = false;
+  delay.cancelled = out.cancelled;
+  delay.token = null;
+  if (host && host.isConnected) draw();
+}
+
+/** The clusters the preflight said can actually be measured. */
+function analysable() {
+  return delayRows().filter(({ d }) => d.pre && d.pre.ok && !d.pre.unknown).map(({ c, d }) => ({ c, pre: d.pre }));
+}
+
+/**
+ * Run the analysis across every cluster that can take it.
+ *
+ * Only ever from a click. Each cluster is one aggregation with a document fetch per
+ * device, and nothing that expensive should start because a page rendered or a timer
+ * fired.
+ */
+async function fetchDelay() {
+  const targets = analysable();
+  if (!targets.length || delay.fetching) return;
+  const token = cancellation();
+  delay.token = token;
+  delay.fetching = true;
+  delay.cancelled = false;
+  delay.error = null;
+  delay.progress = { done: 0, total: targets.length };
+  for (const { c } of targets) setEntry(c.id, { state: 'fetching', records: null, fetchError: null });
+  draw();
+
+  const out = await runBounded(targets, async ({ c, pre }) => {
+    const t = thresholds(c);
+    const body = buildSearchBody(pre.resolved, { from: `now-${delay.hours}h`, to: 'now', size: 500 });
+    const res = await client(c.id).search(c.logIndexPattern || 'logstash-*', body,
+      { qs: 'ignore_unavailable=true&allow_no_indices=true', timeoutMs: 60000 });
+    const agg = (res.aggregations || {}).devices || {};
+    return {
+      records: (agg.buckets || []).map((b) => recordFrom(b, pre.resolved, t)),
+      // Devices beyond the terms size are not in the answer. Saying so beats implying
+      // the list is everything.
+      truncated: agg.sum_other_doc_count || 0,
+    };
+  }, {
+    limit: FAN_OUT,
+    token,
+    onSettled: (s, p) => {
+      const id = s.item.c.id;
+      if (s.error) {
+        const es = s.error.res && s.error.res.json && s.error.res.json.error;
+        setEntry(id, { state: 'failed', fetchError: (es && (es.reason || es.type)) || s.error.message || String(s.error) });
+      } else {
+        setEntry(id, { state: 'done', records: s.value.records, truncated: s.value.truncated });
+      }
+      delay.progress = { done: p.done, total: p.total };
+      mergeDelay();
+      if (host && host.isConnected) draw();
+    },
+  });
+
+  for (const { item } of out.skipped) setEntry(item.c.id, { state: 'not-asked' });
+  delay.fetching = false;
+  delay.cancelled = out.cancelled;
+  delay.token = null;
+  delay.at = Date.now();
+  mergeDelay();
+  if (host && host.isConnected) draw();
+}
+
+/**
+ * One fleet-wide list of devices, and the arithmetic that describes it.
+ *
+ * `summarise` is the one definition of what a set of records adds up to — the same
+ * function the single-cluster view used — so the fleet total and any per-cluster figure
+ * can never disagree about what "median delay" means.
+ */
+function mergeDelay() {
+  const done = delayRows().filter(({ d }) => d.records);
+  if (!done.length) { delay.records = null; delay.summary = null; return; }
+  const all = [];
+  for (const { c, d } of done) for (const r of d.records) all.push({ ...r, cluster: c.name, clusterId: c.id });
+  delay.records = all;
+  delay.summary = summarise(all);
+  delay.summary.truncated = done.reduce((n, { d }) => n + (d.truncated || 0), 0);
+}
+
+/**
+ * What the fan-out did not cover, in one line, or nothing when it covered everything.
+ *
+ * The counting is `delayCoverage` in the engine, not here: the coverage line and the
+ * table underneath it have to agree about how many clusters answered, and the only way
+ * to guarantee that is for there to be one definition of it.
+ */
+function coverageNote(phase) {
+  return partialNote({
+    ...delayCoverage(delayRows().map(({ d }) => d), phase),
+    cancelled: delay.cancelled,
+  });
+}
+
+function delayView() {
+  const list = activeClusters();
+  const can = analysable();
+  const busy = delay.running || delay.fetching;
   const head = h('div.toolbar',
     h('span.muted', { style: { fontSize: '11.5px' } },
-      'Delay is arrival time minus the time the event actually happened, per device.'),
-    canFetch ? h('label.field', 'Window', (() => {
-      const sel = h('select', { onchange: (e) => { delay.hours = Number(e.target.value); } },
+      'Delay is arrival time minus the time the event actually happened, per device, across every cluster.'),
+    h('label.field', 'Window', (() => {
+      const sel = h('select', { disabled: busy, onchange: (e) => { delay.hours = Number(e.target.value); } },
         ...[1, 6, 24, 72, 168].map((n) => h('option', { value: String(n) },
           n < 24 ? `${n} hour${n === 1 ? '' : 's'}` : `${n / 24} day${n === 24 ? '' : 's'}`)));
       sel.value = String(delay.hours); return sel;
-    })()) : null,
-    canFetch ? h('label.field', 'Show', (() => {
+    })()),
+    h('label.field', 'Show', (() => {
       const sel = h('select', { onchange: (e) => { delay.status = e.target.value; draw(); } },
         h('option', { value: 'all' }, 'Every device'),
         h('option', { value: 'unhealthy' }, 'Only unhealthy'));
       sel.value = delay.status; return sel;
-    })()) : null,
-    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
-      h('button.btn.sm', { disabled: delay.running, onclick: runPreflight },
-        delay.running ? 'Checking\u2026' : r ? '\u21bb Re-check' : 'Check this cluster'),
-      canFetch
-        ? h('button.btn.sm.primary', { disabled: delay.fetching, onclick: () => fetchDelay(c) },
-            delay.fetching ? 'Fetching\u2026' : delay.records ? '\u21bb Fetch again' : 'Fetch latest details')
-        : null));
+    })()),
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' } },
+      busy
+        ? h('span.muted', { style: { fontSize: '11.5px' } },
+            `${delay.progress.done} of ${delay.progress.total}…`)
+        : null,
+      busy
+        ? h('button.btn.sm', { id: 'delay-stop', onclick: stopDelay }, 'Stop')
+        : h('button.btn.sm', { id: 'delay-check', onclick: runPreflight },
+            delay.byCluster.size ? '↻ Re-check the fleet' : `Check ${list.length} cluster(s)`),
+      h('button.btn.sm.primary', {
+        id: 'delay-fetch',
+        disabled: busy || !can.length,
+        title: can.length ? '' : 'No cluster has reported that it can be analysed yet',
+        onclick: fetchDelay,
+      }, delay.records ? '↻ Fetch again' : `Fetch details (${can.length})`)));
 
-  if (delay.running && !r) return h('div', head, card('Log delay', c.name, empty('Asking the cluster which fields it has\u2026')));
-  if (!r) return h('div', head, card('Log delay', c.name, empty('Press Check to see whether this cluster can be analysed.')));
-
-  if (r.unknown) {
-    return h('div', head, card('Log delay', c.name,
-      h('div.banner.warn', { style: { margin: 0 } },
-        h('div', h('div.ttl', 'Could not ask this cluster'),
-          h('div.mono', { style: { fontSize: '11.5px' } }, r.error || 'no answer'),
-          h('div', { style: { fontSize: '12px', marginTop: '4px' } },
-            'Unknown, not empty \u2014 the fields may be there; the question did not get through.')))));
+  if (!list.length) return h('div', head, card('Log delay', '', empty('No cluster selected')));
+  if (!delay.byCluster.size) {
+    return h('div', head, card('Log delay', `${list.length} cluster(s)`,
+      empty('Press Check to see which clusters can be analysed.')));
   }
-
-  const row = (label, value, ok) => h('div', { style: { display: 'flex', gap: '8px', alignItems: 'baseline', fontSize: '12px' } },
-    h('span', { style: { width: '15px', color: ok ? 'var(--good)' : 'var(--critical)' } }, ok ? '\u2713' : '\u2717'),
-    h('span.muted', { style: { width: '110px' } }, label),
-    h('span.mono', value || '\u2014'));
-
-  const f = r.fields;
-  const body = h('div', { style: { display: 'grid', gap: '10px' } },
-    r.ok
-      ? h('div.banner', { style: { margin: 0 } },
-          h('div', h('div.ttl', 'This cluster can be analysed'),
-            h('div', { style: { fontSize: '12px' } },
-              `Grouping by ${r.resolved.device}, event time from ${r.resolved.eventTime}, arrival from ${r.resolved.arrival}.`)))
-      : h('div.banner.warn', { style: { margin: 0 } },
-          h('div', h('div.ttl', 'This cluster cannot be analysed for delay'),
-            h('div', { style: { fontSize: '12px' } },
-              'These fields are not mapped in ', h('code.inline', c.logIndexPattern || 'logstash-*'), ':'),
-            h('div.mono', { style: { fontSize: '11.5px', marginTop: '3px', wordBreak: 'break-all' } },
-              r.missing.join(', ')),
-            h('div', { style: { fontSize: '12px', marginTop: '5px' } },
-              'Set ', h('code.inline', 'delayFields'), ' on this cluster to the names your parser produces. ',
-              'Nothing is being reported as zero \u2014 the analysis simply cannot run here.'))),
-
-    h('div', { style: { display: 'grid', gap: '3px' } },
-      h('div.muted', { style: { fontSize: '11px' } }, 'what was looked for'),
-      row('Device', r.resolved.device || aggregatableName(f.device), !!r.resolved.device),
-      row('Event time', r.resolved.eventTime || f.eventTime.join(' / '), !!r.resolved.eventTime),
-      row('Arrival', r.resolved.arrival || f.arrival, !!r.resolved.arrival)),
-
-    r.metadataMissing && r.metadataMissing.length
-      ? h('div.muted', { style: { fontSize: '11.5px' } },
-          `${r.resolved.metadata.length} of ${f.metadata.length} context field(s) present. `
-          + `Absent: ${r.metadataMissing.join(', ')} \u2014 those columns would be blank.`)
-      : f.metadata.length
-        ? h('div.muted', { style: { fontSize: '11.5px' } }, `All ${f.metadata.length} context fields present.`)
-        : null);
 
   return h('div', head,
-    card('Log delay', `${c.name} \u00b7 ${c.url}`, body),
-    delay.error
-      ? h('div', { style: { marginTop: '10px' } },
-          h('div.banner.err', { style: { margin: 0 } },
-            h('div', h('div.ttl', 'The delay query failed'), h('div.mono', delay.error))))
-      : null,
-    delay.records ? h('div', { style: { marginTop: '10px' } }, resultsCard(c)) : null);
+    coverageCard(),
+    delay.records ? h('div', { style: { marginTop: '10px' } }, resultsCard()) : null);
 }
 
-/**
- * Run the analysis. Only ever from a click — it is one aggregation per cluster with a
- * document fetch per device, and nothing that expensive should start because a page
- * rendered or a timer fired.
- */
-async function fetchDelay(c) {
-  const r = delay.result;
-  if (!r || !r.ok) return;
-  delay.fetching = true; delay.error = null; draw();
-  try {
-    const t = thresholds(c);
-    const body = buildSearchBody(r.resolved, {
-      from: `now-${delay.hours}h`, to: 'now', size: 500,
-    });
-    const res = await client(c.id).search(c.logIndexPattern || 'logstash-*', body,
-      { qs: 'ignore_unavailable=true&allow_no_indices=true', timeoutMs: 60000 });
-    const buckets = (((res.aggregations || {}).devices || {}).buckets) || [];
-    delay.records = buckets.map((b) => recordFrom(b, r.resolved, t));
-    delay.summary = summarise(delay.records);
-    // Devices beyond the terms size are not in the answer. Saying so beats implying the
-    // list is everything.
-    delay.summary.truncated = ((res.aggregations || {}).devices || {}).sum_other_doc_count || 0;
-    delay.at = Date.now();
-  } catch (e) {
-    const es = e.res && e.res.json && e.res.json.error;
-    delay.error = (es && (es.reason || es.type)) || e.message || String(e);
-    delay.records = null; delay.summary = null;
-  } finally {
-    delay.fetching = false;
-    if (host && host.isConnected) draw();
-  }
+/** Per cluster: can it be measured, by which fields, and if not, what is missing. */
+function coverageCard() {
+  const rows = delayRows();
+  const note = coverageNote('preflight');
+  const yes = rows.filter(({ d }) => d.pre && d.pre.ok && !d.pre.unknown).length;
+
+  const stateCell = ({ d }) => {
+    if (d.state === 'waiting') return h('span.muted', { style: { fontSize: '11.5px' } }, 'waiting…');
+    if (d.state === 'skipped' || d.state === 'not-asked') return pill('never asked', 'grey');
+    if (d.state === 'error') return pill('could not ask', 'orange');
+    if (!d.pre) return h('span.muted', '—');
+    if (d.pre.unknown) return pill('unknown', 'orange');
+    return d.pre.ok ? pill('can be analysed', 'green') : pill('cannot be analysed', 'red');
+  };
+
+  const why = ({ c, d }) => {
+    if (d.state === 'error') return h('span.mono', { style: { fontSize: '11px' } }, d.error);
+    if (d.state === 'skipped' || d.state === 'not-asked') {
+      return h('span.muted', { style: { fontSize: '11.5px' } },
+        'The check was stopped before this cluster was reached — unknown, not empty.');
+    }
+    if (!d.pre) return h('span.muted', '—');
+    if (d.pre.unknown) {
+      return h('span', { style: { fontSize: '11.5px' } },
+        h('span.mono', d.pre.error || 'no answer'),
+        h('span.muted', ' — the fields may be there; the question did not get through.'));
+    }
+    if (d.pre.ok) {
+      const m = (d.pre.metadataMissing || []).length;
+      return h('span.muted', { style: { fontSize: '11.5px' } },
+        `group by ${d.pre.resolved.device}, event ${d.pre.resolved.eventTime}, arrival ${d.pre.resolved.arrival}`
+        + (m ? ` · ${m} context field(s) absent` : ''));
+    }
+    return h('span', { style: { fontSize: '11.5px' } },
+      h('span.muted', 'not mapped in '), h('code.inline', c.logIndexPattern || 'logstash-*'), h('span.muted', ': '),
+      h('span.mono', { style: { wordBreak: 'break-all' } }, (d.pre.missing || []).join(', ')));
+  };
+
+  const fetchCell = ({ d }) => {
+    if (d.state === 'fetching') return h('span.muted', { style: { fontSize: '11.5px' } }, 'fetching…');
+    if (d.state === 'failed') return h('span', { title: d.fetchError }, pill('query failed', 'red'));
+    if (d.records) return h('span.num', num(d.records.length));
+    return h('span.muted', '—');
+  };
+
+  const trs = rows.map((r) => h('tr',
+    h('td', h('div', { style: { fontWeight: 620 } }, r.c.name),
+      h('div.muted.mono', { style: { fontSize: '10.5px' } }, r.c.url)),
+    h('td', stateCell(r)),
+    h('td.num', fetchCell(r)),
+    h('td', { style: { maxWidth: '520px' } }, why(r))));
+
+  return card('Log delay coverage',
+    `${yes} of ${rows.length} cluster(s) can be analysed`,
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      note ? h('div.banner.warn', { style: { margin: 0, fontSize: '12px' } }, note) : null,
+      rows.some(({ d }) => d.pre && !d.pre.ok && !d.pre.unknown)
+        ? h('div.muted', { style: { fontSize: '11.5px' } },
+            'Set ', h('code.inline', 'delayFields'), ' on a cluster to the names its parser produces. ',
+            'Nothing is reported as zero — the analysis simply cannot run there.')
+        : null,
+      table(['Cluster', 'Preflight', { label: 'Devices', num: true }, 'Detail'], trs)));
 }
 
-/** The devices, worst first, with why and what to do about it. */
-function resultsCard(c) {
+/** Every device across the fleet, worst first, with why and what to do about it. */
+function resultsCard() {
   const s = delay.summary;
   const all = delay.records;
   const rows = delay.status === 'unhealthy'
@@ -401,6 +546,7 @@ function resultsCard(c) {
     (rank[a.status] - rank[b.status]) || ((b.delayMinutes ?? -1e9) - (a.delayMinutes ?? -1e9)));
 
   const trs = sorted.map((x) => h('tr',
+    h('td.muted', { style: { fontSize: '11.5px' } }, x.cluster),
     h('td.mono', x.device),
     h('td', pill(STATUS[x.status].label, STATUS[x.status].cls)),
     h('td.num', x.delayMinutes === null
@@ -408,31 +554,64 @@ function resultsCard(c) {
       : h('b', { style: { color: x.status === 'CRITICAL' ? 'var(--critical)'
                         : x.status === 'DELAYED' ? 'var(--warning)' : 'inherit' } },
           fmtDelay(x.delayMinutes))),
-    h('td', x.pattern === '-' ? h('span.muted', '\u2014')
+    h('td', x.pattern === '-' ? h('span.muted', '—')
       : h('span', { title: x.patternNote }, pill(x.pattern, 'orange'))),
     h('td.num.muted', num(x.docs)),
-    h('td.muted', { style: { fontSize: '11.5px' } }, x.arrival ? ago(x.arrival) : '\u2014'),
+    h('td.muted', { style: { fontSize: '11.5px' } }, x.arrival ? ago(x.arrival) : '—'),
     h('td.muted', { style: { fontSize: '11.5px', maxWidth: '320px', wordBreak: 'break-word' } },
       x.patternNote || x.reason)));
 
   const tile = (k, n) => h('span', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center' } },
     pill(STATUS[k].label, STATUS[k].cls), h('b', num(n)));
 
-  return card(`Devices \u2014 ${c.name}`,
-    `${num(s.devices)} device(s) \u00b7 ${s.median === null ? 'no measurable delay' : `median ${fmtDelay(s.median)}`}`
-    + ` \u00b7 fetched ${ago(delay.at)}`,
+  const note = coverageNote('fetch');
+  const measured = delayRows().filter(({ d }) => d.records).length;
+
+  return card('Devices across the fleet',
+    `${num(s.devices)} device(s) in ${measured} cluster(s) · `
+    + `${s.median === null ? 'no measurable delay' : `median ${fmtDelay(s.median)}`}`
+    + (delay.at ? ` · fetched ${ago(delay.at)}` : ' · still fetching'),
     h('div', { style: { display: 'grid', gap: '10px' } },
+      note ? h('div.banner.warn', { style: { margin: 0, fontSize: '12px' } }, note) : null,
       h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' } },
         ...Object.entries(s.by).filter(([, n]) => n > 0).map(([k, n]) => tile(k, n))),
       s.truncated
         ? h('div.muted', { style: { fontSize: '11.5px' } },
-            `${num(s.truncated)} document(s) fall outside the top 500 devices \u2014 this list is not every device.`)
+            `${num(s.truncated)} document(s) fall outside the top 500 devices per cluster — this list is not every device.`)
         : null,
-      table(['Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
+      h('div', { style: { display: 'flex', gap: '6px' } },
+        h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV')),
+      table(['Cluster', 'Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
              { label: 'Docs', num: true }, 'Last seen', 'What it means'],
         trs, { emptyText: delay.status === 'unhealthy' ? 'Every device is within threshold.' : 'No devices returned.' })));
 }
 
+/**
+ * The fleet's devices as a file.
+ *
+ * The header carries what the table carries, including the clusters that were not
+ * measured: a spreadsheet leaves the page behind, and a partial export that does not say
+ * it is partial becomes a number in somebody's report.
+ */
+function exportDelayCsv() {
+  if (!delay.records) return;
+  const rows = delay.records.map((x) => ({
+    cluster: x.cluster,
+    device: x.device,
+    status: STATUS[x.status].label,
+    delay_minutes: x.delayMinutes === null ? '' : x.delayMinutes.toFixed(2),
+    pattern: x.pattern === '-' ? '' : x.pattern,
+    docs: x.docs,
+    last_seen: x.arrival ? dt(x.arrival) : '',
+    detail: x.patternNote || x.reason || '',
+  }));
+  const missed = delayRows().filter(({ d }) => !d.records).map(({ c, d }) => `${c.name} (${d.state})`);
+  if (missed.length) {
+    rows.push({ cluster: '', device: '', status: '', delay_minutes: '', pattern: '', docs: '',
+      last_seen: '', detail: `not measured: ${missed.join('; ')}` });
+  }
+  download(`log-delay-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`, toCsv(rows));
+}
 /** Minutes are unreadable past an hour or two. */
 function fmtDelay(mins) {
   const sign = mins < 0 ? '-' : '';

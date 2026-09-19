@@ -139,3 +139,53 @@ test('summarise: counts, and unknown when nothing is measurable', () => {
   assert.equal(ld.summarise([mk('ERROR', null)]).median, null, 'unknown, not 0');
   assert.equal(ld.summarise([]).median, null);
 });
+
+/* ------------------------------ fleet coverage ------------------------------ */
+
+const entry = (o) => ({ state: 'checked', ...o });
+const okPre = { ok: true, unknown: false, resolved: {} };
+const noPre = { ok: false, unknown: false, missing: ['ingested_time'] };
+const unknownPre = { ok: false, unknown: true, error: 'HTTP 503' };
+
+test('a complete preflight sweep has no gap', () => {
+  const c = ld.delayCoverage([
+    entry({ pre: okPre }), entry({ pre: noPre }), entry({ pre: unknownPre }),
+  ]);
+  assert.deepEqual(c, { total: 3, ok: 3, failed: 0, skipped: 0 });
+});
+
+test('"cannot be analysed" is an answer, not a gap', () => {
+  // The distinction the whole coverage line rests on: we asked and were told no, versus
+  // we never asked. Only the second one makes the totals below it partial.
+  const c = ld.delayCoverage([entry({ pre: noPre }), entry({ pre: noPre })]);
+  assert.equal(c.skipped, 0);
+  assert.equal(c.ok, 2);
+});
+
+test('a cluster that was never reached is counted as never reached', () => {
+  const c = ld.delayCoverage([
+    entry({ pre: okPre }),
+    { state: 'skipped' },
+    { state: 'waiting' },
+    { state: 'error', error: 'connection refused' },
+  ]);
+  assert.deepEqual(c, { total: 4, ok: 1, failed: 1, skipped: 2 });
+  assert.equal(c.ok + c.failed + c.skipped, c.total, 'every cluster must be accounted for');
+});
+
+test('the fetch is judged against the clusters that could take it', () => {
+  const c = ld.delayCoverage([
+    entry({ pre: okPre, records: [{}, {}], state: 'done' }),
+    entry({ pre: okPre, state: 'failed', fetchError: 'all shards failed' }),
+    entry({ pre: okPre, state: 'not-asked' }),
+    // Not a candidate at all — counting this as a missing measurement would make a
+    // correctly-configured fleet look like a broken one.
+    entry({ pre: noPre }),
+  ], 'fetch');
+  assert.deepEqual(c, { total: 3, ok: 1, failed: 1, skipped: 1 });
+});
+
+test('a fleet where nothing can be analysed has nothing to fetch, and no gap', () => {
+  const c = ld.delayCoverage([entry({ pre: noPre }), entry({ pre: unknownPre })], 'fetch');
+  assert.deepEqual(c, { total: 0, ok: 0, failed: 0, skipped: 0 });
+});
