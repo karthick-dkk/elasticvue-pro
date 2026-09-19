@@ -24,6 +24,10 @@ const SORTS = {
   version:  { label: 'Version',       get: (r) => versionKey(r) },
   snapshot: { label: 'Last snapshot', get: (r) => { const s = lastSnapshotOf(r.d); return s ? s.start : 0; } },
   alerts:   { label: 'Open alerts',   get: (r) => alertsByCluster().get(r.c.id) || 0 },
+  ilm:      { label: 'ILM',           get: (r) => String((r.d.ilm && r.d.ilm.operation_mode) || 'zz') },
+  slm:      { label: 'SLM',           get: (r) => String((r.d.slmStatus && r.d.slmStatus.operation_mode) || 'zz') },
+  repo:     { label: 'Repository',    get: (r) => ((r.d.repos || []).map((x) => x.name).join(', ') || 'zz') },
+  reqs:     { label: 'Our reqs/5m',   get: (r) => ((requestLoad.clusters[r.c.id] || {}).last5m || 0) },
 };
 
 /**
@@ -182,7 +186,26 @@ function tiles(rows) {
 }
 
 function summaryCard(rows, all) {
-  const headers = ['Cluster', 'Version', 'Health', 'Nodes', { label: 'Size', num: true }, 'Disk usage', 'ILM', 'SLM', 'Repository', 'Last snapshot', 'Alerts', { label: 'Our reqs/5m', num: true }, ''];
+  // Every column that means something sorts. Clicking the active one reverses it.
+  const headers = [
+    { label: 'Cluster', sort: 'name' },
+    { label: 'Version', sort: 'version' },
+    { label: 'Health', sort: 'health' },
+    { label: 'Nodes', sort: 'nodes' },
+    { label: 'Size', num: true, sort: 'size' },
+    { label: 'Disk usage', sort: 'disk' },
+    { label: 'ILM', sort: 'ilm' },
+    { label: 'SLM', sort: 'slm' },
+    { label: 'Repository', sort: 'repo' },
+    { label: 'Last snapshot', sort: 'snapshot' },
+    { label: 'Alerts', sort: 'alerts' },
+    { label: 'Our reqs/5m', num: true, sort: 'reqs' },
+    '',
+  ];
+  const sortSpec = {
+    key: ui.sort, dir: ui.dir,
+    on: (key) => { ui.dir = ui.sort === key ? -ui.dir : 1; ui.sort = key; draw(); },
+  };
   const byCluster = alertsByCluster();
   const trs = [];
   rows.forEach((r) => {
@@ -235,7 +258,7 @@ function summaryCard(rows, all) {
   const sub = `${scope} · sorted by ${(SORTS[ui.sort] || SORTS.name).label.toLowerCase()} · ` +
     (isSnapshotMode() ? `collected ${ago(state.lastRefresh)}` : `updated ${ago(state.lastRefresh)}`);
   return card('Cluster summary', sub,
-    table(headers, trs, { emptyText: total ? 'No cluster matches the search' : 'No clusters configured' }),
+    table(headers, trs, { emptyText: total ? 'No cluster matches the search' : 'No clusters configured', sort: sortSpec }),
     [h('button.btn.sm', { onclick: () => exportSummary(rows) }, 'Export CSV'),
      isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true, selected: true }) }, 'Refresh')]);
 }

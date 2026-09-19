@@ -180,6 +180,55 @@ export function coverageStrip(days, opts = {}) {
   return el;
 }
 
+/* ----------------------------------- gauge ------------------------------------ */
+
+/**
+ * A single number against the range it lives in, as a 240° arc.
+ *
+ * For a figure that has a ceiling and a meaning near it: how much of the fleet is
+ * alerting, how full the disk is. A bare number tells you the value; an arc tells you
+ * where the value sits, which is what somebody glancing actually wants.
+ *
+ * Not used for a number without a natural maximum — a gauge whose ceiling is invented
+ * shows a position that means nothing.
+ *
+ * @param value   the reading
+ * @param max     the top of the arc
+ * @param opts    { label, sub, color, format, size }
+ */
+export function gauge(value, max, opts = {}) {
+  const size = opts.size || 132;
+  const r = size / 2 - 12;
+  const cx = size / 2, cy = size / 2 + 6;
+  const START = 150, SWEEP = 240;                       // degrees, opening downward
+  const frac = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+  const fmt = opts.format || ((v) => String(v));
+
+  const pt = (deg) => {
+    const a = (Math.PI / 180) * deg;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const arc = (fromDeg, toDeg) => {
+    const [x0, y0] = pt(fromDeg), [x1, y1] = pt(toDeg);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${toDeg - fromDeg > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  };
+
+  const s = svg('svg', { viewBox: `0 0 ${size} ${size}`, style: { width: `${size}px`, height: `${size}px` } });
+  s.append(svg('path', { d: arc(START, START + SWEEP),
+    style: { fill: 'none', stroke: 'var(--surface-3)', strokeWidth: 10, strokeLinecap: 'round' } }));
+  if (frac > 0) {
+    s.append(svg('path', { d: arc(START, START + SWEEP * frac),
+      style: { fill: 'none', stroke: opts.color || STATUS.good, strokeWidth: 10, strokeLinecap: 'round' } }));
+  }
+  return h('div', { style: { display: 'grid', justifyItems: 'center', gap: '0' } },
+    h('div', { style: { position: 'relative', lineHeight: 0 } }, s,
+      h('div', { style: { position: 'absolute', inset: 0, display: 'grid', placeContent: 'center',
+                          textAlign: 'center', lineHeight: 1.15 } },
+        h('div', { style: { fontSize: '21px', fontWeight: 680 } }, fmt(value)),
+        opts.sub ? h('div.muted', { style: { fontSize: '10.5px' } }, opts.sub) : null)),
+    opts.label ? h('div.muted', { style: { fontSize: '11px', marginTop: '-4px' } }, opts.label) : null);
+}
+
 /* --------------------------------- honeycomb ---------------------------------- */
 
 /**

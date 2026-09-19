@@ -171,6 +171,27 @@ export class EsClient {
    */
   danglingIndices() { return this.json('GET', '/_dangling'); }
 
+  /**
+   * What the cluster is busy doing, and how hard.
+   *
+   * `running_time_ns` alongside the human string because "2.3h" cannot be sorted or
+   * compared against a threshold, and finding the one query that has been running for
+   * twenty minutes is the entire point of looking.
+   */
+  tasks() {
+    const h = 'action,task_id,parent_task_id,node,running_time,running_time_ns,type,description';
+    return this.json('GET', `/_cat/tasks?format=json&detailed&h=${encodeURIComponent(h)}`);
+  }
+
+  /** Active, queued and — the one that matters — rejected work, per node. */
+  threadPools() {
+    return this.json('GET',
+      '/_cat/thread_pool/search,write,get,bulk?format=json&h=node_name,name,active,queue,rejected,completed');
+  }
+
+  /** Cluster-state changes waiting on the master. A backed-up master shows here first. */
+  pendingTasks() { return this.json('GET', '/_cluster/pending_tasks'); }
+
   securityUsers() { return this.json('GET', '/_security/user'); }
   securityRoles() { return this.json('GET', '/_security/role'); }
 

@@ -17,9 +17,14 @@ import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
 import { honeycomb, STATUS } from '../lib/charts.js';
+import { parseRetention } from '../core/volume.js';
 
 let host = null;
-const ui = { index: '', node: 'all', state: 'all', limit: 300 };
+const ui = { index: '', node: 'all', state: 'all', limit: 300, sort: 'index', dir: 1 };
+/** Shards ticked for a bulk move, keyed `index/shard/p|r`. */
+const picked = new Map();
+/** Tasks, thread pools and pending cluster tasks — one read each, with the shard list. */
+const load2 = new Map();
 /** Shard listings per cluster — one _cat call, on demand rather than every refresh. */
 const shards = new Map();
 const loading = new Set();
@@ -69,6 +74,18 @@ async function load(c) {
   } finally {
     loading.delete(c.id); draw();
   }
+  // What the cluster is busy doing. Separate from the shard read so one failing does not
+  // take the other with it — an old cluster without _cat/tasks should still list shards.
+  try {
+    const [tasks, pools, pending] = await Promise.all([
+      cl.tasks().catch(() => null),
+      cl.threadPools().catch(() => null),
+      cl.pendingTasks().catch(() => null),
+    ]);
+    load2.set(c.id, { tasks, pools, pending: pending && pending.tasks, at: Date.now() });
+    draw();
+  } catch (_) { /* the rest of the page does not depend on it */ }
+
   // Only worth asking when the figures disagree; the answer decides what the gap is.
   try {
     const acct = diskAccounting(state.data.get(c.id) || {}, state.indices.get(c.id));
@@ -111,6 +128,7 @@ function block(c) {
 
     combCard(c, all),
     nodesCard(c, d),
+    loadCard(c),
     accountingCard(c, d),
     shardsCard(c, d, all, raw, started));
 }
@@ -155,6 +173,106 @@ function combCard(c, all) {
       ],
       onSelect: (it) => { ui.index = String(it.key).split('/')[0]; draw(); },
     }));
+}
+
+/** A task running longer than this is worth looking at rather than scrolling past. */
+const SLOW_TASK_MS = 30000;
+
+/**
+ * What the cluster is doing right now, and whether it is coping.
+ *
+ * Three readings that answer different halves of "is it busy or is it struggling".
+ * Active and queued work says busy. Rejected work says struggling — a thread pool only
+ * rejects once its queue is full, so a non-zero number there is dropped work, not slow
+ * work. Pending cluster tasks say the master is behind, which looks like everything
+ * being slow for reasons nothing else explains.
+ *
+ * The long-running list excludes the perpetual ones. `geoip-downloader` and the monitor
+ * tasks run for the life of the node; showing them as "slow queries" would bury the one
+ * search that actually is.
+ */
+const PERPETUAL = /geoip-downloader|cluster:monitor\/tasks\/lists|health-node|persistent/i;
+
+function loadCard(c) {
+  const got = load2.get(c.id);
+  if (!got) return null;
+  // Arrays or nothing. A cluster that does not have one of these endpoints answers with
+  // whatever its router does for an unknown path, and an object here reaches .filter as a
+  // crash rather than as a missing card.
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const tasks = arr(got.tasks);
+  const pools = arr(got.pools);
+  const pending = arr(got.pending);
+  if (!tasks.length && !pools.length && !pending.length) return null;
+
+  const real = tasks.filter((t) => !PERPETUAL.test(`${t.action} ${t.type}`));
+  const slow = real
+    .map((t) => ({ ...t, ms: Number(t.running_time_ns || 0) / 1e6 }))
+    .filter((t) => t.ms >= SLOW_TASK_MS)
+    .sort((a, b) => b.ms - a.ms);
+
+  const rejected = pools.reduce((n, p) => n + (Number(p.rejected) || 0), 0);
+  const queued = pools.reduce((n, p) => n + (Number(p.queue) || 0), 0);
+  const active = pools.reduce((n, p) => n + (Number(p.active) || 0), 0);
+
+  const poolTrs = pools
+    .filter((p) => Number(p.active) || Number(p.queue) || Number(p.rejected))
+    .map((p) => h('tr',
+      h('td', p.node_name), h('td.mono', p.name),
+      h('td.num', num(Number(p.active) || 0)),
+      h('td.num', num(Number(p.queue) || 0)),
+      h('td.num', Number(p.rejected)
+        ? h('b', { style: { color: 'var(--critical)' } }, num(Number(p.rejected)))
+        : '0'),
+      h('td.num.muted', num(Number(p.completed) || 0))));
+
+  const health = rejected ? { label: 'rejecting work', cls: 'red' }
+    : pending.length > 5 ? { label: 'master behind', cls: 'yellow' }
+    : slow.length ? { label: 'slow work running', cls: 'yellow' }
+    : queued ? { label: 'busy', cls: 'yellow' }
+    : { label: 'idle', cls: 'green' };
+
+  return card('Cluster load',
+    `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
+    + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+        pill(health.label, health.cls),
+        rejected
+          ? h('span.muted', { style: { fontSize: '11.5px' } },
+              'a thread pool only rejects once its queue is full — this is dropped work, not slow work')
+          : null),
+
+      slow.length
+        ? h('div',
+            h('div.muted', { style: { fontSize: '11px', marginBottom: '3px' } },
+              `running longer than ${Math.round(SLOW_TASK_MS / 1000)}s`),
+            table(['Action', 'Node', { label: 'Running', num: true }, 'Detail'],
+              slow.slice(0, 10).map((t) => h('tr',
+                h('td.mono', { style: { fontSize: '11px' } }, t.action),
+                h('td', t.node),
+                h('td.num', h('b', { style: { color: t.ms > 300000 ? 'var(--critical)' : 'var(--warning)' } },
+                  t.running_time)),
+                h('td.muted', { style: { fontSize: '11px', maxWidth: '340px', wordBreak: 'break-word' } },
+                  t.description || ''))),
+              { emptyText: '' }))
+        : h('div.muted', { style: { fontSize: '12px' } },
+            real.length ? 'Nothing has been running long enough to be worth a look.'
+                        : 'No tasks in flight.'),
+
+      poolTrs.length
+        ? h('div',
+            h('div.muted', { style: { fontSize: '11px', marginBottom: '3px' } }, 'thread pools with work'),
+            table(['Node', 'Pool', { label: 'Active', num: true }, { label: 'Queued', num: true },
+                   { label: 'Rejected', num: true }, { label: 'Completed', num: true }], poolTrs))
+        : null,
+
+      pending.length
+        ? h('div.banner.warn', { style: { margin: 0 } },
+            h('div', h('div.ttl', `${num(pending.length)} cluster-state change(s) waiting on the master`),
+              h('div.mono', { style: { fontSize: '11px' } },
+                pending.slice(0, 4).map((t) => `${t.source} (${t.time_in_queue || ''})`).join(' · '))))
+        : null));
 }
 
 /** Everything _cat/nodes knows, which is what "is this node healthy" is answered from. */
@@ -231,31 +349,86 @@ function roleTitle(letters) {
  */
 function accountingCard(c, d) {
   const acct = diskAccounting(d, state.indices.get(c.id));
-  if (!acct.known || !acct.material) return null;
   const dang = danglingFor(c.id);
-  const rows = (dang && dang.indices) || [];
+  const stale = staleIndices(c, state.indices.get(c.id));
 
-  return card('Disk not accounted for', `${bytes(acct.gap)} more on disk than the index list explains`,
-    h('div', { style: { display: 'grid', gap: '8px' } },
-      h('div.banner.warn', { style: { margin: 0 } },
-        h('div',
-          h('div.ttl', `Elasticsearch holds ${bytes(acct.held)}; the indices total ${bytes(acct.accounted)}`),
-          h('div', { style: { fontSize: '12px' } },
-            'Data on the data path that the cluster state does not account for. Usually a dangling '
-            + 'index left by a node that was removed, or shard directories orphaned by a failed '
-            + 'relocation — disk that deleting an index will not reclaim, because there is no '
-            + 'index to delete.'))),
-      dang === null
-        ? h('div.muted', { style: { fontSize: '12px' } }, 'Checking for dangling indices…')
-        : rows.length
-          ? table(['Dangling index', 'UUID', 'Since'], rows.map((r) => h('tr',
+  // The two figures are always worth showing — "how much do the indices hold against how
+  // much is on disk" is asked whether or not they disagree. The explanation below only
+  // appears when they do.
+  const figures = h('div', { style: { display: 'flex', gap: '20px', flexWrap: 'wrap' } },
+    figure('Indices hold', acct.known ? bytes(acct.accounted) : '–',
+      acct.known ? `${num((state.indices.get(c.id) || []).length)} indices` : 'index list not read yet'),
+    figure('Elasticsearch holds', d.disk ? bytes(d.disk.indicesBytes || 0) : '–', 'on the data path'),
+    figure('Disk used', d.disk ? bytes(d.disk.used || 0) : '–',
+      d.disk && isFinite(d.disk.percent) ? `${d.disk.percent.toFixed(1)}% of ${bytes(d.disk.total)}` : ''),
+    figure('Unaccounted', acct.known ? bytes(Math.max(0, acct.gap)) : 'unknown',
+      acct.known ? (acct.material ? 'worth a look' : 'within rounding') : 'needs the index list'));
+
+  const body = [figures];
+
+  if (acct.material) {
+    body.push(h('div.banner.warn', { style: { margin: 0 } },
+      h('div',
+        h('div.ttl', `${bytes(acct.gap)} on disk that no index accounts for`),
+        h('div', { style: { fontSize: '12px' } },
+          'Data the cluster state does not know about — a dangling index left by a removed '
+          + 'node, or shard directories orphaned by a failed relocation. Deleting an index '
+          + 'will not reclaim it, because there is no index to delete.'))));
+    body.push(dang === null
+      ? h('div.muted', { style: { fontSize: '12px' } }, 'Checking for dangling indices…')
+      : (dang.indices || []).length
+        ? h('div',
+            h('div.muted', { style: { fontSize: '11px', marginBottom: '3px' } }, 'dangling'),
+            table(['Index', 'UUID', 'Created'], dang.indices.map((r) => h('tr',
               h('td.mono', r.index_name),
               h('td.mono.muted', { style: { fontSize: '10.5px' } }, r.index_uuid),
               h('td.muted', { style: { fontSize: '11.5px' } }, r.creation_date_millis
-                ? new Date(r.creation_date_millis).toISOString().slice(0, 10) : ''))))
-          : h('div.muted', { style: { fontSize: '12px' } },
-              'No dangling indices, so the gap is orphaned shard data rather than a lost index. '
-              + 'A rolling restart of the affected node clears directories it no longer owns.')));
+                ? new Date(r.creation_date_millis).toISOString().slice(0, 10) : '')))))
+        : h('div.muted', { style: { fontSize: '12px' } },
+            'No dangling indices, so the gap is orphaned shard data rather than a lost index. '
+            + 'A rolling restart of the affected node clears directories it no longer owns.'));
+  }
+
+  if (stale.list.length) {
+    body.push(h('div',
+      h('div.muted', { style: { fontSize: '11px', marginBottom: '3px' } },
+        `past the ${stale.policy} retention policy — ${bytes(stale.bytes)} across ${num(stale.list.length)} indices`),
+      table([{ label: 'Index', sort: null }, 'Day', { label: 'Size', num: true }],
+        stale.list.slice(0, 12).map((i) => h('tr',
+          h('td.mono', i.index), h('td.muted', i.day), h('td.num', bytes(i.size || 0)))),
+        { emptyText: '' }),
+      stale.list.length > 12
+        ? h('div.muted', { style: { fontSize: '11px' } }, `…and ${num(stale.list.length - 12)} more`)
+        : null));
+  }
+
+  const sub = acct.material ? `${bytes(acct.gap)} unexplained`
+    : stale.list.length ? `${num(stale.list.length)} indices past retention`
+    : 'indices and disk agree';
+  return card('Storage accounting', sub, h('div', { style: { display: 'grid', gap: '10px' } }, ...body));
+}
+
+function figure(label, value, sub) {
+  return h('div', { style: { minWidth: '140px' } },
+    h('div.muted', { style: { fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '.03em' } }, label),
+    h('div', { style: { fontSize: '17px', fontWeight: 660 } }, value),
+    sub ? h('div.muted', { style: { fontSize: '11px' } }, sub) : null);
+}
+
+/**
+ * Indices whose data is older than the retention this cluster promises.
+ *
+ * "Stale" in the sense that matters when disk is short: still on disk, still costing,
+ * and past the point the policy said they would be kept. Read from the date in the index
+ * name, so a cluster whose indices are not dated reports none rather than guessing.
+ */
+function staleIndices(c, indices) {
+  const ret = parseRetention(c.liveRetention);
+  if (!ret || !Array.isArray(indices)) return { list: [], bytes: 0, policy: '' };
+  const cutoff = new Date(Date.now() - ret.days * 86400000).toISOString().slice(0, 10);
+  const list = indices.filter((i) => i.day && i.day < cutoff)
+    .sort((a, b) => String(a.day).localeCompare(String(b.day)));
+  return { list, bytes: list.reduce((n, i) => n + (i.size || 0), 0), policy: ret.label };
 }
 
 /** _cat gives strings; everything downstream wants the numbers as numbers. */
@@ -328,9 +501,28 @@ function shardsCard(c, d, all, raw, started) {
     if (ui.state !== 'all' && s.state !== ui.state) return false;
     return true;
   });
-  const shown = filtered.slice(0, ui.limit);
+  const SHARD_SORTS = {
+    index: (x) => x.index, shard: (x) => x.shard, type: (x) => (x.primary ? 0 : 1),
+    state: (x) => x.state, node: (x) => x.node || '\uffff', store: (x) => x.store, docs: (x) => x.docs,
+  };
+  const sortKey = SHARD_SORTS[ui.sort] || SHARD_SORTS.index;
+  const sorted = [...filtered].sort((a, b) => {
+    const av = sortKey(a), bv = sortKey(b);
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * ui.dir;
+    return String(av).localeCompare(String(bv)) * ui.dir;
+  });
+  const shown = sorted.slice(0, ui.limit);
 
+  const key = (x) => `${x.index}/${x.shard}/${x.primary ? 'p' : 'r'}`;
   const trs = shown.map((s) => h('tr',
+    h('td', { style: { width: '26px' } }, s.state === 'STARTED'
+      ? h('input', { type: 'checkbox', checked: picked.has(key(s)),
+          title: 'Include this shard in a bulk move',
+          onchange: (e) => {
+            if (e.target.checked) picked.set(key(s), { ...s, clusterId: c.id }); else picked.delete(key(s));
+            draw();
+          } })
+      : null),
     h('td.mono', { style: { maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis' }, title: s.index }, s.index),
     h('td.num', String(s.shard)),
     h('td', s.primary ? pill('primary', 'blue') : pill('replica', 'grey')),
@@ -370,20 +562,105 @@ function shardsCard(c, d, all, raw, started) {
       }, 'Retry failed allocations'),
       h('button.btn.sm', { onclick: () => load(c) }, '↻ Reload shards')));
 
+  const mine = [...picked.values()].filter((x) => x.clusterId === c.id);
+  const bulkBar = mine.length
+    ? h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '8px 10px',
+                          background: 'var(--accent-soft)', borderRadius: '4px', marginBottom: '6px' } },
+        h('b', { style: { fontSize: '12px' } }, `${num(mine.length)} shard(s) ticked`),
+        h('span.muted', { style: { fontSize: '11px' } },
+          `${bytes(mine.reduce((n, x) => n + (x.store || 0), 0))} in total`),
+        h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px' } },
+          h('button.btn.sm.primary', { onclick: () => moveMany(c, d, mine) }, 'Move them…'),
+          h('button.btn.sm.ghost', { onclick: () => { mine.forEach((x) => picked.delete(`${x.index}/${x.shard}/${x.primary ? 'p' : 'r'}`)); draw(); } }, 'Clear')))
+    : null;
+
   const sub = `${num(filtered.length)} of ${num(all.length)} shard(s)`
     + (shown.length < filtered.length ? ` · showing the first ${num(shown.length)}` : '');
 
   return card(`Shards — ${c.name}`, why || sub,
-    h('div', controls,
+    h('div', controls, bulkBar,
       why ? h('div', { style: { padding: '14px' } }, empty(why)) : null,
-      table(['Index', { label: 'Shard', num: true }, 'Type', 'State', 'Node',
-             { label: 'Store', num: true }, { label: 'Docs', num: true }, 'Unassigned reason', ''],
+      table([tickAll(shown.filter((x) => x.state === 'STARTED'), c),
+           { label: 'Index', sort: 'index' }, { label: 'Shard', num: true, sort: 'shard' },
+           { label: 'Type', sort: 'type' }, { label: 'State', sort: 'state' },
+           { label: 'Node', sort: 'node' }, { label: 'Store', num: true, sort: 'store' },
+           { label: 'Docs', num: true, sort: 'docs' }, 'Unassigned reason', ''],
         trs, { emptyText: all.length ? 'No shard matches the filter' : 'No shards reported' }),
       shown.length < filtered.length
         ? h('div', { style: { padding: '10px', textAlign: 'center' } },
             h('button.btn.sm', { onclick: () => { ui.limit += 300; draw(); } },
               `Show more (${num(filtered.length - shown.length)} hidden)`))
         : null));
+}
+
+/** The header tick: select every movable shard currently shown, or none of them. */
+function tickAll(movable, c) {
+  const allOn = movable.length > 0 && movable.every((x) => picked.has(`${x.index}/${x.shard}/${x.primary ? 'p' : 'r'}`));
+  return {
+    label: h('input', { type: 'checkbox', checked: allOn,
+      title: allOn ? 'Clear the selection' : 'Tick every started shard shown',
+      onchange: () => {
+        movable.forEach((x) => {
+          const k = `${x.index}/${x.shard}/${x.primary ? 'p' : 'r'}`;
+          if (allOn) picked.delete(k); else picked.set(k, { ...x, clusterId: c.id });
+        });
+        draw();
+      } }),
+  };
+}
+
+/**
+ * Move several shards to one node.
+ *
+ * Elasticsearch takes a list of reroute commands in a single call and applies them as one
+ * decision, which is better than looping: it can refuse the batch as a whole if the
+ * result would breach an allocation rule, rather than moving four shards and then
+ * discovering the fifth was the one that mattered.
+ */
+async function moveMany(c, d, list) {
+  if (!(await ensureWrites())) return;
+  const cl = client(c.id);
+  const rows = (d.disk && d.disk.nodes) || [];
+  const froms = new Set(list.map((x) => x.node));
+  const targets = rows.map((n) => n.node).filter(Boolean);
+  if (targets.length < 2) { toast('There is only one node to place shards on', 'warn'); return; }
+
+  const opts = targets.map((n) => {
+    const row = rows.find((x) => x.node === n) || {};
+    return [n, `${n} — ${bytes(Number(row['disk.avail']) || 0)} free, ${num(Number(row.shards) || 0)} shards`];
+  });
+  const total = list.reduce((n, x) => n + (x.store || 0), 0);
+
+  const res = await modal(`Move ${list.length} shard(s)`, c.name, [
+    h('div.muted', { style: { fontSize: '12px' } },
+      `${bytes(total)} in total. Sent as one reroute, so Elasticsearch accepts or refuses the `
+      + 'whole set rather than leaving it half done. Shards already on the target are skipped.'),
+    field('From', h('span.mono', [...froms].join(', ') || '–')),
+    field('To', select('sh-bulk-to', opts[0][0], opts)),
+  ], (ctx) => [
+    h('button.btn.primary', { onclick: (e) => ctx.run(e.target, async () => {
+      const to = val('sh-bulk-to');
+      const moving = list.filter((x) => x.node !== to);
+      if (!moving.length) throw new Error('Every ticked shard is already on that node.');
+      const ok = await confirmDialog(`Move ${moving.length} shard(s) to ${to}?`,
+        `${bytes(moving.reduce((n, x) => n + (x.store || 0), 0))} will be copied, then removed from `
+        + 'the source. The indices stay available throughout.',
+        { yes: `move ${moving.length}`, danger: true });
+      if (!ok) return null;
+      const r = await cl.reroute(moving.map((x) => ({
+        move: { index: x.index, shard: x.shard, from_node: x.node, to_node: to },
+      })));
+      if (!r.ok) throw new Error(r.message || r.kind || `HTTP ${r.status}`);
+      return { to, n: moving.length };
+    }) }, 'Move'),
+    h('button.btn', { onclick: () => ctx.close(null) }, 'Cancel'),
+  ], { width: '600px' });
+
+  if (res) {
+    list.forEach((x) => picked.delete(`${x.index}/${x.shard}/${x.primary ? 'p' : 'r'}`));
+    toast(`Moving ${res.n} shard(s) to ${res.to}`);
+    await load(c);
+  }
 }
 
 function stateCell(s) {

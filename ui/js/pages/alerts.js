@@ -4,7 +4,7 @@ import { h, mount, $, tooltip } from '../lib/dom.js';
 import { ago, dt, toCsv, download, num } from '../lib/fmt.js';
 import { state, bus, alerts, clusters, activeClusters, client, fetchOverview, refreshAll } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
-import { hbarList, legend } from '../lib/charts.js';
+import { hbarList, legend, gauge, STATUS } from '../lib/charts.js';
 import { navigateTo } from '../core/intent.js';
 import { rowMenu, ICON, popover, toast, closePopover } from '../ui/menu.js';
 import { confirmDialog } from '../ui/modal.js';
@@ -102,6 +102,8 @@ function draw() {
       statTile('Acknowledged', num(acked.length), acked.length ? 'seen, still active' : 'none'),
       statTile('Clusters affected', num(byCluster.size), `of ${num(list.length)} configured`)),
 
+    h('div', { style: { marginBottom: '10px' } }, statsCard(all, crit, warn, open, acked, byCluster, list)),
+
     h('div.toolbar',
       h('label.field', 'Level', (() => {
         const s = h('select', { onchange: (e) => { ui.level = e.target.value; draw(); } },
@@ -174,6 +176,62 @@ function draw() {
  * problem — whether it is the same fault everywhere. Both respect the filters above,
  * and a bar is clickable: it narrows the page to that cluster.
  */
+/**
+ * The shape of what is open, rather than four counts of it.
+ *
+ * The tiles above answer "how many"; this answers "how bad, where, and what kind" — the
+ * three questions asked next. The gauge is the fraction of the fleet currently alerting,
+ * which has a real ceiling (every cluster) and so is a position worth drawing rather than
+ * a number with an invented maximum.
+ */
+function statsCard(all, crit, warn, open, acked, byCluster, list) {
+  const openCrit = crit.filter((a) => !isAcked(a.key)).length;
+  const affected = byCluster.size;
+  const total = list.length || 1;
+
+  // Kind is the first word of the alert key after the cluster id — the family it came
+  // from — which is how "everything is snapshots" becomes visible at a glance.
+  const kinds = new Map();
+  for (const a of open) {
+    const k = String(a.key).split(':')[1] || 'other';
+    kinds.set(k, (kinds.get(k) || 0) + 1);
+  }
+  const byKind = [...kinds.entries()].sort((a, b) => b[1] - a[1]);
+
+  const worst = [...byCluster.entries()]
+    .map(([id, n]) => ({ name: (list.find((c) => c.id === id) || {}).name || id, n }))
+    .sort((a, b) => b.n - a.n).slice(0, 6);
+
+  return card('Alert statistics', `${num(open.length)} open · ${num(acked.length)} acknowledged`,
+    h('div', { style: { display: 'flex', gap: '22px', flexWrap: 'wrap', alignItems: 'flex-start' } },
+      gauge(affected, total, {
+        label: 'clusters alerting',
+        sub: `of ${num(total)}`,
+        format: (v) => String(num(v)),
+        color: openCrit ? STATUS.critical : affected ? STATUS.warning : STATUS.good,
+      }),
+      gauge(openCrit, Math.max(1, open.length), {
+        label: 'of open are critical',
+        sub: open.length ? `of ${num(open.length)}` : 'none open',
+        format: (v) => String(num(v)),
+        color: openCrit ? STATUS.critical : STATUS.good,
+      }),
+      h('div', { style: { flex: '1 1 260px', minWidth: '240px' } },
+        h('div.muted', { style: { fontSize: '11px', marginBottom: '4px' } }, 'open alerts by kind'),
+        byKind.length
+          ? hbarList(byKind.map(([k, n]) => ({
+              key: k, label: k.replace(/-/g, ' '), value: n,
+              color: k.includes('health') || k.includes('master') ? STATUS.critical : STATUS.warning,
+            })), { format: (v) => num(v), topN: 6, labelWidth: 130, showOther: false })
+          : h('div.tbl-empty', 'nothing open')),
+      h('div', { style: { flex: '1 1 220px', minWidth: '200px' } },
+        h('div.muted', { style: { fontSize: '11px', marginBottom: '4px' } }, 'clusters with the most'),
+        worst.length
+          ? hbarList(worst.map((w) => ({ key: w.name, label: w.name, value: w.n })),
+              { format: (v) => num(v), topN: 6, labelWidth: 120, showOther: false })
+          : h('div.tbl-empty', 'none affected'))));
+}
+
 function graphView(rows, all) {
   const worst = (list) => (list.some((a) => a.level === 'critical') ? 'var(--critical)' : 'var(--warning)');
 

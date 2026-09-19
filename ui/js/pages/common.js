@@ -84,9 +84,34 @@ export function statTile(k, v, d) {
 
 export function empty(msg) { return h('div.tbl-empty', msg); }
 
+/**
+ * A table, optionally sortable by clicking its headers.
+ *
+ * A header carries `sort: 'key'` to become clickable, and `opts.sort` says which key is
+ * active, which way, and what to do about a click: `{ key, dir, on(key) }`. Clicking the
+ * active column reverses it, which is what every table anyone has used does.
+ *
+ * Here rather than in each page because "can I sort by this column" should not depend on
+ * which page the table is on, and because the arrow, the aria-sort and the reverse-on-
+ * second-click are three things that were going to be re-implemented slightly differently
+ * every time.
+ */
 export function table(headers, rows, opts = {}) {
-  const thead = h('thead', h('tr', ...headers.map((c) =>
-    h('th', { class: c.num ? 'num' : '', style: c.width ? { width: c.width } : null }, c.label || c))));
+  const sort = opts.sort || null;
+  const thead = h('thead', h('tr', ...headers.map((c) => {
+    const key = c && c.sort;
+    const active = key && sort && sort.key === key;
+    const cls = [c.num ? 'num' : '', key && sort ? 'sortable' : ''].filter(Boolean).join('.');
+    return h(cls ? `th.${cls}` : 'th', {
+      style: c.width ? { width: c.width } : null,
+      title: key && sort ? `Sort by ${c.label || c}` : null,
+      'aria-sort': active ? (sort.dir === 1 ? 'ascending' : 'descending') : (key && sort ? 'none' : null),
+      ...(key && sort ? activatable(() => sort.on(key), { role: null }) : {}),
+    // A label can be a node — a select-all tick, for instance — so it is appended rather
+    // than concatenated. Concatenating stringified an element into "[object HTMLInputElement]".
+    }, c.label instanceof Node ? c.label : String(c.label ?? c),
+       active ? (sort.dir === 1 ? ' ▲' : ' ▼') : null);
+  })));
   const tbody = h('tbody');
   if (!rows.length) tbody.append(h('tr', h('td', { colspan: headers.length }, empty(opts.emptyText || 'Nothing to show'))));
   rows.forEach((r) => tbody.append(r));

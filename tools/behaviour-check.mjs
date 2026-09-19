@@ -213,6 +213,73 @@ await go('shards');
   await settleFor(250);
   const after = shardRowsNow();
   ok(after < before, `shards: clicking a honeycomb cell did not filter the table (${before} → ${after})`);
+
+  // Storage accounting is shown whether or not the figures disagree — the two numbers are
+  // asked for either way.
+  ok(titles.includes('Storage accounting'), `shards: no storage accounting card, saw ${titles.join(' | ')}`);
+  const acct = [...doc.querySelectorAll('section.card')]
+    .find((sec) => /Storage accounting/.test((sec.querySelector('header h2') || {}).textContent || ''));
+  for (const label of ['Indices hold', 'Elasticsearch holds', 'Disk used', 'Unaccounted']) {
+    ok(acct && acct.textContent.includes(label), `shards: accounting is missing "${label}"`);
+  }
+
+  // Clear the filter the honeycomb click just applied — it landed on the unassigned
+  // shard's index, which by definition has nothing movable on it.
+  const idxFilter = [...doc.querySelectorAll('input[type=search]')]
+    .find((x) => x.placeholder === 'filter by name');
+  if (idxFilter) {
+    idxFilter.value = '';
+    idxFilter.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(250);
+  }
+
+  // Ticking a started shard offers a bulk move; ticking nothing offers nothing.
+  ok(!/ticked/.test(doc.body.textContent), 'shards: the bulk bar is showing with nothing ticked');
+  const tick = [...doc.querySelectorAll('input[type=checkbox]')].find((x) => x.title === 'Include this shard in a bulk move');
+  ok(!!tick, 'shards: no per-row tick on a started shard');
+  if (tick) {
+    tick.checked = true;
+    tick.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await settleFor(250);
+    ok(/1 shard\(s\) ticked/.test(doc.body.textContent), 'shards: ticking one did not open the bulk bar');
+    ok([...doc.querySelectorAll('button')].some((b) => b.textContent === 'Move them…'),
+      'shards: the bulk bar has no bulk move');
+    const clear = [...doc.querySelectorAll('button')].find((b) => b.textContent === 'Clear');
+    if (clear) { clear.click(); await settleFor(200); }
+  }
+}
+
+/* ------------------- the overview sorts by any column that means something ------------------- */
+
+await go('overview');
+{
+  const heads = [...doc.querySelectorAll('table.tbl thead th')];
+  const sortable = heads.filter((th) => th.classList.contains('sortable')).map((th) => th.textContent.replace(/[▲▼]/g, '').trim());
+  for (const col of ['Cluster', 'Version', 'Health', 'Disk usage', 'ILM', 'SLM', 'Last snapshot', 'Alerts']) {
+    ok(sortable.includes(col), `overview: "${col}" is not sortable — sortable are ${sortable.join(', ')}`);
+  }
+  // Clicking the active column reverses it rather than re-sorting the same way.
+  const first = heads.find((th) => th.textContent.includes('Version'));
+  first.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await settleFor(200);
+  let v = [...doc.querySelectorAll('table.tbl thead th')].find((th) => th.textContent.includes('Version'));
+  ok(/▲/.test(v.textContent), `overview: first click should sort ascending, header reads "${v.textContent}"`);
+  v.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await settleFor(200);
+  v = [...doc.querySelectorAll('table.tbl thead th')].find((th) => th.textContent.includes('Version'));
+  ok(/▼/.test(v.textContent), `overview: second click should reverse, header reads "${v.textContent}"`);
+}
+
+/* ---------------------------- alerts show their shape ---------------------------- */
+
+await go('alerts');
+{
+  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('Alert statistics'), `alerts: no statistics card, saw ${titles.join(' | ')}`);
+  // Two gauges, drawn as arcs rather than written as numbers.
+  const paths = doc.querySelectorAll('section.card svg path').length;
+  ok(paths >= 2, `alerts: expected gauge arcs, found ${paths} path(s)`);
+  ok(/clusters alerting/.test(doc.body.textContent), 'alerts: the fleet gauge is unlabelled');
 }
 
 await go('indices');
