@@ -925,6 +925,34 @@ if (config.clusters.length >= 2) {
   ok(!keys().some((k) => k.startsWith('c1:master-changed')),
     'an election from last week should have aged out');
 
+  // Disk capacity: the size of the disk, not how full it is.
+  const cap = (nodes, capacity) => {
+    base(nodes);
+    st.state.data.get('c1').capacity = capacity;
+  };
+  const GB = 1024 ** 3;
+
+  cap([{ name: 'n1', master: '*' }],
+    { total: 200 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 60000 });
+  let grew = st.alerts().find((a) => a.key.startsWith('c1:capacity'));
+  ok(!!grew, `a capacity change should alert: ${keys().join(', ')}`);
+  ok(grew && grew.level === 'warning', 'growing is informational, not critical');
+  ok(grew && /grew to/.test(grew.title), `grew title: ${grew && grew.title}`);
+
+  cap([{ name: 'n1', master: '*' }],
+    { total: 50 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 60000 });
+  const fell = st.alerts().find((a) => a.key.startsWith('c1:capacity'));
+  ok(fell && fell.level === 'critical', 'a disk shrinking is critical — a path went away');
+  ok(fell && /FELL/.test(fell.title), `fell title: ${fell && fell.title}`);
+  ok(fell && /not a node leaving/.test(fell.detail), 'the detail should rule out the innocent explanation');
+
+  // Unchanged capacity says nothing, and an ancient change has aged out.
+  cap([{ name: 'n1', master: '*' }], { total: 100 * GB, nodeCount: 1, changedFrom: null, changedAt: null });
+  ok(!keys().some((k) => k.startsWith('c1:capacity')), 'steady capacity must be silent');
+  cap([{ name: 'n1', master: '*' }],
+    { total: 50 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 5 * 86400000 });
+  ok(!keys().some((k) => k.startsWith('c1:capacity')), 'a change from last week has aged out');
+
   // Disk Elasticsearch holds against disk the indices explain.
   base([{ name: 'n1', master: '*' }], { disk: { indicesBytes: 100 * 1024 ** 3, nodes: [] } });
   st.state.indices.set('c1', [{ index: 'a', size: 30 * 1024 ** 3 }]);
