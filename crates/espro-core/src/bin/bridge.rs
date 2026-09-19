@@ -54,6 +54,10 @@ async fn main() {
     // the portable build; a non-loopback bind is the hosted deployment.
     let edition = if hosted { Edition::Hosted } else { Edition::Portable };
     let core = Core::new(data, edition);
+    // The one timer in the product. It is started here, inside the runtime and only for
+    // the hosted binary, rather than in Core::new — a scheduler that starts itself
+    // wherever a Core is built would run in the desktop app and in every test.
+    core.start_delay_sink();
     let app = Router::new()
         .route("/bridge", post(bridge))
         .fallback_service(ServeDir::new(&ui))

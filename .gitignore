@@ -29,3 +29,4 @@ pins.json
 .idea/
 .vscode/
 .gstack/
+node_modules/

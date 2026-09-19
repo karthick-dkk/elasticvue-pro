@@ -27,6 +27,17 @@ export const listPins = () => send({ type: 'PINS' });
 export const requestStats = () => send({ type: 'REQUEST_STATS' });
 /** REST console write unlock. Session-only in the core: never persisted, gone on restart. */
 export const writeUnlock = (on) => send({ type: 'WRITE_UNLOCK', on: !!on });
+/**
+ * The scheduled log-delay measurement. Hosted only: every other edition answers
+ * `supported: false`, because only the bridge daemon is still running when nobody is
+ * looking at the app. Admin only, like everything that decides what this process does
+ * on its own.
+ */
+export const delaySinkGet = () => send({ type: 'DELAY_SINK_GET' });
+export const delaySinkSet = (config) => send({ type: 'DELAY_SINK_SET', config });
+/** Run it now, at a moment a person chose. Same work the timer does. */
+export const delaySinkRun = () => send({ type: 'DELAY_SINK_RUN' });
+
 export const vaultGet = (scope) => send({ type: 'VAULT_GET', scope });
 export const vaultSet = (scope, value) => send({ type: 'VAULT_SET', scope, value });
 export const vaultDel = (scope) => send({ type: 'VAULT_DEL', scope });

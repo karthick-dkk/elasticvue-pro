@@ -407,6 +407,95 @@ await go('settings');
     'settings: the triggers card should send new-rule authoring to Automation');
 }
 
+/* ------------- the scheduled measurement is offered only where it can run ------------- */
+
+// The dev bridge runs on loopback, which is the portable edition, so the core answers
+// `supported: false` and the card is correctly absent. That is the first half of the
+// claim; the second half — that it appears, and that saving sends what the admin typed —
+// needs a hosted answer, which is stubbed here rather than by standing up a second
+// bridge on a routable address.
+await go('settings');
+{
+  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(!titles.includes('Scheduled log delay'),
+    'settings: the scheduler card appeared on a loopback (portable) bridge, where it cannot run');
+}
+
+{
+  const realFetch = globalThis.fetch;
+  let lastSet = null;
+  const stub = {
+    supported: true,
+    config: { enabled: false, sinkClusterId: '', clusters: [], everyHours: 2,
+              indexPrefix: 'espro-log-delay', indexPattern: 'logstash-*',
+              deviceField: 'src_hostname.keyword', arrivalField: '@timestamp',
+              eventTimeFields: ['ingested_time', 'event_created'], maxDevices: 2000 },
+    state: { runs: 0, lastOk: false, lastMeasured: 0, lastFailed: 0, consecutiveFailures: 0 },
+    blocked: null,
+  };
+  globalThis.fetch = async (input, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(body.type || '').startsWith('DELAY_SINK')) {
+      // transport.js only ever calls .json() on the answer, and jsdom has no Response.
+      if (body.type === 'DELAY_SINK_SET') {
+        lastSet = body.config;
+        return { ok: true, json: async () => ({ ok: true, ...stub, config: body.config }) };
+      }
+      return { ok: true, json: async () => ({ ok: true, ...stub }) };
+    }
+    return realFetch(input, init);
+  };
+
+  await go('overview');
+  await go('settings');
+  await settleFor(300);
+
+  const card = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Scheduled log delay');
+  ok(!!card, 'settings: no scheduled log delay card on a hosted core');
+
+  if (card) {
+    // Every cluster is offered as the destination, and every cluster can be measured.
+    const options = [...card.querySelectorAll('#sink-target option')].length;
+    ok(options === config.clusters.length + 1,
+      `settings: ${options} sink options for ${config.clusters.length} clusters (plus the empty one)`);
+    ok(card.querySelectorAll('input[id^="sink-pick-"]').length === config.clusters.length,
+      'settings: the clusters to measure are not one box per cluster');
+    ok(/Log delay/.test(card.textContent),
+      'settings: the card should say where the thresholds are applied');
+
+    // Arming it without naming a destination must not reach the core at all.
+    card.querySelector('#sink-enabled').checked = true;
+    [...card.querySelectorAll('input[id^="sink-pick-"]')].forEach((b) => { b.checked = false; });
+    [...card.querySelectorAll('button')].find((b) => b.textContent === 'Save').click();
+    await settleFor(120);
+    ok(lastSet === null, 'settings: saving with no cluster picked was sent to the core anyway');
+
+    // With a destination and a cluster that is not the destination, what is sent is what
+    // was on the screen. (Measuring only the sink is refused too; the card says so.)
+    const target = card.querySelector('#sink-target');
+    const dest = config.clusters[config.clusters.length - 1].id;
+    target.value = dest;
+    const first = card.querySelector(`#sink-pick-${config.clusters[0].id}`);
+    if (first) first.checked = true;
+    card.querySelector('#sink-everyHours').value = '6';
+    [...card.querySelectorAll('button')].find((b) => b.textContent === 'Save').click();
+    await settleFor(200);
+    ok(lastSet !== null, 'settings: a complete setting was not sent to the core');
+    if (lastSet) {
+      ok(lastSet.enabled === true, 'settings: the armed switch did not travel');
+      ok(lastSet.everyHours === 6, `settings: the interval travelled as ${lastSet.everyHours}, not 6`);
+      ok(lastSet.sinkClusterId === dest,
+        `settings: the destination travelled as ${lastSet.sinkClusterId}, expected ${dest}`);
+      ok(!lastSet.clusters.includes(dest) || lastSet.clusters.length > 1,
+        'settings: the cluster being written to was the only one measured');
+      ok(lastSet.eventTimeFields.length === 2,
+        `settings: the event time fields travelled as ${JSON.stringify(lastSet.eventTimeFields)}`);
+    }
+  }
+  globalThis.fetch = realFetch;
+}
+
 /* ----------------- the brand is the product, not the filename ----------------- */
 
 {

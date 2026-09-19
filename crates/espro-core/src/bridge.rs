@@ -3,6 +3,7 @@
 //! decisions, config file, vault).
 
 use crate::auth::{self, Caller, Edition, Role, Sessions, TokenStore, UserStore};
+use crate::delay_sink::{self, SinkConfig, SinkState};
 use crate::guard::Writes;
 use crate::http::{ClusterSpec, EsRequest, Route, Transport};
 use crate::socks::{self, SocksServer};
@@ -47,6 +48,18 @@ pub struct Core {
     tokens: TokenStore,
     keys: crate::vault_files::KeyStore,
     history: crate::vault_files::ConfigHistory,
+    /// The scheduled log-delay measurement. Hosted only, disarmed until an admin says
+    /// otherwise, and the only thing in this process that acts without being asked.
+    delay_sink: RwLock<Sink>,
+}
+
+/// What the job is set to do, and what it last did. Kept together because an admin
+/// reading one always wants the other: "every two hours" means nothing without "and the
+/// last four attempts were refused because the config is read-only".
+#[derive(Default)]
+struct Sink {
+    config: SinkConfig,
+    state: SinkState,
 }
 
 /// The window the request counter reports over.
@@ -119,6 +132,7 @@ impl Core {
             );
         }
         let tokens = TokenStore::open(auth_path("tokens.json"));
+        let data_dir_for_sink = data_dir.clone();
         Arc::new(Core {
             edition,
             users,
@@ -135,6 +149,10 @@ impl Core {
             writes_unlocked: std::sync::atomic::AtomicBool::new(false),
             request_log: parking_lot::Mutex::new(HashMap::new()),
             started: std::time::Instant::now(),
+            delay_sink: RwLock::new(Sink {
+                config: read_sink_config(data_dir_for_sink.as_deref(), edition),
+                state: SinkState::default(),
+            }),
         })
     }
 
@@ -297,6 +315,7 @@ impl Core {
                 json!({ "ok": true })
             }
             "ES" => self.es(msg).await,
+            "DELAY_SINK_GET" | "DELAY_SINK_SET" | "DELAY_SINK_RUN" => self.delay_sink_msg(&t, &msg).await,
             "TUNNELS" => json!({ "ok": true, "tunnels": self.tunnel_status().await }),
             "TUNNEL_RECONNECT" => {
                 let id = msg.get("jumpId").and_then(|v| v.as_str()).unwrap_or("");
@@ -874,6 +893,14 @@ impl Core {
             Ok(r) => r,
             Err(e) => return json!({ "ok": false, "kind": "bad_message", "message": format!("bad ES request: {e}") }),
         };
+        self.es_req(req).await
+    }
+
+    /// The same path a page's request takes, entered with a request that was built here
+    /// rather than parsed from a message. Used by the scheduled delay measurement, so
+    /// that job inherits the jump hosts, the pinned certificates, the credentials and
+    /// the read-only guard instead of carrying its own copy of any of them.
+    pub(crate) async fn es_req(self: &Arc<Self>, req: EsRequest) -> Value {
         let (spec, read_only) = {
             let p = self.primed.read();
             (p.clusters.get(&req.cluster_id).cloned(), p.read_only)
@@ -909,5 +936,243 @@ impl Core {
             self.record_request(&req.cluster_id);
         }
         out
+    }
+}
+
+/* ---------------------------- the scheduled measurement ---------------------------- */
+
+/// Where the armed setting lives between restarts. Hosted keeps it; the other editions
+/// never schedule anything, so they are given the disarmed default and never write a
+/// file — a portable copy carried to another machine cannot bring a timer with it.
+fn sink_path(data_dir: Option<&std::path::Path>, edition: Edition) -> Option<PathBuf> {
+    data_dir.filter(|_| edition.schedules()).map(|d| d.join("delay-sink.json"))
+}
+
+fn read_sink_config(data_dir: Option<&std::path::Path>, edition: Edition) -> SinkConfig {
+    let Some(path) = sink_path(data_dir, edition) else { return SinkConfig::default() };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<SinkConfig>(&text) {
+            Ok(c) => c.normalised(),
+            Err(e) => {
+                // Disarmed, loudly. A setting we cannot read is not a setting we may
+                // guess at, and guessing here would mean writing to a cluster.
+                tracing::error!("delay sink: {} is unreadable ({e}); staying disarmed", path.display());
+                SinkConfig::default()
+            }
+        },
+        Err(_) => SinkConfig::default(),
+    }
+}
+
+impl Core {
+    /// Start the timer. Called once, from the hosted binary, inside the runtime.
+    ///
+    /// It ticks every minute and does nothing unless a run is due, so arming, disarming
+    /// and re-tuning the interval take effect without restarting anything — there is no
+    /// task to cancel and none to leak.
+    pub fn start_delay_sink(self: &Arc<Self>) {
+        if !self.edition.schedules() {
+            return;
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                core.delay_sink_tick().await;
+            }
+        });
+        tracing::info!(target: "audit", "delay sink: timer started");
+    }
+
+    /// One minute's worth of deciding whether to run.
+    async fn delay_sink_tick(self: &Arc<Self>) {
+        let now = delay_sink::now_ms();
+        let due = {
+            let s = self.delay_sink.read();
+            if !s.config.enabled {
+                return;
+            }
+            s.state.next_due_at.unwrap_or(now)
+        };
+        if now < due {
+            return;
+        }
+        self.run_delay_sink().await;
+    }
+
+    /// Why a run cannot happen now, if it cannot. Each answer names the thing a person
+    /// would have to change, because these are read off a settings page.
+    fn delay_sink_refusal(&self, cfg: &SinkConfig) -> Option<String> {
+        if let Some(r) = cfg.refusal() {
+            return Some(r);
+        }
+        let p = self.primed.read();
+        if p.clusters.is_empty() {
+            return Some(
+                "nothing is primed: the core has no cluster credentials until somebody opens the app"
+                    .into(),
+            );
+        }
+        if !p.clusters.contains_key(&cfg.sink_cluster_id) {
+            return Some(format!("the sink cluster {:?} is not one of the primed clusters", cfg.sink_cluster_id));
+        }
+        // The session unlock is never persisted and no background task may hold it, so
+        // the only gate left is the config's own. See guard.rs.
+        if crate::guard::Writes::decide(p.read_only, false, true) == crate::guard::Writes::Blocked {
+            return Some(
+                "the config is read-only: set readOnly to false to let measurements be written".into(),
+            );
+        }
+        None
+    }
+
+    /// Which primed clusters this run measures.
+    fn delay_sink_targets(&self, cfg: &SinkConfig) -> Vec<String> {
+        let p = self.primed.read();
+        if cfg.clusters.is_empty() {
+            let mut ids: Vec<String> =
+                p.clusters.keys().filter(|id| **id != cfg.sink_cluster_id).cloned().collect();
+            ids.sort();
+            return ids;
+        }
+        cfg.clusters.iter().filter(|id| p.clusters.contains_key(*id)).cloned().collect()
+    }
+
+    /// Measure every target once and ship the result. Also the body of the admin's
+    /// "run it now" button, which is why it does not look at the schedule itself.
+    async fn run_delay_sink(self: &Arc<Self>) -> Value {
+        let cfg = self.delay_sink.read().config.clone();
+        let now = delay_sink::now_ms();
+
+        if let Some(why) = self.delay_sink_refusal(&cfg) {
+            let mut s = self.delay_sink.write();
+            s.state.last_skipped = Some(why.clone());
+            s.state.last_run_at = Some(now);
+            // A refusal is not a failure: nothing was attempted, so nothing backs off.
+            // It is retried at the normal interval, by which time somebody may have
+            // primed the app or turned off read-only.
+            s.state.next_due_at = Some(delay_sink::next_due(now, cfg.every_hours, 0));
+            tracing::info!(target: "audit", message = "delay sink skipped", reason = %why);
+            return json!({ "ok": false, "skipped": why });
+        }
+
+        let (year, month, bucket) = delay_sink::month_and_hour_bucket(now);
+        let index = delay_sink::index_name(&cfg.index_prefix, year, month);
+        let targets = self.delay_sink_targets(&cfg);
+        let mut measured = 0usize;
+        let mut failed = 0usize;
+        let mut first_error: Option<String> = None;
+
+        for id in &targets {
+            let res = self.es_req(delay_sink::search_request(id, &cfg)).await;
+            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                failed += 1;
+                first_error.get_or_insert_with(|| {
+                    format!(
+                        "{id}: {}",
+                        res.get("message").and_then(|v| v.as_str()).unwrap_or("search failed")
+                    )
+                });
+                continue;
+            }
+            let payload = res.get("json").cloned().unwrap_or(Value::Null);
+            let ms = delay_sink::measurements(&payload, &cfg);
+            if ms.is_empty() {
+                // No device could be measured. That is a fact about the cluster, not a
+                // failure of the job, and it is not written as a row of zeroes.
+                continue;
+            }
+            let body = delay_sink::bulk_body(id, &ms, &index, &bucket);
+            let wrote = self.es_req(delay_sink::bulk_request(&cfg, body)).await;
+            match delay_sink::bulk_failure(&wrote) {
+                None => measured += ms.len(),
+                Some(e) => {
+                    failed += 1;
+                    first_error.get_or_insert(format!("{id}: {e}"));
+                }
+            }
+        }
+
+        let ok = failed == 0;
+        {
+            let mut s = self.delay_sink.write();
+            s.state.runs += 1;
+            s.state.last_run_at = Some(now);
+            s.state.last_ok = ok;
+            s.state.last_skipped = None;
+            s.state.last_error = first_error.clone();
+            s.state.last_measured = measured;
+            s.state.last_failed = failed;
+            s.state.consecutive_failures = if ok { 0 } else { s.state.consecutive_failures + 1 };
+            s.state.next_due_at =
+                Some(delay_sink::next_due(now, cfg.every_hours, s.state.consecutive_failures));
+        }
+        tracing::info!(
+            target: "audit",
+            message = "delay sink run",
+            clusters = targets.len(), measured, failed, index = %index,
+            error = first_error.as_deref().unwrap_or(""),
+        );
+        json!({ "ok": ok, "measured": measured, "failed": failed, "clusters": targets.len(),
+                "index": index, "error": first_error })
+    }
+
+    /// `DELAY_SINK_GET` / `DELAY_SINK_SET` / `DELAY_SINK_RUN`. Admin only; see
+    /// `auth::required_role`.
+    async fn delay_sink_msg(self: &Arc<Self>, t: &str, msg: &Value) -> Value {
+        if !self.edition.schedules() {
+            return json!({ "ok": false, "supported": false,
+                           "message": "scheduled measurement runs only in the hosted edition, \
+                                       which is the only one still running when nobody is looking" });
+        }
+        match t {
+            "DELAY_SINK_GET" => {
+                let s = self.delay_sink.read();
+                json!({ "ok": true, "supported": true, "config": s.config, "state": s.state,
+                        "blocked": self.delay_sink_refusal(&s.config) })
+            }
+            "DELAY_SINK_SET" => {
+                let incoming = msg.get("config").cloned().unwrap_or(Value::Null);
+                let cfg: SinkConfig = match serde_json::from_value(incoming) {
+                    Ok(c) => SinkConfig::normalised(c),
+                    Err(e) => return json!({ "ok": false, "message": format!("bad delay sink config: {e}") }),
+                };
+                if let Some(why) = cfg.refusal() {
+                    return json!({ "ok": false, "message": why });
+                }
+                if let Some(path) = sink_path(self.data_dir.as_deref(), self.edition) {
+                    if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap_or_default()) {
+                        return json!({ "ok": false, "message": format!("could not save: {e}") });
+                    }
+                }
+                let now = delay_sink::now_ms();
+                {
+                    let mut s = self.delay_sink.write();
+                    let every = cfg.every_hours;
+                    let armed = cfg.enabled;
+                    s.config = cfg;
+                    // Arming schedules the first run one interval out, never immediately:
+                    // a person setting this up should not have a write leave the process
+                    // while they are still typing. "Run now" is a separate button.
+                    s.state.next_due_at = armed.then(|| delay_sink::next_due(now, every, 0));
+                    s.state.consecutive_failures = 0;
+                }
+                let s = self.delay_sink.read();
+                tracing::info!(target: "audit", message = "delay sink configured", enabled = s.config.enabled);
+                json!({ "ok": true, "config": s.config, "state": s.state,
+                        "blocked": self.delay_sink_refusal(&s.config) })
+            }
+            _ => {
+                // DELAY_SINK_RUN: the operator pressing it is what makes this one legible
+                // — it is the same work the timer does, at a moment somebody chose.
+                let out = self.run_delay_sink().await;
+                let s = self.delay_sink.read();
+                let mut out = out;
+                out["state"] = serde_json::to_value(&s.state).unwrap_or(Value::Null);
+                out
+            }
+        }
     }
 }

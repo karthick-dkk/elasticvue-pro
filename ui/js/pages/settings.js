@@ -5,7 +5,8 @@ import { bytes, dt, ago, download } from '../lib/fmt.js';
 import * as cfg from '../core/config.js';
 import { state, setConfig, refreshAll, clusters, client, hasSessionCredential,
          sessionCredentialLabel, clearSessionCredential, clustersNeedingCredential, isReadOnly } from '../core/state.js';
-import { workerStatus, forgetWorker, tunnels as fetchTunnels, listPins, untrustCert, untrustHostKey, tunnelReconnect } from '../core/es.js';
+import { workerStatus, forgetWorker, tunnels as fetchTunnels, listPins, untrustCert, untrustHostKey, tunnelReconnect,
+         delaySinkGet, delaySinkSet, delaySinkRun } from '../core/es.js';
 import { showCredentialDialog, forgetVaultCredential } from '../ui/credential-dialog.js';
 import { EXAMPLE_YAML } from '../core/example.js';
 import { saveTextAs } from '../core/platform.js';
@@ -24,6 +25,7 @@ let host = null;
 
 let core = null;      // last PING
 let trust = null;     // last PINS + TUNNELS
+let sink = null;      // last DELAY_SINK_GET; null until asked, {supported:false} off hosted
 
 /* ------------------------- uploading a config, and its history ------------------- */
 
@@ -101,7 +103,7 @@ async function restore(v) {
   }
 }
 
-export function render(el) { host = el; draw(); confirmCoreGuard(); loadTrust(); }
+export function render(el) { host = el; draw(); confirmCoreGuard(); loadTrust(); loadSink(); }
 
 /** Read the guard back from the core itself rather than trusting the UI's copy. */
 async function confirmCoreGuard() {
@@ -273,6 +275,155 @@ function alertRulesCard() {
       table(['', 'Alert', 'Level', 'Thresholds', 'id'], trs)));
 }
 
+/* ----------------------- the scheduled log-delay measurement ----------------------- */
+
+/**
+ * The one thing in this product that acts without somebody present.
+ *
+ * It exists only in the hosted edition, so on a desktop build this card is absent rather
+ * than disabled — an option you cannot ever use is worse than no option. Everything the
+ * card shows about the last run comes from the core, which is the only thing that knows:
+ * the page is not running the timer and must not pretend to.
+ *
+ * Measurements are shipped raw. Whether 41 minutes counts as delayed is decided on the
+ * Log delay page, by the same thresholds that apply to a live run, which is why nothing
+ * here asks for one.
+ */
+async function loadSink() {
+  try {
+    sink = await delaySinkGet();
+  } catch (_) {
+    // A core too old to know the message, or an edition that does not schedule. Either
+    // way there is nothing to offer.
+    sink = null;
+  }
+  if (host && host.isConnected) draw();
+}
+
+function sinkField(label, key, opts = {}) {
+  const c = (sink && sink.config) || {};
+  return h('label', { style: { display: 'grid', gap: '3px', fontSize: '11.5px' } },
+    h('span.muted', label),
+    h('input', {
+      id: `sink-${key}`, type: opts.type || 'text',
+      value: String(c[key] ?? ''),
+      min: opts.min == null ? null : String(opts.min),
+      max: opts.max == null ? null : String(opts.max),
+      style: { width: opts.width || '100%' },
+      title: opts.title || '',
+    }));
+}
+
+function delaySinkCard() {
+  if (!sink || !sink.supported) return null;
+  const c = sink.config || {};
+  const st = sink.state || {};
+  const list = clusters();
+  const picked = new Set((c.clusters || []).length ? c.clusters : list.map((x) => x.id).filter((id) => id !== c.sinkClusterId));
+
+  const read = () => {
+    const v = (key) => { const el = $(`#sink-${key}`); return el ? el.value.trim() : ''; };
+    const chosen = list.map((x) => x.id).filter((id) => { const el = $(`#sink-pick-${id}`); return el && el.checked; });
+    return {
+      enabled: !!($('#sink-enabled') || {}).checked,
+      sinkClusterId: (($('#sink-target') || {}).value || '').trim(),
+      clusters: chosen,
+      everyHours: Number(v('everyHours')) || 2,
+      indexPrefix: v('indexPrefix'),
+      indexPattern: v('indexPattern'),
+      deviceField: v('deviceField'),
+      arrivalField: v('arrivalField'),
+      eventTimeFields: v('eventTimeFields').split(',').map((f) => f.trim()).filter(Boolean),
+      maxDevices: Number(v('maxDevices')) || 2000,
+    };
+  };
+
+  const save = async () => {
+    const next = read();
+    // Empty means "every cluster" to the core, which is right for a hand-edited file and
+    // wrong for a screen where somebody has just unticked the last box.
+    if (next.enabled && !next.clusters.length) { toast('Pick at least one cluster to measure', 'warn'); return; }
+    if (next.enabled && next.clusters.length === 1 && next.clusters[0] === next.sinkClusterId) {
+      toast('The only cluster picked is the one being written to', 'warn'); return;
+    }
+    try {
+      const res = await delaySinkSet(next);
+      if (!res || !res.ok) { toast(`Not saved: ${(res && res.message) || 'refused'}`, 'err', 6000); return; }
+      sink = { ...res, supported: true };
+      toast(next.enabled ? 'Scheduled measurement armed' : 'Scheduled measurement switched off');
+      draw();
+    } catch (e) {
+      toast(`Could not save: ${e.message}`, 'err', 5000);
+    }
+  };
+
+  const runNow = async () => {
+    toast('Measuring…');
+    try {
+      const res = await delaySinkRun();
+      if (res && res.skipped) toast(`Nothing was measured: ${res.skipped}`, 'warn', 8000);
+      else if (res && res.ok) toast(`Measured ${res.measured} device(s) across ${res.clusters} cluster(s) into ${res.index}`, 'ok', 8000);
+      else toast(`Run failed: ${(res && res.error) || 'unknown'}`, 'err', 8000);
+    } catch (e) {
+      toast(`Run failed: ${e.message}`, 'err', 6000);
+    }
+    loadSink();
+  };
+
+  const status = st.lastSkipped
+    ? pill('skipped', 'yellow')
+    : !st.runs ? pill('never run', 'grey')
+    : st.lastOk ? pill('ok', 'green') : pill('failed', 'red');
+
+  return card('Scheduled log delay',
+    c.enabled ? `every ${c.everyHours}h \u2192 ${c.sinkClusterId || 'nowhere'}` : 'switched off',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      h('div.muted', { style: { fontSize: '12px' } },
+        'The bridge measures each cluster\u2019s log delay on a timer and writes the raw '
+        + 'figures to the cluster you name below. Only the hosted edition does this \u2014 a '
+        + 'desktop app is not running when nobody is looking at it. Nothing is classified '
+        + 'on the way in: the ',
+        h('button.btn.sm.ghost', { onclick: () => navigateTo('logs') }, 'Log delay'),
+        ' page applies the thresholds when the data is read back.'),
+      sink.blocked
+        ? h('div.banner.warn', { style: { margin: 0, fontSize: '12px' } }, 'Cannot run right now: ', sink.blocked)
+        : null,
+      h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'end' } },
+        h('label', { style: { display: 'inline-flex', gap: '6px', alignItems: 'center', fontSize: '12px' } },
+          h('input#sink-enabled', { type: 'checkbox', checked: !!c.enabled }), 'Run on a timer'),
+        h('label', { style: { display: 'grid', gap: '3px', fontSize: '11.5px' } },
+          h('span.muted', 'Write measurements to'),
+          h('select#sink-target', {},
+            h('option', { value: '' }, '\u2014 pick a cluster \u2014'),
+            ...list.map((x) => h('option', { value: x.id, selected: x.id === c.sinkClusterId }, x.name)))),
+        sinkField('Every (hours)', 'everyHours', { type: 'number', min: 1, max: 24, width: '80px' }),
+        sinkField('Index prefix', 'indexPrefix', { title: 'Indices are <prefix>-YYYY.MM' }),
+        sinkField('Max devices per run', 'maxDevices', { type: 'number', min: 1, max: 10000, width: '110px' })),
+      h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'end' } },
+        sinkField('Indices to measure', 'indexPattern'),
+        sinkField('Device field', 'deviceField'),
+        sinkField('Arrival time field', 'arrivalField'),
+        sinkField('Event time fields', 'eventTimeFields',
+          { title: 'Comma separated, tried in order \u2014 the first one present is used' })),
+      h('div', { style: { display: 'grid', gap: '4px' } },
+        h('span.muted', { style: { fontSize: '11.5px' } }, 'Clusters to measure'),
+        h('div', { style: { display: 'flex', gap: '12px', flexWrap: 'wrap' } },
+          ...list.map((x) => h('label', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px' } },
+            h('input', { id: `sink-pick-${x.id}`, type: 'checkbox', checked: picked.has(x.id) }), x.name)))),
+      table([], [
+        kvRow('Status', status),
+        kvRow('Last attempt', st.lastRunAt ? `${dt(st.lastRunAt)} (${ago(st.lastRunAt)})` : 'never'),
+        kvRow('Last result', st.lastSkipped ? st.lastSkipped
+          : st.runs ? `${st.lastMeasured} device(s) written, ${st.lastFailed} cluster(s) failed` : '\u2014'),
+        kvRow('Last error', st.lastError || '\u2014'),
+        kvRow('Next run', c.enabled && st.nextDueAt ? `${dt(st.nextDueAt)} (${ago(st.nextDueAt)})` : 'not scheduled'),
+        kvRow('Runs since start', String(st.runs || 0)),
+      ]),
+      h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+        h('button.btn.primary', { onclick: save }, 'Save'),
+        h('button.btn', { onclick: runNow }, 'Run now'))));
+}
+
 function draw() {
   const meta = (state.config && state.config.fileMeta) || {};
   const d = state.defaults;
@@ -385,6 +536,7 @@ function draw() {
         [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]),
 
       alertRulesCard(),
+      delaySinkCard(),
 
       card('Diagnostics & shortcuts', '',
         h('div', { style: { display: 'grid', gap: '10px' } },
