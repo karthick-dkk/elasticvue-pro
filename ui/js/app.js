@@ -288,8 +288,11 @@ function renderTopbar() {
   sel.value = state.selected;
 
   mount(bar,
+    // The product name, and nothing else. The config filename used to sit under it, which
+    // made the brand block report an implementation detail — and the same filename is
+    // already on the status strip, where ambient state belongs.
     h('div.brand', h('img', { src: 'icons/icon48.png', alt: '' }),
-      h('div', h('b', 'ElasticVue Pro'), h('span#cfg-name', ''))),
+      h('div', h('b', 'ElasticVue Pro'))),
     h('h1', page.label),
     h('label.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } }, sel),
     h('div.spacer'),
@@ -406,8 +409,7 @@ function renderSideFoot() {
     // the credits must not sit among it competing for the same glance.
     h('span.strip-spacer'),
     aboutMini(coreInfo.version));
-  const nm = $('#cfg-name');
-  if (nm) nm.textContent = meta ? meta.name : '';
+
 }
 
 /* ---------------------------------- router ---------------------------------- */

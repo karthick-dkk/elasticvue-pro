@@ -149,6 +149,7 @@ function combCard(c, all) {
 
   // Unhealthy first, so a handful of bad cells among hundreds are together and visible
   // rather than scattered through the grid in index order.
+  const counts = all.reduce((m, s) => { m[s.state] = (m[s.state] || 0) + 1; return m; }, {});
   const rank = (s) => (s.state === 'UNASSIGNED' ? 0 : s.state === 'STARTED' ? 2 : 1);
   const items = [...all].sort((a, b) => rank(a) - rank(b) || a.index.localeCompare(b.index))
     .map((s) => ({
@@ -160,16 +161,16 @@ function combCard(c, all) {
                      : (s.reason ? s.reason.replace(/_/g, ' ').toLowerCase() : 'not placed'),
     }));
 
-  const counts = all.reduce((m, s) => { m[s.state] = (m[s.state] || 0) + 1; return m; }, {});
   const sub = Object.entries(counts).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${num(v)} ${k.toLowerCase()}`).join(' · ');
 
   return card('Shard states', sub,
     honeycomb(items, {
       legendFor: [
-        { label: 'started', color: STATUS.good },
-        { label: 'moving', color: STATUS.warning },
-        { label: 'unassigned', color: STATUS.critical },
+        { label: 'started', color: STATUS.good, count: counts.STARTED || 0 },
+        { label: 'moving', color: STATUS.warning,
+          count: (counts.RELOCATING || 0) + (counts.INITIALIZING || 0) },
+        { label: 'unassigned', color: STATUS.critical, count: counts.UNASSIGNED || 0 },
       ],
       onSelect: (it) => { ui.index = String(it.key).split('/')[0]; draw(); },
     }));

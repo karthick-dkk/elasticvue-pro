@@ -201,8 +201,24 @@ await go('shards');
   ok(svgs.length >= 1 && /^0 0 \d/.test(svgs[0].getAttribute('viewBox') || ''),
     'shards: the honeycomb has no usable viewBox');
   // It shrinks to fit rather than running off the page.
-  const vh = Number((svgs[0].getAttribute('viewBox') || '0 0 0 0').split(' ')[3]);
-  ok(vh > 0 && vh <= 300, `shards: the honeycomb is ${vh}px tall — it should fit above the fold`);
+  const vb = (svgs[0].getAttribute('viewBox') || '0 0 0 0').split(' ');
+  const vw = Number(vb[2]), vh = Number(vb[3]);
+  ok(vh > 0 && vh <= 300, `shards: the honeycomb is ${vh} tall — it should fit above the fold`);
+  // Wide and short, not a block in the corner: it must be much wider than it is tall, and
+  // nothing may cap its rendered width or it leaves half the row empty.
+  ok(vw >= 1200, `shards: the honeycomb coordinate space is ${vw} wide — too narrow to fill the card`);
+  ok(vw / vh > 3, `shards: the honeycomb is ${vw}x${vh} — it should be wide and short`);
+  ok(!svgs[0].style.maxWidth, `shards: the honeycomb is capped at ${svgs[0].style.maxWidth}`);
+  ok(!svgs[0].style.height, 'shards: a fixed pixel height stops the honeycomb scaling to the card');
+
+  // The legend carries counts, not just colours.
+  const legend = doc.querySelector('.legend');
+  ok(!!legend, 'shards: the honeycomb has no legend');
+  const legendText = legend ? legend.textContent.replace(/\s+/g, ' ') : '';
+  for (const word of ['started', 'moving', 'unassigned', 'total']) {
+    ok(legendText.includes(word), `shards: the legend is missing "${word}" — saw "${legendText}"`);
+  }
+  ok(/\d/.test(legendText), `shards: the legend shows no counts — "${legendText}"`);
 
   // Clicking a cell filters the table to that index, so the two halves are one tool.
   const shardRowsNow = () => [...doc.querySelectorAll('section.card')]
@@ -363,6 +379,17 @@ await go('volume');
     await settleFor(200);
     ok(!!panel('Capacity by cluster'), 'volume: the summary view did not render');
   }
+}
+
+/* ----------------- the brand is the product, not the filename ----------------- */
+
+{
+  const brand = doc.querySelector('.brand');
+  ok(!!brand, 'no brand block in the topbar');
+  ok(!doc.getElementById('cfg-name'), 'the config filename is back in the brand block');
+  ok(brand && !/\.json|\.ya?ml/i.test(brand.textContent),
+    `the brand names a config file: "${brand && brand.textContent.trim()}"`);
+  ok(brand && /ElasticVue Pro/.test(brand.textContent), 'the brand should still name the product');
 }
 
 /* ------------------- log delay: can this cluster be analysed? ------------------- */

@@ -256,7 +256,10 @@ export function honeycomb(items, opts = {}) {
 
   const cap = opts.max || 1200;
   const shown = items.slice(0, cap);
-  const width = opts.width || 900;
+  // The viewBox is a coordinate space, not a pixel size: the svg below scales it to
+  // whatever width the card gives it. A wide space means more cells per row, so the grid
+  // ends up short and wide rather than a tall block occupying half the page.
+  const width = opts.width || 1600;
 
   // Hex geometry: pointy-top, so a row advances by 3/4 of the height and every other row
   // is offset by half a width.
@@ -267,8 +270,12 @@ export function honeycomb(items, opts = {}) {
   const W = perRow * w * 0.75 + w / 2;
   const H = rows * hgt + hgt / 2;
 
-  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`,
-    style: { width: '100%', maxWidth: `${W}px`, height: `${H}px` } });
+  // width:100% with no max and no fixed height — the viewBox aspect ratio decides the
+  // height, so it fills the card on a wide window and scales down on a narrow one. The
+  // old fixed pixel height capped it at the viewBox width and left the rest of the row
+  // empty, which is what made a 229-cell grid occupy half a page.
+  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMinYMin meet',
+    style: { width: '100%', display: 'block' } });
 
   shown.forEach((it, i) => {
     const col = i % perRow, row = Math.floor(i / perRow);
@@ -296,7 +303,7 @@ export function honeycomb(items, opts = {}) {
     el.append(h('div.muted', { style: { fontSize: '10.5px', marginTop: '4px' } },
       `showing ${num(shown.length)} of ${num(items.length)} — filter to see the rest`));
   }
-  if (opts.legendFor) el.append(legend(opts.legendFor));
+  if (opts.legendFor) el.append(countLegend(opts.legendFor, items.length));
   return el;
 }
 
@@ -307,9 +314,30 @@ function hexFor(n, width) {
     const w = size * 2;
     const perRow = Math.max(1, Math.floor((width - w / 2) / (w * 0.75)));
     const rows = Math.ceil(n / perRow);
-    if (rows * Math.sqrt(3) * size <= 260) return size;
+    if (rows * Math.sqrt(3) * size <= 300) return size;
   }
   return 5;
+}
+
+/**
+ * A legend that says how many, not just what the colours mean.
+ *
+ * "Red means unassigned" is only half the answer when the question is "how many are
+ * unassigned". The total goes on the end so the parts can be checked against the whole
+ * without counting cells.
+ */
+function countLegend(entries, total) {
+  return h('div.legend', { style: { alignItems: 'center', gap: '14px' } },
+    ...entries.map((e) => h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+      h('i', { style: { background: e.color } }),
+      h('span', e.label),
+      e.count !== undefined
+        ? h('b', { style: { color: e.count ? e.color : 'inherit' } }, num(e.count))
+        : null)),
+    total !== undefined
+      ? h('span', { style: { marginLeft: 'auto', color: 'var(--text-muted)' } },
+          h('span', 'total '), h('b', num(total)))
+      : null);
 }
 
 export function legend(entries) {
