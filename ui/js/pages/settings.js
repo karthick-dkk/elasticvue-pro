@@ -12,6 +12,8 @@ import { saveTextAs } from '../core/platform.js';
 import { editCluster, editJumpHost, editCredentials, editDefaults, unlockSealed, saveRaw } from '../ui/config-editor.js';
 import { card, pill, table, empty } from './common.js';
 import { navigateTo } from '../core/intent.js';
+import { ALERT_RULES, loadAlertSettings, isEnabled } from '../core/alert-rules.js';
+import { toast } from '../ui/menu.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { applyLoadedConfig } from '../ui/load-config.js';
 import { filePickerButton, canPickByPath, configHistory, readVersion } from '../ui/upload.js';
@@ -184,6 +186,93 @@ function trustCard() {
 }
 export function onData() { if (host && host.isConnected) { draw(); loadTrust(); } }
 
+/* ------------------------------ alert triggers ------------------------------ */
+
+/**
+ * Every alert this app can raise, with a switch and its thresholds.
+ *
+ * The list is the registry, so a rule cannot exist in the code and be missing here.
+ * Switching one off stops it being shown; it does not stop it being computed, and it does
+ * not touch anything anybody acknowledged — the identity of an alert is unchanged by
+ * being disabled, which is what makes retuning safe.
+ *
+ * Writing a genuinely new rule is the Automation page's job. There is one rule editor in
+ * this product and this is not a second one.
+ */
+function alertRulesCard() {
+  const raw = state.config && state.config.raw;
+  const settings = loadAlertSettings(raw);
+  const admin = !!raw;
+  const off = ALERT_RULES.filter((r) => !isEnabled(settings, r.id)).length;
+
+  const save = async (mutate) => {
+    if (!raw) { toast('No config loaded', 'warn'); return; }
+    if (!raw.alertRules || typeof raw.alertRules !== 'object') raw.alertRules = {};
+    mutate(raw.alertRules);
+    try {
+      await saveRaw(raw);
+      await setConfig(await cfg.normalize(raw, (state.config.fileMeta || {}).name || 'config'), state.handle);
+      toast('Alert settings saved');
+    } catch (e) {
+      toast(`Could not save: ${e.message}`, 'err', 5000);
+    }
+    draw();
+  };
+
+  const trs = ALERT_RULES.map((r) => {
+    const on = isEnabled(settings, r.id);
+    const s = settings[r.id] || {};
+    return h('tr', { style: on ? null : { opacity: '.55' } },
+      h('td', h('input', { type: 'checkbox', checked: on, disabled: !admin,
+        title: on ? `Stop showing ${r.label}` : `Show ${r.label} again`,
+        onchange: (e) => {
+          const want = e.target.checked;
+          save((a) => { a[r.id] = { ...(a[r.id] || {}), enabled: want }; });
+        } })),
+      h('td', h('div', { style: { fontWeight: 620 } }, r.label),
+        h('div.muted', { style: { fontSize: '11px' } }, r.why)),
+      h('td', pill(r.level, r.level === 'critical' ? 'red' : 'yellow')),
+      h('td', (r.thresholds || []).length
+        ? h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap' } },
+            ...r.thresholds.map((t) => h('label', {
+              style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '11.5px' },
+            },
+              h('span.muted', t.label),
+              h('input', {
+                type: 'number', min: String(t.min), max: String(t.max), disabled: !admin,
+                value: String((s.thresholds && s.thresholds[t.key]) ?? state.defaults[t.key] ?? ''),
+                style: { width: '68px' },
+                title: `${t.min}–${t.max}${t.unit}`,
+                onchange: (e) => {
+                  const v = Number(e.target.value);
+                  if (!isFinite(v) || v < t.min || v > t.max) {
+                    toast(`${t.label} must be between ${t.min} and ${t.max}${t.unit}`, 'warn');
+                    draw(); return;
+                  }
+                  save((a) => {
+                    a[r.id] = { ...(a[r.id] || {}) };
+                    a[r.id].thresholds = { ...(a[r.id].thresholds || {}), [t.key]: v };
+                  });
+                },
+              }),
+              h('span.muted', t.unit))))
+        : h('span.muted', { style: { fontSize: '11.5px' } }, '\u2014')),
+      h('td.mono.muted', { style: { fontSize: '10.5px' } }, r.id));
+  });
+
+  return card('Alert triggers',
+    `${ALERT_RULES.length} rule(s)${off ? ` \u00b7 ${off} switched off` : ' \u00b7 all on'}`,
+    h('div', { style: { display: 'grid', gap: '8px' } },
+      h('div.muted', { style: { fontSize: '12px' } },
+        'Switching a rule off stops it appearing on the Alerts page. Anything already '
+        + 'acknowledged keeps its history \u2014 disabling a rule does not change what its '
+        + 'alerts are called. To write a rule of your own, use ',
+        h('button.btn.sm.ghost', { onclick: () => navigateTo('automation') }, 'Automation'),
+        '.'),
+      !admin ? h('div.muted', { style: { fontSize: '11.5px' } }, 'Read-only \u2014 no config is loaded.') : null,
+      table(['', 'Alert', 'Level', 'Thresholds', 'id'], trs)));
+}
+
 function draw() {
   const meta = (state.config && state.config.fileMeta) || {};
   const d = state.defaults;
@@ -294,6 +383,8 @@ function draw() {
       card('Effective defaults', 'from the defaults block, with built-in fallbacks',
         table([], Object.entries(d).map(([k, v]) => kvRow(k, String(v)))),
         [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]),
+
+      alertRulesCard(),
 
       card('Diagnostics & shortcuts', '',
         h('div', { style: { display: 'grid', gap: '10px' } },

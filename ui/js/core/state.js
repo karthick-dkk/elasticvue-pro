@@ -9,6 +9,7 @@ import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
 import { diskBalance, balanceHeadline, primaryAction } from './disk-balance.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
 import { automationAlerts } from './automation.js';
+import { loadAlertSettings, applySettings, effectiveDefaults } from './alert-rules.js';
 
 class Emitter {
   constructor() { this.map = new Map(); }
@@ -139,7 +140,11 @@ export async function clearSessionCredential() {
 export async function setConfig(config, handle) {
   state.config = config;
   state.handle = handle !== undefined ? handle : state.handle;   // the remembered path, or null for load-once
-  state.defaults = { ...DEFAULTS, ...config.defaults };
+  // Shipped defaults, then the file's, then whatever an admin retuned on the Config page.
+  // Applied here so every reader of state.defaults — alerts, pages, charts — sees one
+  // answer, rather than each of them remembering to consult the settings.
+  state.defaults = effectiveDefaults({ ...DEFAULTS, ...config.defaults },
+    loadAlertSettings(config.raw));
   applySessionCredential();
   state.clients.clear();
   for (const c of config.clusters) {
@@ -664,7 +669,9 @@ export function alerts() {
   // evaluating a rule can need a snapshot listing and this function is synchronous.
   for (const a of automationAlerts((id) => clusters().find((c) => c.id === id))) add(a);
 
-  return out;
+  // Rules an admin switched off are removed here rather than never raised, so the code
+  // above stays one description of what is true and the registry decides what is shown.
+  return applySettings(out, loadAlertSettings(state.config && state.config.raw));
 }
 
 /**

@@ -381,6 +381,32 @@ await go('volume');
   }
 }
 
+/* --------------------- alert triggers are listed and switchable --------------------- */
+
+await go('settings');
+{
+  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('Alert triggers'), `settings: no alert triggers card, saw ${titles.join(' | ')}`);
+
+  const ar = await load('core/alert-rules.js');
+  const card = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Alert triggers');
+  const rows = card ? card.querySelectorAll('table.tbl tbody tr').length : 0;
+  ok(rows === ar.ALERT_RULES.length,
+    `settings: ${rows} trigger rows for ${ar.ALERT_RULES.length} rules — the table must be the registry`);
+
+  // Every rule has a switch, and the ones with thresholds expose them as numbers.
+  const boxes = card ? card.querySelectorAll('input[type=checkbox]').length : 0;
+  ok(boxes === ar.ALERT_RULES.length, `settings: ${boxes} switches for ${ar.ALERT_RULES.length} rules`);
+  const nums = card ? card.querySelectorAll('input[type=number]').length : 0;
+  const expected = ar.ALERT_RULES.reduce((n, r) => n + (r.thresholds || []).length, 0);
+  ok(nums === expected, `settings: ${nums} threshold inputs, expected ${expected}`);
+
+  // It points at the one rule editor rather than being a second one.
+  ok(card && /Automation/.test(card.textContent),
+    'settings: the triggers card should send new-rule authoring to Automation');
+}
+
 /* ----------------- the brand is the product, not the filename ----------------- */
 
 {
