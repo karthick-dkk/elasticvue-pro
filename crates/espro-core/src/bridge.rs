@@ -584,6 +584,17 @@ impl Core {
     }
 
     fn users_msg(self: &Arc<Self>, t: &str, msg: &Value, caller: Option<&Caller>) -> Value {
+        // Portable has no accounts, so it has no empty list of them either. Answering
+        // `users: []` would be a claim about the deployment — "nobody has access here" —
+        // when the truth is a claim about the build. The UI already hides the page; this
+        // is for anything else that asks, which until now was told a plausible lie.
+        if !self.edition.uses_accounts() {
+            return json!({
+                "ok": false, "kind": "unsupported", "supported": false,
+                "message": "this build has no accounts: everything beside the exe, no install, \
+                            nobody to sign in as. Use the installed or hosted build for accounts.",
+            });
+        }
         let name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let me = caller.map(|c| c.name.clone()).unwrap_or_default();
         let role_arg = || {
