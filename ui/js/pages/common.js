@@ -82,7 +82,50 @@ export function statTile(k, v, d) {
   return h('div.stat', h('div.k', k), h('div.v', v), d ? h('div.d', d) : null);
 }
 
-export function empty(msg) { return h('div.tbl-empty', msg); }
+/**
+ * Why there is nothing here, and what to do about it.
+ *
+ * "No nodes returned" was the old shape, and it cannot be acted on: it leaves you unable
+ * to tell whether the cluster has no nodes, the request failed, or you are not allowed
+ * to see them. Three different situations, one sentence, no next step.
+ *
+ * So an empty state carries up to three things:
+ *
+ *   * **reason** — the one line, in the app's own voice: what is not here.
+ *   * **detail** — the evidence, when there is any. A status and a path, usually. This
+ *     is what separates "the cluster has none" from "we could not ask", which is the
+ *     same distinction the rest of this codebase already insists on everywhere else.
+ *   * **actions** — what to press. Absent when there is genuinely nothing to do, which
+ *     is a real case and should not be padded with a button that does nothing.
+ *
+ * Passing a bare string still works and still reads as before, because most callers say
+ * something true and short and do not need the rest.
+ */
+export function empty(reason, opts = {}) {
+  const { detail = null, actions = null } = typeof opts === 'string' ? { detail: opts } : opts;
+  if (!detail && !actions) return h('div.tbl-empty', reason);
+  return h('div.tbl-empty.rich',
+    h('div.why', reason),
+    detail ? h('div.detail', detail) : null,
+    // h() already drops null children, so no filtering here — a mutation test proved
+    // the extra .filter(Boolean) was dead code.
+    actions && actions.length ? h('div.acts', ...actions) : null);
+}
+
+/**
+ * The empty state for something that could not be read, as opposed to something that is
+ * genuinely empty.
+ *
+ * Kept separate so the two can never be written the same way by accident. An error is
+ * not an absence, and a page that draws them identically is telling the operator the
+ * cluster is fine when it has no idea.
+ */
+export function unreadable(what, reasonText, actions = null) {
+  return empty(`${what} could not be read.`, {
+    detail: h('span.mono', reasonText || 'the cluster gave no reason'),
+    actions,
+  });
+}
 
 /**
  * A table, optionally sortable by clicking its headers.

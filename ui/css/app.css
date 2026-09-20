@@ -403,6 +403,13 @@ table.tbl tbody tr:hover td { background: var(--surface-2); }
 table.tbl td.num, table.tbl th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 .tbl-empty { padding: 26px; text-align: center; color: var(--text-muted); }
+/* An empty state that has something to say: the reason reads as text rather than as a
+   muted aside, the evidence stays quiet under it, and the actions sit where a button is
+   expected. Less padding than the bare form — there is content here to fill it. */
+.tbl-empty.rich { padding: 20px 16px; display: grid; gap: 7px; justify-items: center; }
+.tbl-empty.rich .why { color: var(--text-secondary); font-size: 12.5px; max-width: 54ch; }
+.tbl-empty.rich .detail { font-size: 11px; color: var(--text-muted); max-width: 60ch; word-break: break-word; }
+.tbl-empty.rich .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 2px; }
 
 /* ---------------------------------- misc ----------------------------------- */
 .muted { color: var(--text-muted); }

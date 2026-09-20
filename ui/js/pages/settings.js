@@ -87,7 +87,13 @@ function historyBody() {
           h('td.num', bytes(v.bytes)),
           h('td', { style: { textAlign: 'right' } },
             h('button.btn.sm', { onclick: () => restore(v) }, 'Load this')))),
-        { emptyText: 'None' })),
+        {
+          // "None" was the whole message. This is a good empty state — nothing has gone
+          // wrong — so it says what would put something here rather than offering a button.
+          emptyText: empty('No earlier version saved yet.', {
+            detail: 'A copy is kept automatically each time the config is saved from this app.',
+          }),
+        })),
     h('div.muted', { style: { fontSize: '11px', paddingTop: '6px' } },
       'Loading an older version does not discard the current one — that is saved as a '
       + 'version first, so this goes both ways.'));

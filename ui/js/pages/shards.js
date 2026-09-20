@@ -13,6 +13,7 @@ import { bytes, num, pct, compact } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices,
          diskAccounting, setDangling, danglingFor } from '../core/state.js';
 import { card, statTile, table, empty, pill, connectionBanner } from './common.js';
+import { navigateTo } from '../core/intent.js';
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
@@ -320,7 +321,15 @@ function nodesBody(c, d) {
 
   return table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
                 { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
-    trs, { emptyText: 'No nodes returned' });
+    trs, {
+      // A cluster with no nodes is not a thing. An empty list here means the call did
+      // not come back with one, so it says that rather than implying an empty cluster.
+      emptyText: empty('The cluster answered, but listed no nodes.', {
+        detail: h('span.mono', 'GET /_cat/nodes returned nothing'),
+        actions: [h('button.btn.sm.primary', { onclick: () => refreshAll({ force: true, selected: true }) }, 'Retry'),
+                  h('button.btn.sm', { onclick: () => navigateTo('settings') }, 'Check credentials')],
+      }),
+    });
 }
 
 /**

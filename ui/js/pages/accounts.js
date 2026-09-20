@@ -108,7 +108,12 @@ function clusterUsersCard() {
           onclick: () => removeClusterUser(c.id, u.name, { onDone: () => loadClusterUsers(c.id) }),
         }, '×'))));
     return h('div', head,
-      table(['Name', 'Roles', '', ''], trs, { emptyText: 'No native-realm accounts on this cluster.' }));
+      table(['Name', 'Roles', '', ''], trs, {
+        emptyText: empty('No accounts are defined on this cluster.', {
+          detail: 'Only native-realm accounts appear here. Accounts from an LDAP, SAML or '
+                + 'file realm are managed where that realm lives, not in Elasticsearch.',
+        }),
+      }));
   });
 
   return card('Cluster users', 'accounts on the Elasticsearch clusters themselves',

@@ -6,6 +6,7 @@ import { num, dt, dur, ago, bytes, eachDay, ymdDots, toCsv, download, plural } f
 import { state, client, activeClusters, fetchSnapshots, fetchOverview } from '../core/state.js';
 import { coverageStrip } from '../lib/charts.js';
 import { card, collapsible, pill, statTile, table, empty } from './common.js';
+import { navigateTo } from '../core/intent.js';
 import { confirmDialog } from '../ui/modal.js';
 import { writesAllowed, syncWrites, writeToggle, ensureWrites } from '../core/writes.js';
 import { rowMenu, ICON } from '../ui/menu.js';
@@ -162,8 +163,14 @@ function repoTable(c, d, repos) {
             onClick: () => deleteRepository(c, r.name, { onChanged: () => reload(c) }) },
         ], { title: `Actions for ${r.name}` }))));
   });
-  return table(['Repository', 'Type', 'Location', 'Snapshots', ''], trs,
-    { emptyText: 'No snapshot repository registered on this cluster' });
+  return table(['Repository', 'Type', 'Location', 'Snapshots', ''], trs, {
+    emptyText: empty('This cluster has no snapshot repository, so nothing can be backed up.', {
+      detail: h('span', 'A repository is registered on the cluster itself — ',
+        h('code.inline', 'PUT _snapshot/<name>'), ' — and needs a path in ',
+        h('code.inline', 'path.repo'), '.'),
+      actions: [h('button.btn.sm', { onclick: () => navigateTo('console') }, 'Open REST console')],
+    }),
+  });
 }
 
 /* ------------------------------------ coverage ---------------------------------- */
