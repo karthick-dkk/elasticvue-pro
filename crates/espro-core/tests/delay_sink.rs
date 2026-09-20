@@ -225,3 +225,32 @@ async fn a_config_that_cannot_work_is_refused_at_the_point_of_arming() {
     assert!(res["message"].as_str().unwrap_or("").contains("sink cluster"), "{res}");
     assert!(!dir.0.join("delay-sink.json").exists(), "a refused config is not saved");
 }
+
+#[tokio::test]
+async fn a_switched_off_schedule_is_not_reported_as_blocked() {
+    // Found by running the real hosted stack: a fresh install showed "cannot run right
+    // now: the sink cluster is not primed" before anybody had armed anything. Nothing is
+    // in the way of a job that was never asked to run.
+    let dir = TempDir::new("sink-quiet");
+    let c = core(&dir, Edition::Hosted);
+    let s = admin(&c).await;
+    let res = c.handle(json!({ "type": "DELAY_SINK_GET", "session": &s })).await;
+    assert_eq!(res["config"]["enabled"], json!(false));
+    assert!(res["blocked"].is_null(), "a disarmed schedule must not warn: {res}");
+
+    // Armed and unable to run, it says so — that warning is the useful one.
+    let srv = cluster().await;
+    prime(&c, &s, &srv.url(), true).await;
+    assert_eq!(arm(&c, &s).await["ok"], json!(true));
+    let res = c.handle(json!({ "type": "DELAY_SINK_GET", "session": &s })).await;
+    assert!(res["blocked"].as_str().unwrap_or("").contains("read-only"), "{res}");
+
+    // And "Run now" on a disarmed schedule still refuses, because that is a run somebody
+    // asked for — it must not silently do nothing.
+    let off = c.handle(json!({ "type": "DELAY_SINK_SET", "session": &s,
+                               "config": { "enabled": false, "sinkClusterId": "" } })).await;
+    assert_eq!(off["ok"], json!(true), "{off}");
+    let run = c.handle(json!({ "type": "DELAY_SINK_RUN", "session": &s })).await;
+    assert_eq!(run["ok"], json!(false), "{run}");
+    assert!(run["skipped"].as_str().is_some(), "a refused run must say why: {run}");
+}

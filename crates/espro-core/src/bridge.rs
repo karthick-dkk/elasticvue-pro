@@ -1013,8 +1013,23 @@ impl Core {
         self.run_delay_sink().await;
     }
 
+    /// What to show an admin as standing in the way, if anything.
+    ///
+    /// Only meaningful for a schedule that is armed. A disarmed job is not blocked from
+    /// running — nobody asked it to — and saying "cannot run right now" about something
+    /// switched off puts a warning on a fresh install before anyone has touched it.
+    fn delay_sink_blocker(&self, cfg: &SinkConfig) -> Option<String> {
+        if !cfg.enabled {
+            return None;
+        }
+        self.delay_sink_refusal(cfg)
+    }
+
     /// Why a run cannot happen now, if it cannot. Each answer names the thing a person
     /// would have to change, because these are read off a settings page.
+    ///
+    /// Unlike `delay_sink_blocker` this applies to a disarmed config too: pressing "Run
+    /// now" is asking for a run, and a run with no destination still has nowhere to go.
     fn delay_sink_refusal(&self, cfg: &SinkConfig) -> Option<String> {
         if let Some(r) = cfg.refusal() {
             return Some(r);
@@ -1142,7 +1157,7 @@ impl Core {
             "DELAY_SINK_GET" => {
                 let s = self.delay_sink.read();
                 json!({ "ok": true, "supported": true, "config": s.config, "state": s.state,
-                        "blocked": self.delay_sink_refusal(&s.config) })
+                        "blocked": self.delay_sink_blocker(&s.config) })
             }
             "DELAY_SINK_SET" => {
                 let incoming = msg.get("config").cloned().unwrap_or(Value::Null);
@@ -1173,7 +1188,7 @@ impl Core {
                 let s = self.delay_sink.read();
                 tracing::info!(target: "audit", message = "delay sink configured", enabled = s.config.enabled);
                 json!({ "ok": true, "config": s.config, "state": s.state,
-                        "blocked": self.delay_sink_refusal(&s.config) })
+                        "blocked": self.delay_sink_blocker(&s.config) })
             }
             _ => {
                 // DELAY_SINK_RUN: the operator pressing it is what makes this one legible
