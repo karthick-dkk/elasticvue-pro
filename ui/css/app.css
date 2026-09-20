@@ -143,6 +143,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-soft);
 }
 .nav .ico { opacity: .9; }
+/* ------------------------------ in-page section tabs ------------------------------ */
+/* A page with several unrelated jobs gets its own tab bar, in the window's own idiom so
+   it reads as navigation. Slightly smaller than the top tabs, and it sits on a rule, so
+   it is clearly subordinate to them rather than a second row of equals. */
+.subnav {
+  display: flex; align-items: stretch; gap: 2px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+}
+.subnav button {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 6px 10px 7px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 12px;
+  font-family: inherit; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.subnav button:hover { background: var(--surface-2); color: var(--text-primary); }
+.subnav button[aria-current="page"] {
+  color: var(--accent); font-weight: 640; border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+.subnav .ico { opacity: .9; }
+
 /* A vertical rule before Config, where the divider used to be. */
 .nav-sep { width: 1px; background: var(--border); margin: 8px 7px; flex: none; }
 

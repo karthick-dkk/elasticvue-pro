@@ -874,3 +874,36 @@ function publishPopupSummary() {
     if (globalThis.chrome && chrome.storage && chrome.storage.session) chrome.storage.session.set({ summary: { at: Date.now(), rows, alerts: alerts().length } });
   } catch (_) { /* storage.session unavailable */ }
 }
+
+/**
+ * Which JVM a cluster's nodes are running on.
+ *
+ * One definition because two screens want it: the fleet summary needs one line per
+ * cluster, and a node listing needs the same words for the same thing. A cluster whose
+ * nodes disagree is the interesting case — that is a half-finished upgrade, and it must
+ * not be flattened to whichever node happened to answer first.
+ *
+ * Elasticsearch reports this only for nodes that answered. If none did, the answer is
+ * "unknown", never a blank that reads as "none".
+ *
+ * @returns {{text: string, mixed: boolean, versions: string[], detail: string}}
+ */
+export function jvmSummary(nodes) {
+  const seen = (nodes || [])
+    .map((n) => String((n && n.jdk) || '').trim())
+    .filter(Boolean);
+  if (!seen.length) {
+    return { text: 'unknown', mixed: false, versions: [], detail: 'no node reported a JVM version' };
+  }
+  const versions = [...new Set(seen)].sort();
+  if (versions.length === 1) {
+    return { text: versions[0], mixed: false, versions, detail: `every node runs JVM ${versions[0]}` };
+  }
+  const byVersion = versions.map((v) => `${v} (${seen.filter((x) => x === v).length})`);
+  return {
+    text: `mixed (${versions.length})`,
+    mixed: true,
+    versions,
+    detail: `nodes disagree: ${byVersion.join(', ')}`,
+  };
+}

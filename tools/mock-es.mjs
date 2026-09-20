@@ -81,6 +81,21 @@ function termClauses(body) {
   return out.length ? out : null;
 }
 
+/**
+ * A `_cat` answer carries only the columns that were asked for.
+ *
+ * The fixture used to hand back every field it knew regardless of `h=`, which let a page
+ * read a column it had never requested and still look correct here. A real cluster
+ * returns the projection, so this does too.
+ */
+function catProject(url, rows) {
+  const q = url.split('?')[1] || '';
+  const h = new URLSearchParams(q).get('h');
+  if (!h) return rows;
+  const want = h.split(',').map((x) => x.trim()).filter(Boolean);
+  return rows.map((r) => Object.fromEntries(want.filter((k) => k in r).map((k) => [k, r[k]])));
+}
+
 const routes = [
   [(u) => u === '/', () => ({ cluster_name: 'mock', cluster_uuid: 'mock-uuid',
     version: { number: '8.13.4', lucene_version: '9.10.0' } })],
@@ -114,16 +129,16 @@ const routes = [
   // three nodes at 91/55/21%, nodes said two at 80/70% — so the Nodes page contradicted
   // itself on one screen and every QA run had to re-establish that the fixture, not the
   // app, was wrong.
-  [(u) => u.startsWith('/_cat/nodes'), () => ([
-    { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', 'node.role': 'dim', master: '*',
+  [(u) => u.startsWith('/_cat/nodes'), (hit) => catProject(hit.url, [
+    { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', jdk: '17.0.9', 'node.role': 'dim', master: '*',
       'heap.percent': '61', 'ram.percent': '70', cpu: '12', load_1m: '1.2',
       'disk.used': '91000000000', 'disk.avail': '9000000000', 'disk.total': '100000000000',
       'disk.used_percent': '91', uptime: '10d' },
-    { name: 'node-2', ip: '10.0.0.2', version: '8.13.4', 'node.role': 'dim', master: '-',
+    { name: 'node-2', ip: '10.0.0.2', version: '8.13.4', jdk: '17.0.9', 'node.role': 'dim', master: '-',
       'heap.percent': '55', 'ram.percent': '66', cpu: '9', load_1m: '0.8',
       'disk.used': '55000000000', 'disk.avail': '45000000000', 'disk.total': '100000000000',
       'disk.used_percent': '55', uptime: '10d' },
-    { name: 'node-3', ip: '10.0.0.3', version: '8.13.4', 'node.role': 'dim', master: '-',
+    { name: 'node-3', ip: '10.0.0.3', version: '8.13.4', jdk: '21.0.2', 'node.role': 'dim', master: '-',
       'heap.percent': '38', 'ram.percent': '52', cpu: '4', load_1m: '0.3',
       'disk.used': '21000000000', 'disk.avail': '79000000000', 'disk.total': '100000000000',
       'disk.used_percent': '21', uptime: '10d' }])],

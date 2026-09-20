@@ -103,7 +103,14 @@ async function restore(v) {
   }
 }
 
-export function render(el) { host = el; draw(); confirmCoreGuard(); loadTrust(); loadSink(); }
+export function render(el) {
+  host = el;
+  // draw() asks for whatever the open section needs. loadSink is the exception: its
+  // answer decides whether the Scheduled log delay tab exists at all, so it has to be
+  // asked before the bar can be drawn correctly — and it redraws when it lands.
+  draw();
+  loadSink();
+}
 
 /** Read the guard back from the core itself rather than trusting the UI's copy. */
 async function confirmCoreGuard() {
@@ -186,7 +193,7 @@ function trustCard() {
     h('div.muted', { style: { fontSize: '11.5px' } },
       'Trust decisions record fingerprints only — never a key, a password or a certificate.'));
 }
-export function onData() { if (host && host.isConnected) { draw(); loadTrust(); } }
+export function onData() { if (host && host.isConnected) draw(); }
 
 /* ------------------------------ alert triggers ------------------------------ */
 
@@ -423,11 +430,153 @@ function delaySinkCard() {
         h('button.btn.primary', { onclick: save }, 'Save'),
         h('button.btn', { onclick: runNow }, 'Run now'))));
 }
+/* ---------------------------------- sections ---------------------------------- */
 
-function draw() {
+/**
+ * The Config page is eight unrelated jobs, and it used to be all eight at once: a single
+ * scroll where "which certificate do we trust" sat under "what is the refresh interval"
+ * and the thing you came for was somewhere in the middle. Nothing was hard to find
+ * because it was hidden; it was hard to find because everything else was in the way.
+ *
+ * So they are tabs, in the same shape as the tabs at the top of the window. The bar is
+ * the page's table of contents: you can see every job this page does without scrolling,
+ * and you are only ever looking at one of them.
+ *
+ * A section may be absent — the schedule only exists on a build that can keep one — and
+ * an absent section has no tab. An option you can never use is worse than no option.
+ */
+const SECTIONS = [
+  { id: 'file',     label: 'Config file',  icon: '▤', build: fileCard },
+  { id: 'creds',    label: 'Credentials',  icon: '◈', build: credentialsCard },
+  { id: 'clusters', label: 'Clusters',     icon: '▦', build: clustersCard },
+  { id: 'trust',    label: 'Jump hosts & trust', icon: '⇄', build: trustSection, load: loadTrust },
+  { id: 'alerts',   label: 'Alert triggers', icon: '⚠', build: alertRulesCard },
+  { id: 'schedule', label: 'Scheduled log delay', icon: '⏱', build: delaySinkCard,
+    when: () => !!(sink && sink.supported) },
+  { id: 'defaults', label: 'Defaults',     icon: '⚙', build: defaultsCard },
+  { id: 'diag',     label: 'Diagnostics',  icon: '✚', build: diagnosticsCard, load: confirmCoreGuard },
+];
+
+/** Which section is open. Remembered across redraws so a save does not move you. */
+let section = 'file';
+
+function visibleSections() {
+  return SECTIONS.filter((s) => !s.when || s.when());
+}
+
+function activeSection() {
+  const shown = visibleSections();
+  return shown.find((s) => s.id === section) || shown[0];
+}
+
+/**
+ * The tab bar. Deliberately the same markup and the same `aria-current` as the window's
+ * own tabs, so it reads as navigation rather than as a row of buttons that happen to be
+ * next to each other — and so a screen reader calls it what it is.
+ */
+function sectionNav() {
+  const active = activeSection();
+  const nav = h('nav.subnav');
+  visibleSections().forEach((s) => {
+    nav.append(h('button', {
+      'aria-current': active && active.id === s.id ? 'page' : null,
+      title: s.label,
+      onclick: () => { section = s.id; draw(); },
+    }, h('span.ico', s.icon), h('span', s.label)));
+  });
+  return nav;
+}
+
+/* ------------------------------ the sections ------------------------------ */
+
+function fileCard() {
   const meta = (state.config && state.config.fileMeta) || {};
-  const d = state.defaults;
+  return card('Config file', meta.name || 'not loaded',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      table([], [
+        kvRow('File', meta.name || '–'),
+        kvRow('Size', meta.size ? bytes(meta.size) : '–'),
+        kvRow('Last modified on disk', meta.lastModified ? dt(meta.lastModified) : '–'),
+        kvRow('Loaded', state.config ? `${dt(state.config.loadedAt)} (${ago(state.config.loadedAt)})` : '–'),
+        kvRow('Path', meta.path || (meta.ephemeral ? 'loaded once — not remembered' : '–')),
+        kvRow('Format', state.config ? (state.config.format === 'json' ? 'JSON (config_cluster.json)' : 'YAML — edits from the UI are saved as config_cluster.json next to it') : '–'),
+        kvRow('Secrets in file', state.config ? (state.config.sealed ? 'encrypted (AES-256-GCM, PBKDF2-SHA512 master password)' : (clusters().some((c) => c.credSource === 'shared' || c.credSource === 'cluster') ? 'PLAIN TEXT — use "Store in config file (encrypted)" to fix' : 'none')) : '–'),
+        kvRow('Mode', isSnapshotMode()
+          ? `snapshot — collected ${state.snapshot && state.snapshot.generatedAt ? dt(state.snapshot.generatedAt) : '?'}`
+            + (state.snapshot && state.snapshot.host ? ` on ${state.snapshot.host}` : '')
+          : 'live — the app connects to each cluster (directly or through a jump host)'),
+      ]),
+      h('div#cfg-msg'),
+      historyBlock()),
+    // The actions this section is for, in the card's own footer rather than loose in the
+    // body — which is where the top of the page keeps its buttons, so they line up.
+    [
+      h('button.btn.sm.primary', { onclick: reload, disabled: !state.handle || isSnapshotMode() }, 'Reload from disk'),
+      // "Pick another file" asks the core for a path, which is the right question on a
+      // desktop and the wrong one on a server, where the file is on the operator's own
+      // machine.
+      canPickByPath()
+        ? h('button.btn.sm', { onclick: repick }, 'Pick another file…')
+        : filePickerButton('Upload a config…', {
+            accept: '.json,.yaml,.yml',
+            className: 'btn.sm',
+            onText: (txt, err, name) => uploadConfig(txt, err, name),
+          }),
+      h('button.btn.sm.ghost', { onclick: () => saveTextAs('clusters.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
+      h('button.btn.sm.danger', { onclick: forget }, 'Forget file & credentials'),
+    ]);
+}
 
+function credentialsCard() {
+  const needing = clustersNeedingCredential().length;
+  return card('Credentials',
+    hasSessionCredential() ? `session credential active — ${sessionCredentialLabel()}` : 'from the config file',
+    h('div', { style: { display: 'grid', gap: '11px' } },
+      hasSessionCredential()
+        ? h('div.banner', { style: { margin: 0 } },
+            h('div', h('div.ttl', `Using a credential you typed (${sessionCredentialLabel()})`),
+              h('div.sec', { style: { fontSize: '12px' } },
+                'Held in memory for this tab only. Reloading the dashboard will ask again.')))
+        : null,
+      h('div', { style: { fontSize: '12.5px', lineHeight: '1.65', display: 'grid', gap: '8px' } },
+        h('div', h('b', 'In memory. '),
+          'The password / API key from your YAML is held in the app process and discarded when it closes. Tick "remember on this machine" in the sign-in dialog to keep it in the Windows Credential Manager instead of typing it each start.'),
+        h('div', h('b', 'One credential, many clusters. '),
+          'The top-level ', h('code.inline', 'credentials:'), ' block authenticates every cluster; add ',
+          h('code.inline', 'username:'), '/', h('code.inline', 'apiKey:'), ' under a cluster only when it needs a different one.'),
+        h('div', h('b', 'Jump hosts. '),
+          'A cluster with ', h('code.inline', 'via: <jump>'), ' is reached through an SSH connection the app opens itself with your key file — no ssh.exe, no PuTTY, no SOCKS to configure. Passphrases are asked for, never read from the file.'),
+        h('div', h('b', 'Certificates you decide about. '),
+          'A certificate the OS does not trust is shown to you once — subject, issuer, SHA-256 — and pinned when you accept it. A different certificate at the same address is refused until you decide again. No CA import, no policy, no click-through.'),
+        h('div', h('b', 'Read-only by default. '),
+          'Monitoring uses GET only; the single POST it makes is ', h('code.inline', '_search'),
+          ', which cannot modify anything. Writes are refused in the core, so no page, console ',
+          'or future code path can reach a cluster with PUT/POST/DELETE while ', h('code.inline', 'readOnly'), ' is true.'),
+        h('div', h('b', 'No credential in the file? '),
+          'Leave ', h('code.inline', 'credentials:'), ' out entirely (or give only a ', h('code.inline', 'username:'),
+          ') and the app prompts once on start, then applies what you type to every cluster URL.'))),
+    [
+      h('button.btn.sm.primary', { onclick: () => showCredentialDialog('manual') },
+        needing ? `Sign in to ${needing} cluster(s)` : 'Set one credential for all clusters'),
+      h('button.btn.sm', {
+        onclick: async () => { if (await editCredentials()) draw(); },
+        title: 'Write it to config_cluster.json, encrypted with a master password',
+      }, 'Store in config file (encrypted)…'),
+      state.config && state.config.sealed && needing
+        ? h('button.btn.sm', { onclick: async () => { if (await unlockSealed()) { await refreshAll({ force: true }); draw(); } } }, 'Unlock with master password…')
+        : null,
+      hasSessionCredential()
+        ? h('button.btn.sm.danger', { onclick: async () => { await clearSessionCredential(); draw(); } }, 'Clear typed credential')
+        : null,
+    ].filter(Boolean));
+}
+
+function trustSection() {
+  return card('Jump hosts & trust', 'SSH tunnels, pinned host keys, pinned certificates',
+    h('div#trust-card', h('div.muted', 'loading…')));
+}
+
+function clustersCard() {
   const clusterRows = clusters().map((c) => {
     const cl = client(c.id);
     return h('tr',
@@ -451,111 +600,47 @@ function draw() {
     h('td', { colspan: 4 }, pill('disabled', 'grey')),
     h('td', h('button.btn.sm', { onclick: async () => { if (await editCluster(rawClusterOf(c))) { draw(); loadTrust(); } } }, 'Edit'))));
 
-  mount(host,
-    h('div.grid.c2',
-      card('Config file', meta.name || 'not loaded',
-        h('div', { style: { display: 'grid', gap: '10px' } },
-          table([], [
-            kvRow('File', meta.name || '–'),
-            kvRow('Size', meta.size ? bytes(meta.size) : '–'),
-            kvRow('Last modified on disk', meta.lastModified ? dt(meta.lastModified) : '–'),
-            kvRow('Loaded', state.config ? `${dt(state.config.loadedAt)} (${ago(state.config.loadedAt)})` : '–'),
-            kvRow('Path', meta.path || (meta.ephemeral ? 'loaded once — not remembered' : '–')),
-            kvRow('Format', state.config ? (state.config.format === 'json' ? 'JSON (config_cluster.json)' : 'YAML — edits from the UI are saved as config_cluster.json next to it') : '–'),
-            kvRow('Secrets in file', state.config ? (state.config.sealed ? 'encrypted (AES-256-GCM, PBKDF2-SHA512 master password)' : (clusters().some((c) => c.credSource === 'shared' || c.credSource === 'cluster') ? 'PLAIN TEXT — use "Store in config file (encrypted)" to fix' : 'none')) : '–'),
-            kvRow('Mode', isSnapshotMode()
-              ? `snapshot — collected ${state.snapshot && state.snapshot.generatedAt ? dt(state.snapshot.generatedAt) : '?'}`
-                + (state.snapshot && state.snapshot.host ? ` on ${state.snapshot.host}` : '')
-              : 'live — the app connects to each cluster (directly or through a jump host)'),
-          ]),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.primary', { onclick: reload, disabled: !state.handle || isSnapshotMode() }, 'Reload from disk'),
-            // "Pick another file" asks the core for a path, which is the right question
-            // on a desktop and the wrong one on a server, where the file is on the
-            // operator's own machine.
-            canPickByPath()
-              ? h('button.btn', { onclick: repick }, 'Pick another file…')
-              : filePickerButton('Upload a config…', {
-                  accept: '.json,.yaml,.yml',
-                  className: 'btn',
-                  onText: (txt, err, name) => uploadConfig(txt, err, name),
-                }),
-            h('button.btn.danger', { onclick: forget }, 'Forget file & credentials')),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.sm.ghost', { onclick: () => saveTextAs('clusters.yaml', EXAMPLE_YAML) }, 'Save example YAML…')),
-          h('div#cfg-msg'),
-          historyBlock())),
+  return card('Clusters', `${clusters().length} enabled · ${disabledRows.length} disabled`,
+    table(['Name', 'URL', 'Credential', 'User', 'Log index pattern', 'Connection', 'Last success', ''],
+      [...clusterRows, ...disabledRows], { emptyText: 'No clusters yet — add one.' }),
+    [h('button.btn.sm.primary', { onclick: async () => { if (await editCluster(null)) { draw(); loadTrust(); } } }, '+ Add cluster')]);
+}
 
-      card('Credentials', hasSessionCredential() ? `session credential active — ${sessionCredentialLabel()}` : 'from the config file',
-        h('div', { style: { display: 'grid', gap: '11px' } },
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
-            h('button.btn.primary', { onclick: () => showCredentialDialog('manual') },
-              clustersNeedingCredential().length ? `Sign in to ${clustersNeedingCredential().length} cluster(s)` : 'Set one credential for all clusters'),
-            h('button.btn', { onclick: async () => { if (await editCredentials()) draw(); }, title: 'Write it to config_cluster.json, encrypted with a master password' }, 'Store in config file (encrypted)…'),
-            state.config && state.config.sealed && clustersNeedingCredential().length
-              ? h('button.btn', { onclick: async () => { if (await unlockSealed()) { await refreshAll({ force: true }); draw(); } } }, 'Unlock with master password…') : null,
-            hasSessionCredential()
-              ? h('button.btn.danger', { onclick: async () => { await clearSessionCredential(); draw(); } }, 'Clear typed credential')
-              : null),
-          hasSessionCredential()
-            ? h('div.banner', { style: { margin: 0 } },
-                h('div', h('div.ttl', `Using a credential you typed (${sessionCredentialLabel()})`),
-                  h('div.sec', { style: { fontSize: '12px' } },
-                    'Held in memory for this tab only. Reloading the dashboard will ask again.')))
-            : null,
-        h('div', { style: { fontSize: '12.5px', lineHeight: '1.65', display: 'grid', gap: '8px' } },
-          h('div', h('b', 'In memory. '),
-            'The password / API key from your YAML is held in the app process and discarded when it closes. Tick "remember on this machine" in the sign-in dialog to keep it in the Windows Credential Manager instead of typing it each start.'),
-          h('div', h('b', 'One credential, many clusters. '),
-            'The top-level ', h('code.inline', 'credentials:'), ' block authenticates every cluster; add ',
-            h('code.inline', 'username:'), '/', h('code.inline', 'apiKey:'), ' under a cluster only when it needs a different one.'),
-          h('div', h('b', 'Jump hosts. '),
-            'A cluster with ', h('code.inline', 'via: <jump>'), ' is reached through an SSH connection the app opens itself with your key file — no ssh.exe, no PuTTY, no SOCKS to configure. Passphrases are asked for, never read from the file.'),
-          h('div', h('b', 'Certificates you decide about. '),
-            'A certificate the OS does not trust is shown to you once — subject, issuer, SHA-256 — and pinned when you accept it. A different certificate at the same address is refused until you decide again. No CA import, no policy, no click-through.'),
-          h('div', h('b', 'Read-only by default. '),
-            'Monitoring uses GET only; the single POST it makes is ', h('code.inline', '_search'),
-            ', which cannot modify anything. Writes are refused in the core, so no page, console ',
-            'or future code path can reach a cluster with PUT/POST/DELETE while ', h('code.inline', 'readOnly'), ' is true.'),
-          h('div', h('b', 'No credential in the file? '),
-            'Leave ', h('code.inline', 'credentials:'), ' out entirely (or give only a ', h('code.inline', 'username:'),
-            ') and the app prompts once on start, then applies what you type to every cluster URL.'))))),
+function defaultsCard() {
+  const d = state.defaults;
+  return card('Effective defaults', 'from the defaults block, with built-in fallbacks',
+    table([], Object.entries(d).map(([k, v]) => kvRow(k, String(v)))),
+    [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]);
+}
 
-    h('div', { style: { marginTop: '14px' } },
-      card('Jump hosts & trust', 'SSH tunnels, pinned host keys, pinned certificates', h('div#trust-card', h('div.muted', 'loading…')))),
+function diagnosticsCard() {
+  const d = state.defaults;
+  return card('Diagnostics & shortcuts', '',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      table([], [
+        kvRow('Write protection', isReadOnly() ? 'read-only — GET/HEAD + search POSTs only' : 'DISABLED — writes permitted (readOnly: false)'),
+        kvRow('Enforced by the core', 'checking…'),
+        kvRow('Routes', `${clusters().filter((c) => c.via).length} via jump host · ${clusters().filter((c) => !c.via).length} direct`),
+        kvRow('App version', h('span#core-version', '…')),
+        kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),
+        kvRow('Auto-refresh', state.autoRefresh ? `every ${d.refreshIntervalSec}s` : 'paused'),
+      ]),
+      h('div', { style: { fontSize: '12px' } },
+        h('b', 'Keyboard: '), h('code.inline', '1'), '–', h('code.inline', '7'), ' switch pages · ',
+        h('code.inline', 'r'), ' refresh · ', h('code.inline', 'Ctrl/⌘+Enter'), ' run request in the console')),
+    [
+      h('button.btn.sm', { onclick: () => saveTextAs('clusters.example.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
+      isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Force refresh all'),
+      h('button.btn.sm', { onclick: () => navigateTo('console') }, 'Open REST console'),
+    ].filter(Boolean));
+}
 
-    h('div', { style: { marginTop: '14px' } },
-      card('Clusters', `${clusters().length} enabled · ${disabledRows.length} disabled`,
-        table(['Name', 'URL', 'Credential', 'User', 'Log index pattern', 'Connection', 'Last success', ''], [...clusterRows, ...disabledRows],
-          { emptyText: 'No clusters yet — add one.' }),
-        [h('button.btn.sm.primary', { onclick: async () => { if (await editCluster(null)) { draw(); loadTrust(); } } }, '+ Add cluster')])),
-
-    h('div.grid.c2', { style: { marginTop: '14px' } },
-      card('Effective defaults', 'from the defaults block, with built-in fallbacks',
-        table([], Object.entries(d).map(([k, v]) => kvRow(k, String(v)))),
-        [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]),
-
-      alertRulesCard(),
-      delaySinkCard(),
-
-      card('Diagnostics & shortcuts', '',
-        h('div', { style: { display: 'grid', gap: '10px' } },
-          table([], [
-            kvRow('Write protection', isReadOnly() ? 'read-only — GET/HEAD + search POSTs only' : 'DISABLED — writes permitted (readOnly: false)'),
-            kvRow('Enforced by the core', 'checking…'),
-            kvRow('Routes', `${clusters().filter((c) => c.via).length} via jump host · ${clusters().filter((c) => !c.via).length} direct`),
-            kvRow('App version', h('span#core-version', '…')),
-            kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),
-            kvRow('Auto-refresh', state.autoRefresh ? `every ${d.refreshIntervalSec}s` : 'paused'),
-          ]),
-          h('div', { style: { fontSize: '12px' } },
-            h('b', 'Keyboard: '), h('code.inline', '1'), '–', h('code.inline', '7'), ' switch pages · ',
-            h('code.inline', 'r'), ' refresh · ', h('code.inline', 'Ctrl/⌘+Enter'), ' run request in the console'),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.sm', { onclick: () => saveTextAs('clusters.example.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
-            isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Force refresh all'),
-            h('button.btn.sm', { onclick: () => navigateTo('console') }, 'Open REST console')))))
-  );
+function draw() {
+  const active = activeSection();
+  mount(host, sectionNav(), h('div', { style: { marginTop: '12px' } }, active ? active.build() : null));
+  // A section that needs a round trip asks for it here rather than on page entry, so
+  // opening Config no longer fires every request the page could ever need.
+  if (active && active.load) active.load();
 }
 
 /** The raw file entry behind a normalised cluster (matched by name, then url). */

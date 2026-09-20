@@ -383,8 +383,47 @@ await go('volume');
 
 /* --------------------- alert triggers are listed and switchable --------------------- */
 
+/** The Config page is tabbed; open one by its label. */
+async function openSettingsTab(label) {
+  const nav = doc.querySelector('nav.subnav');
+  const btn = nav && [...nav.querySelectorAll('button')].find((b) => b.textContent.includes(label));
+  if (btn) { btn.click(); await settleFor(300); }
+  return !!btn;
+}
+
 await go('settings');
 {
+  // The bar is the page's table of contents: every job it does, visible without
+  // scrolling, exactly one of them open.
+  const nav = doc.querySelector('nav.subnav');
+  ok(!!nav, 'settings: no section tab bar');
+  if (nav) {
+    const tabs = [...nav.querySelectorAll('button')];
+    ok(tabs.length >= 7, `settings: ${tabs.length} section tabs, expected the page's several jobs`);
+    const current = tabs.filter((b) => b.getAttribute('aria-current') === 'page');
+    ok(current.length === 1, `settings: ${current.length} tabs marked current, expected exactly 1`);
+    // One section at a time — the whole point of the bar.
+    const cards = [...doc.querySelectorAll('section.card')].length;
+    ok(cards === 1, `settings: ${cards} cards on screen, expected the one open section`);
+    // Switching moves the marker and changes what is shown.
+    const other = tabs.find((b) => b.getAttribute('aria-current') !== 'page');
+    const otherLabel = other.textContent;
+    const wasTitle = (doc.querySelector('section.card header h2') || {}).textContent;
+    other.click();
+    await settleFor(300);
+    const nowTitle = (doc.querySelector('section.card header h2') || {}).textContent;
+    ok(nowTitle !== wasTitle, `settings: switching tab left "${wasTitle}" on screen`);
+    // The bar is redrawn, so find the tab again by its label: the marker has to be on
+    // the one that was pressed, not merely on exactly one of them.
+    const after = [...doc.querySelectorAll('nav.subnav button')];
+    const pressed = after.find((b) => b.textContent === otherLabel);
+    ok(pressed && pressed.getAttribute('aria-current') === 'page',
+      `settings: the current marker did not move to "${otherLabel}"`);
+    ok(after.filter((b) => b.getAttribute('aria-current') === 'page').length === 1,
+      'settings: more than one tab marked current');
+  }
+
+  ok(await openSettingsTab('Alert triggers'), 'settings: no Alert triggers tab');
   const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
   ok(titles.includes('Alert triggers'), `settings: no alert triggers card, saw ${titles.join(' | ')}`);
 
@@ -416,9 +455,9 @@ await go('settings');
 // bridge on a routable address.
 await go('settings');
 {
-  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
-  ok(!titles.includes('Scheduled log delay'),
-    'settings: the scheduler card appeared on a loopback (portable) bridge, where it cannot run');
+  const labels = [...doc.querySelectorAll('nav.subnav button')].map((b) => b.textContent);
+  ok(!labels.some((l) => /Scheduled log delay/.test(l)),
+    `settings: the scheduler tab appeared on a loopback (portable) bridge, where it cannot run: ${labels.join(' | ')}`);
 }
 
 {
@@ -448,8 +487,10 @@ await go('settings');
 
   await go('overview');
   await go('settings');
-  await settleFor(300);
+  await settleFor(400);
 
+  ok(await openSettingsTab('Scheduled log delay'),
+    'settings: no scheduler tab on a hosted core');
   const card = [...doc.querySelectorAll('section.card')]
     .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Scheduled log delay');
   ok(!!card, 'settings: no scheduled log delay card on a hosted core');
@@ -494,6 +535,52 @@ await go('settings');
     }
   }
   globalThis.fetch = realFetch;
+}
+
+/* ------------- the cluster summary names the JVM and opens a row ------------- */
+
+await go('overview');
+{
+  const summary = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster summary');
+  ok(!!summary, 'overview: no cluster summary card');
+  if (summary) {
+    const heads = [...summary.querySelectorAll('thead tr:last-child th')]
+      .map((th) => th.textContent.replace(/[▲▼]/g, '').replace(/i$/, '').trim());
+    ok(heads.includes('JDK'), `overview: no JDK column, saw ${heads.join(' | ')}`);
+
+    // The fixture runs two nodes on 17.0.9 and one on 21.0.2 — a half-finished upgrade,
+    // which must read as mixed rather than as whichever node answered first.
+    const jdkAt = heads.indexOf('JDK');
+    const firstRow = summary.querySelector('tbody tr');
+    const jdkCell = firstRow && firstRow.children[jdkAt];
+    ok(jdkCell && /mixed/.test(jdkCell.textContent),
+      `overview: JDK cell reads "${jdkCell && jdkCell.textContent}", expected mixed for a cluster on two JVMs`);
+    ok(jdkCell && /17\.0\.9/.test(jdkCell.getAttribute('title') || ''),
+      'overview: the JDK cell should carry the per-version breakdown');
+
+    // The row expander is a button people can find, and it says which way it goes.
+    const expand = [...firstRow.querySelectorAll('button')].find((b) => /Details/.test(b.textContent));
+    ok(!!expand, 'overview: no Details button on a summary row');
+    if (expand) {
+      ok(expand.getAttribute('aria-expanded') === 'false', 'overview: a collapsed row should say so');
+      ok(!expand.className.includes('ghost'),
+        'overview: the row expander should look like a button, not a label');
+      const before = summary.querySelectorAll('tbody tr').length;
+      expand.click();
+      await settleFor(300);
+      const after = [...doc.querySelectorAll('section.card')]
+        .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster summary');
+      ok(after.querySelectorAll('tbody tr').length > before,
+        'overview: pressing Details did not open the detail row');
+      const now = [...after.querySelector('tbody tr').querySelectorAll('button')]
+        .find((b) => /Hide details/.test(b.textContent));
+      ok(!!now, 'overview: an open row should offer to close');
+      ok(now && now.getAttribute('aria-expanded') === 'true', 'overview: an open row should say it is open');
+      now.click();
+      await settleFor(250);
+    }
+  }
 }
 
 /* ----------------- the brand is the product, not the filename ----------------- */

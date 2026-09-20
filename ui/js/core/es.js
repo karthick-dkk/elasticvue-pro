@@ -151,7 +151,10 @@ export class EsClient {
   stats() { return this.json('GET', '/_cluster/stats?filter_path=indices.docs,indices.store,nodes.count,nodes.jvm.mem,nodes.os.mem,nodes.fs'); }
   allocation() { return this.json('GET', '/_cat/allocation?format=json&bytes=b'); }
   nodes() {
-    const h = 'name,ip,version,node.role,master,heap.percent,heap.current,heap.max,ram.percent,cpu,load_1m,load_5m,disk.used,disk.avail,disk.total,disk.used_percent,uptime';
+    // `jdk` rides along in the request already being made: the JVM a node runs on is
+    // a version somebody has to know at upgrade time, and asking for it separately
+    // would be a second call for one string.
+    const h = 'name,ip,version,jdk,node.role,master,heap.percent,heap.current,heap.max,ram.percent,cpu,load_1m,load_5m,disk.used,disk.avail,disk.total,disk.used_percent,uptime';
     return this.json('GET', `/_cat/nodes?format=json&bytes=b&h=${encodeURIComponent(h)}`);
   }
   indices(pattern = '*') {

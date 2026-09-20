@@ -2,7 +2,7 @@
 
 import { h, mount, clear } from '../lib/dom.js';
 import { bytes, num, compact, pct, ago, dt, toCsv, download, healthClass } from '../lib/fmt.js';
-import { state, bus, clusters, activeClusters, client, fetchOverview, refreshAll, alerts, requestsFor, requestLoad } from '../core/state.js';
+import { state, bus, clusters, activeClusters, client, fetchOverview, refreshAll, alerts, requestsFor, requestLoad, jvmSummary } from '../core/state.js';
 import { hbarList, usageMeter } from '../lib/charts.js';
 import { card, pill, statTile, table, connectionBanner, diskCell, lastSnapshotOf, snapshotPill, empty } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
@@ -22,6 +22,7 @@ const SORTS = {
   shards:   { label: 'Shards',        get: (r) => (r.d.health && r.d.health.active_shards) || -1 },
   unassign: { label: 'Unassigned',    get: (r) => (r.d.health && r.d.health.unassigned_shards) || 0 },
   version:  { label: 'Version',       get: (r) => versionKey(r) },
+  jdk:      { label: 'JDK',           get: (r) => jvmSummary(r.d.nodes).text },
   snapshot: { label: 'Last snapshot', get: (r) => { const s = lastSnapshotOf(r.d); return s ? s.start : 0; } },
   alerts:   { label: 'Open alerts',   get: (r) => alertsByCluster().get(r.c.id) || 0 },
   ilm:      { label: 'ILM',           get: (r) => String((r.d.ilm && r.d.ilm.operation_mode) || 'zz') },
@@ -190,6 +191,7 @@ function summaryCard(rows, all) {
   const headers = [
     { label: 'Cluster', sort: 'name' },
     { label: 'Version', sort: 'version' },
+    { label: 'JDK', sort: 'jdk' },
     { label: 'Health', sort: 'health' },
     { label: 'Nodes', sort: 'nodes' },
     { label: 'Size', num: true, sort: 'size' },
@@ -222,6 +224,15 @@ function summaryCard(rows, all) {
         c.tags && c.tags.length ? h('div', { style: { marginTop: '3px', display: 'flex', gap: '4px' } },
           ...c.tags.map((t) => h('span.pill.grey', t))) : null),
       h('td.mono', (d.info && d.info.version && d.info.version.number) || '–'),
+      // The JVM the nodes run on. A cluster mid-upgrade has more than one, and saying
+      // "mixed" with the breakdown on hover beats picking whichever node answered first.
+      (() => {
+        const j = jvmSummary(d.nodes);
+        return h('td.mono', { title: j.detail, style: { fontSize: '11.5px' } },
+          j.text === 'unknown' ? h('span.muted', 'unknown')
+            : j.mixed ? pill(j.text, 'yellow')
+            : j.text);
+      })(),
       h('td', pill(stateLbl, d.reachable ? healthClass(d.health && d.health.status) : 'red')),
       h('td.num', d.health ? `${d.health.number_of_nodes} (${d.health.number_of_data_nodes} data)` : '–'),
       h('td.num', { title: 'Store size of the indices on this cluster' },
@@ -244,9 +255,15 @@ function summaryCard(rows, all) {
       h('td.num', { title: `${requestsFor(c.id).perMinute.toFixed(1)} per minute · ${requestsFor(c.id).perSecond.toFixed(2)} per second, over the last ${Math.round(requestLoad.windowSec / 60)} minutes` },
         h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, String(requestsFor(c.id).last5m)),
         h('span.muted', { style: { fontSize: '10.5px' } }, ` · ${requestsFor(c.id).perMinute.toFixed(1)}/min`)),
-      h('td', h('button.btn.sm.ghost', {
+      // A real button, not a ghost that reads as a label: this is the control people go
+      // looking for when a row raises a question, and it was the quietest thing in the
+      // row. The chevron says which way it goes; aria-expanded says it to a reader.
+      h('td', h('button.btn.sm', {
+        'aria-expanded': expanded.has(c.id) ? 'true' : 'false',
+        title: expanded.has(c.id) ? `Collapse ${c.name}` : `Expand ${c.name} — nodes, disk, repositories`,
         onclick: () => { expanded.has(c.id) ? expanded.delete(c.id) : expanded.add(c.id); draw(); },
-      }, expanded.has(c.id) ? 'Hide' : 'Details'))));
+      }, h('span', { style: { marginRight: '5px' } }, expanded.has(c.id) ? '\u25be' : '\u25b8'),
+         expanded.has(c.id) ? 'Hide details' : 'Details'))));
 
     if (expanded.has(c.id)) trs.push(h('tr', h('td', { colspan: headers.length, style: { background: 'var(--surface-2)' } }, detail(c, d))));
   });
@@ -385,6 +402,10 @@ function exportSummary(rows) {
     const s = lastSnapshotOf(d);
     return {
       cluster: c.name, url: c.url, version: (d.info && d.info.version && d.info.version.number) || '',
+      // Same definition the column uses, so the file and the screen cannot disagree
+      // about whether a cluster is mid-upgrade.
+      jdk: jvmSummary(d.nodes).text,
+      jdk_detail: jvmSummary(d.nodes).detail,
       health: (d.health && d.health.status) || 'offline',
       nodes: (d.health && d.health.number_of_nodes) || 0,
       cluster_size_bytes: Math.max(0, clusterSize({ c, d })),

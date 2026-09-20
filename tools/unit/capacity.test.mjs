@@ -11,7 +11,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
-const { capacityChange } = await import(pathToFileURL(path.join(ROOT, 'ui/js/core/state.js')).href);
+const { capacityChange, jvmSummary } = await import(pathToFileURL(path.join(ROOT, 'ui/js/core/state.js')).href);
 const GB = 1024 ** 3;
 
 test('the first reading is a baseline, not a change', () => {
@@ -67,4 +67,38 @@ test('zero or missing totals are not treated as a change', () => {
   const first = capacityChange(null, 100 * GB, 3);
   assert.equal(capacityChange(first, 0, 3).changedAt, null, '0 means we could not read it');
   assert.equal(capacityChange({ total: 0, nodeCount: 3 }, 100 * GB, 3).changedAt, null);
+});
+
+/* ------------------------------- JVM version ------------------------------- */
+
+test('one JVM across the cluster reads as that version', () => {
+  const s = jvmSummary([{ jdk: '17.0.9' }, { jdk: '17.0.9' }, { jdk: '17.0.9' }]);
+  assert.equal(s.text, '17.0.9');
+  assert.equal(s.mixed, false);
+  assert.deepEqual(s.versions, ['17.0.9']);
+});
+
+test('nodes that disagree are not flattened to one of them', () => {
+  // A half-finished upgrade is the case worth seeing. Showing "17.0.9" because that node
+  // answered first would hide it.
+  const s = jvmSummary([{ jdk: '17.0.9' }, { jdk: '21.0.2' }, { jdk: '17.0.9' }]);
+  assert.equal(s.mixed, true);
+  assert.equal(s.text, 'mixed (2)');
+  assert.deepEqual(s.versions, ['17.0.9', '21.0.2']);
+  assert.match(s.detail, /17\.0\.9 \(2\)/);
+  assert.match(s.detail, /21\.0\.2 \(1\)/);
+});
+
+test('no answer is unknown, not blank', () => {
+  for (const nodes of [[], null, undefined, [{}], [{ jdk: '' }], [{ jdk: '   ' }]]) {
+    const s = jvmSummary(nodes);
+    assert.equal(s.text, 'unknown', `${JSON.stringify(nodes)} should be unknown`);
+    assert.equal(s.versions.length, 0);
+  }
+});
+
+test('a node that did not answer does not hide the ones that did', () => {
+  const s = jvmSummary([{ jdk: '21.0.2' }, {}, { jdk: '21.0.2' }]);
+  assert.equal(s.text, '21.0.2');
+  assert.equal(s.mixed, false);
 });

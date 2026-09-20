@@ -127,9 +127,15 @@ function block(c) {
       statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
     combCard(c, all),
-    nodesCard(c, d),
-    loadCard(c),
-    accountingCard(c, d),
+    // Three cards that answer three quick questions — what the nodes are, what the
+    // cluster is doing, where the disk went — side by side rather than stacked. Each was
+    // a full-width row holding a few lines, so the page was mostly the gaps between
+    // them. c3 is auto-fit, so they fall back to a stack when the window is too narrow
+    // to give each one a readable share, and the node table scrolls inside its own card.
+    h('div.grid.c3',
+      nodesCard(c, d),
+      loadCard(c),
+      accountingCard(c, d)),
     shardsCard(c, d, all, raw, started));
 }
 
