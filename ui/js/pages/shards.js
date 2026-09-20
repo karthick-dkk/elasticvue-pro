@@ -16,7 +16,7 @@ import { card, statTile, table, empty, pill, connectionBanner } from './common.j
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
-import { honeycomb, STATUS } from '../lib/charts.js';
+import { honeycomb, splitGauge, STATUS } from '../lib/charts.js';
 import { parseRetention } from '../core/volume.js';
 
 let host = null;
@@ -126,16 +126,11 @@ function block(c) {
         unassigned.length ? 'not placed on any node' : 'every shard is placed'),
       statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
-    combCard(c, all),
-    // Three cards that answer three quick questions — what the nodes are, what the
-    // cluster is doing, where the disk went — side by side rather than stacked. Each was
-    // a full-width row holding a few lines, so the page was mostly the gaps between
-    // them. c3 is auto-fit, so they fall back to a stack when the window is too narrow
-    // to give each one a readable share, and the node table scrolls inside its own card.
-    h('div.grid.c3',
-      nodesCard(c, d),
-      loadCard(c),
+    nodesAndLoadCard(c, d),
+    h('div.grid.c2',
+      shardMixCard(c, all, d),
       accountingCard(c, d)),
+    combCard(c, all),
     shardsCard(c, d, all, raw, started));
 }
 
@@ -200,7 +195,12 @@ const SLOW_TASK_MS = 30000;
  */
 const PERPETUAL = /geoip-downloader|cluster:monitor\/tasks\/lists|health-node|persistent/i;
 
-function loadCard(c) {
+/**
+ * What the cluster is busy doing, as a body rather than a card — it shares a pane with
+ * the node table, because "which nodes are there" and "what are they doing" are one
+ * question asked twice and they were being answered a screen apart.
+ */
+function loadBody(c) {
   const got = load2.get(c.id);
   if (!got) return null;
   // Arrays or nothing. A cluster that does not have one of these endpoints answers with
@@ -239,10 +239,10 @@ function loadCard(c) {
     : queued ? { label: 'busy', cls: 'yellow' }
     : { label: 'idle', cls: 'green' };
 
-  return card('Cluster load',
-    `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
-    + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
-    h('div', { style: { display: 'grid', gap: '10px' } },
+  return {
+    sub: `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
+       + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
+    node: h('div', { style: { display: 'grid', gap: '10px' } },
       h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
         pill(health.label, health.cls),
         rejected
@@ -279,13 +279,13 @@ function loadCard(c) {
             h('div', h('div.ttl', `${num(pending.length)} cluster-state change(s) waiting on the master`),
               h('div.mono', { style: { fontSize: '11px' } },
                 pending.slice(0, 4).map((t) => `${t.source} (${t.time_in_queue || ''})`).join(' · '))))
-        : null));
+        : null),
+  };
 }
 
 /** Everything _cat/nodes knows, which is what "is this node healthy" is answered from. */
-function nodesCard(c, d) {
+function nodesBody(c, d) {
   const nodes = d.nodes || [];
-  if (!nodes.length) return card('Nodes', 'none reported', empty('The cluster did not return a node list.'));
   const alloc = (d.disk && d.disk.nodes) || [];
 
   const trs = nodes.map((n) => {
@@ -310,10 +310,78 @@ function nodesCard(c, d) {
       h('td.muted', { style: { fontSize: '11.5px' } }, n.uptime || ''));
   });
 
-  return card('Nodes', `${nodes.length} node(s)${d.master ? ` · master ${d.master}` : ' · no master'}`,
-    table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
-           { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
-      trs, { emptyText: 'No nodes returned' }));
+  return table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
+                { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
+    trs, { emptyText: 'No nodes returned' });
+}
+
+/**
+ * Where the shards stand: one arc, split.
+ *
+ * Assigned and unassigned are not two readings to compare — they are one population
+ * divided, and the division is the whole question. Two separate gauges would show two
+ * percentages of a denominator the reader cannot see; one arc shows the split and the
+ * counts underneath say how many, which is what somebody acts on. "0 unassigned" is
+ * listed rather than dropped: it is the reassurance the page is opened for.
+ *
+ * Relocating and initialising are drawn separately from settled shards. They are
+ * assigned — a cluster mid-rebalance is not broken — but lumping them in would hide the
+ * one thing that tells you to wait a minute before worrying.
+ */
+function shardMixCard(c, all, d) {
+  const h2 = d.health || {};
+  const state = (x) => String(x.state || '').toUpperCase();
+  const started = all.filter((x) => state(x) === 'STARTED').length;
+  const moving = all.filter((x) => ['RELOCATING', 'INITIALIZING'].includes(state(x))).length;
+  const unassigned = all.filter((x) => state(x) === 'UNASSIGNED').length;
+  // _cat/shards is the detail; _cluster/health is the cluster's own count. Prefer the
+  // rows we actually have, and fall back to health when the listing was refused.
+  const total = all.length || (Number(h2.active_shards) || 0) + (Number(h2.unassigned_shards) || 0);
+
+  if (!total) {
+    return card('Shard placement', 'nothing reported',
+      empty('No shard listing and no health count — unknown, not zero.'));
+  }
+
+  const segments = [
+    { key: 'started', label: 'assigned', value: started, color: 'var(--good)' },
+    { key: 'moving', label: 'moving', value: moving, color: 'var(--warning)' },
+    { key: 'unassigned', label: 'unassigned', value: unassigned, color: 'var(--critical)' },
+  ];
+  const sub = unassigned
+    ? `${num(unassigned)} of ${num(total)} not placed`
+    : moving ? `all placed · ${num(moving)} in flight` : 'every shard is placed';
+
+  return card('Shard placement', sub,
+    h('div', { style: { display: 'grid', gap: '10px', justifyItems: 'center' } },
+      splitGauge(segments, { total, centreLabel: 'shards total', format: (v) => num(v) }),
+      unassigned
+        ? h('div.muted', { style: { fontSize: '11.5px', textAlign: 'center' } },
+            'An unassigned shard holds no data that can be read. The table below says why '
+            + 'each one is unplaced.')
+        : null));
+}
+
+/**
+ * The node table and the cluster's workload, in one pane at the top of the page.
+ *
+ * They were two cards, and briefly two of three columns, which cut a nine-column table
+ * down to a third of the window — the widest table on the page in the narrowest space it
+ * has ever had. It gets the full width back, and the load summary sits with it because
+ * you read them together: a node at 96% RAM means one thing when the cluster is idle and
+ * another when it is rejecting work.
+ */
+function nodesAndLoadCard(c, d) {
+  const nodes = d.nodes || [];
+  const load = loadBody(c);
+  const sub = `${nodes.length} node(s)${d.master ? ` · master ${d.master}` : ' · no master'}`
+    + (load ? ` · ${load.sub}` : '');
+  return card('Nodes & cluster load', sub,
+    h('div', { style: { display: 'grid', gap: '12px' } },
+      nodes.length ? nodesBody(c, d) : empty('The cluster did not return a node list.'),
+      load
+        ? h('div', { style: { borderTop: '1px solid var(--border)', paddingTop: '11px' } }, load.node)
+        : null));
 }
 
 function heapCell(p, n) {

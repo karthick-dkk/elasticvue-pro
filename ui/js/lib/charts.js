@@ -229,6 +229,77 @@ export function gauge(value, max, opts = {}) {
     opts.label ? h('div.muted', { style: { fontSize: '11px', marginTop: '-4px' } }, opts.label) : null);
 }
 
+/**
+ * One arc, split between the parts that make up a whole.
+ *
+ * `gauge` above answers "how far along one number is". This answers a different
+ * question: a total made of parts, where the parts are the point. Shards are the case it
+ * was written for — assigned and unassigned are not two readings, they are one
+ * population split two ways, and drawing them as two gauges invites the reader to
+ * compare two percentages that share a denominator they cannot see.
+ *
+ * Every segment is labelled with its own count underneath, because an arc gives you the
+ * proportion and nothing else: "most of them are fine" is not an answer to "how many are
+ * not". A segment with a zero value is still listed — "0 unassigned" is the reassurance
+ * somebody came to the page for, and a legend that drops it makes its absence
+ * indistinguishable from the chart not knowing.
+ *
+ * @param segments [{ key, label, value, color }]
+ * @param opts { size, total, centreLabel, format }
+ */
+export function splitGauge(segments, opts = {}) {
+  const size = opts.size || 150;
+  const r = size / 2 - 13;
+  const cx = size / 2, cy = size / 2 + 7;
+  const START = 150, SWEEP = 240;
+  const parts = (segments || []).map((x) => ({ ...x, value: Math.max(0, Number(x.value) || 0) }));
+  const sum = parts.reduce((n, x) => n + x.value, 0);
+  const total = opts.total == null ? sum : Math.max(0, Number(opts.total) || 0);
+  const fmt = opts.format || ((v) => String(v));
+
+  const pt = (deg) => {
+    const a = (Math.PI / 180) * deg;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const arc = (fromDeg, toDeg) => {
+    const [x0, y0] = pt(fromDeg), [x1, y1] = pt(toDeg);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${toDeg - fromDeg > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  };
+
+  const s = svg('svg', { viewBox: `0 0 ${size} ${size}`, style: { width: `${size}px`, height: `${size}px` } });
+  // The track is the total. When the parts do not add up to it — a count the cluster did
+  // not break down — the gap stays grey rather than being shared out among the parts.
+  s.append(svg('path', { d: arc(START, START + SWEEP),
+    style: { fill: 'none', stroke: 'var(--surface-3)', strokeWidth: 11, strokeLinecap: 'round' } }));
+
+  let at = START;
+  for (const part of parts) {
+    if (!total || part.value <= 0) continue;
+    const span = SWEEP * (part.value / total);
+    const seg = svg('path', { d: arc(at, Math.min(START + SWEEP, at + span)),
+      style: { fill: 'none', stroke: part.color, strokeWidth: 11 } });
+    seg.append(svg('title', {}, `${part.label}: ${fmt(part.value)}`));
+    s.append(seg);
+    at += span;
+  }
+
+  return h('div', { style: { display: 'grid', justifyItems: 'center', gap: '2px' } },
+    h('div', { style: { position: 'relative', lineHeight: 0 } }, s,
+      h('div', { style: { position: 'absolute', inset: 0, display: 'grid', placeContent: 'center',
+                          textAlign: 'center', lineHeight: 1.15 } },
+        h('div', { style: { fontSize: '22px', fontWeight: 680 } }, fmt(total)),
+        h('div.muted', { style: { fontSize: '10.5px' } }, opts.centreLabel || 'total'))),
+    h('div', { style: { display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' } },
+      ...parts.map((part) => h('div', {
+        style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px' },
+        title: `${part.label}: ${fmt(part.value)}`,
+      },
+        h('span', { style: { width: '9px', height: '9px', borderRadius: '2px',
+                             background: part.color, flex: 'none' } }),
+        h('b', { style: { fontVariantNumeric: 'tabular-nums' } }, fmt(part.value)),
+        h('span.muted', part.label)))));
+}
+
 /* --------------------------------- honeycomb ---------------------------------- */
 
 /**

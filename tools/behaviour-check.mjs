@@ -156,7 +156,7 @@ await go('shards');
 {
   const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
   ok(titles.some((t) => t.startsWith('Shards —')), `shards: no shard table card, saw ${titles.join(' | ')}`);
-  ok(titles.includes('Nodes'), `shards: no node strip, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Nodes & cluster load'), `shards: no node pane, saw ${titles.join(' | ')}`);
 
   const heads = [...doc.querySelectorAll('table.tbl thead th')].map((x) => x.textContent.trim());
   for (const col of ['Index', 'Shard', 'Type', 'State', 'Node', 'Store', 'Unassigned reason']) {
@@ -186,7 +186,7 @@ await go('shards');
     `shards: expected a Move button on each of the 2 started shards per cluster (${2 * shown}), found ${moves}`);
 
   // The node half, which this page lost when it stopped being "Nodes & shards".
-  ok(titles.includes('Nodes'), `shards: no Nodes card, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Nodes & cluster load'), `shards: no Nodes pane, saw ${titles.join(' | ')}`);
   for (const col of ['Node', 'Roles', 'Version', 'Heap', 'RAM', 'CPU', 'Load 1m/5m', 'Disk', 'Uptime']) {
     ok(heads.includes(col), `shards: the node table has no "${col}" column, saw ${heads.join(', ')}`);
   }
@@ -197,7 +197,12 @@ await go('shards');
   ok(titles.includes('Shard states'), `shards: no honeycomb card, saw ${titles.join(' | ')}`);
   const cells = doc.querySelectorAll('polygon').length;
   ok(cells === shardRows, `shards: ${cells} honeycomb cells for ${shardRows} shards — should be one each`);
-  const svgs = [...doc.querySelectorAll('svg')];
+  // Scoped to the honeycomb's own card. The page carries other charts now, and taking
+  // the first svg on the page meant these were checking whichever one came first.
+  const combCard = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shard states');
+  ok(!!combCard, 'shards: no shard-states card to hold the honeycomb');
+  const svgs = combCard ? [...combCard.querySelectorAll('svg')] : [];
   ok(svgs.length >= 1 && /^0 0 \d/.test(svgs[0].getAttribute('viewBox') || ''),
     'shards: the honeycomb has no usable viewBox');
   // It shrinks to fit rather than running off the page.
@@ -444,6 +449,41 @@ await go('settings');
   // It points at the one rule editor rather than being a second one.
   ok(card && /Automation/.test(card.textContent),
     'settings: the triggers card should send new-rule authoring to Automation');
+}
+
+/* ------------- the nodes page: one pane on top, one arc for the shards ------------- */
+
+await go('shards');
+{
+  const pane = doc.getElementById('view');
+  const titles = [...pane.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('Nodes & cluster load'),
+    `shards: nodes and load are not one pane, saw ${titles.join(' | ')}`);
+  ok(!titles.includes('Nodes') && !titles.includes('Cluster load'),
+    `shards: the old separate cards are still there: ${titles.join(' | ')}`);
+
+  // The merged pane comes first: it is what the page is for.
+  const cards = [...pane.querySelectorAll('section.card')];
+  const merged = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Nodes & cluster load');
+  ok(merged && cards.indexOf(merged) <= 1,
+    `shards: the nodes pane is at position ${merged ? cards.indexOf(merged) : -1}, expected the top`);
+  // And it holds both halves — the node table and what the cluster is busy doing.
+  ok(merged && /Uptime/.test(merged.textContent), 'shards: the merged pane lost the node table');
+
+  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shard placement');
+  ok(!!mix, `shards: no shard placement gauge, saw ${titles.join(' | ')}`);
+  if (mix) {
+    // One arc split, not three gauges: a single svg carrying the track plus a segment
+    // per non-zero part.
+    const svgs = mix.querySelectorAll('svg');
+    ok(svgs.length === 1, `shard gauge: ${svgs.length} charts, expected one split arc`);
+    // Every part is marked with its own count, including the zeroes.
+    const marks = [...mix.querySelectorAll('div[title]')].map((d) => d.getAttribute('title'));
+    for (const want of ['assigned', 'moving', 'unassigned']) {
+      ok(marks.some((t) => t.startsWith(`${want}:`)), `shard gauge: "${want}" is not marked — ${marks.join(' | ')}`);
+    }
+    ok(/shards total/.test(mix.textContent), 'shard gauge: the centre should name what the total counts');
+  }
 }
 
 /* ------------- the scheduled measurement is offered only where it can run ------------- */
