@@ -357,6 +357,13 @@ label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; 
 .grid.c2 { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
 .grid.c3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .grid.c4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+/* A fixed-width companion beside something that wants the rest of the row: a chart that
+   is 150px wide however much space it is given, next to a card that always has more to
+   say. auto-fit would give each half the row and leave the chart swimming in its own
+   column with dead space under its shorter neighbour. Stacks when there is no room to
+   put them side by side. */
+.grid.aside { grid-template-columns: minmax(250px, 330px) 1fr; }
+@media (max-width: 860px) { .grid.aside { grid-template-columns: 1fr; } }
 
 /* stat tile: the hero number wears text ink, not a series color */
 .stat { padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); }

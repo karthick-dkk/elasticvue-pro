@@ -127,7 +127,10 @@ function block(c) {
       statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
     nodesAndLoadCard(c, d),
-    h('div.grid.c2',
+    // aside, not c2: the gauge is 150px wide whatever column it is given, so an equal
+    // split left it centred in half a screen with dead space under the shorter card
+    // beside it. It gets the width it needs and storage accounting gets the rest.
+    h('div.grid.aside',
       shardMixCard(c, all, d),
       accountingCard(c, d)),
     combCard(c, all),
@@ -243,12 +246,19 @@ function loadBody(c) {
     sub: `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
        + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
     node: h('div', { style: { display: 'grid', gap: '10px' } },
-      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+      // The state and what it means share a line. An idle cluster is one fact, and it
+      // was taking two rows: a pill, then a sentence under it in the empty half.
+      h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center', flexWrap: 'wrap' } },
         pill(health.label, health.cls),
         rejected
           ? h('span.muted', { style: { fontSize: '11.5px' } },
               'a thread pool only rejects once its queue is full — this is dropped work, not slow work')
-          : null),
+          : null,
+        slow.length
+          ? null
+          : h('span.muted', { style: { fontSize: '12px' } },
+              real.length ? 'Nothing has been running long enough to be worth a look.'
+                          : 'No tasks in flight.')),
 
       slow.length
         ? h('div',
@@ -263,9 +273,7 @@ function loadBody(c) {
                 h('td.muted', { style: { fontSize: '11px', maxWidth: '340px', wordBreak: 'break-word' } },
                   t.description || ''))),
               { emptyText: '' }))
-        : h('div.muted', { style: { fontSize: '12px' } },
-            real.length ? 'Nothing has been running long enough to be worth a look.'
-                        : 'No tasks in flight.'),
+        : null,
 
       poolTrs.length
         ? h('div',
@@ -353,12 +361,11 @@ function shardMixCard(c, all, d) {
     : moving ? `all placed · ${num(moving)} in flight` : 'every shard is placed';
 
   return card('Shard placement', sub,
-    h('div', { style: { display: 'grid', gap: '10px', justifyItems: 'center' } },
+    h('div', { style: { display: 'grid', gap: '8px', justifyItems: 'center' } },
       splitGauge(segments, { total, centreLabel: 'shards total', format: (v) => num(v) }),
       unassigned
-        ? h('div.muted', { style: { fontSize: '11.5px', textAlign: 'center' } },
-            'An unassigned shard holds no data that can be read. The table below says why '
-            + 'each one is unplaced.')
+        ? h('div.muted', { style: { fontSize: '11.5px', textAlign: 'center', maxWidth: '30ch' } },
+            'An unassigned shard holds no data that can be read. The table below says why.')
         : null));
 }
 
