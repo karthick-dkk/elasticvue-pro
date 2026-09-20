@@ -661,6 +661,84 @@ await go('overview');
   }
 }
 
+/* ---------------- the console: a bigger result, searchable, editable ---------------- */
+
+await go('console');
+{
+  const pane = doc.getElementById('view');
+  const run = doc.getElementById('c-run');
+  ok(!!run, 'console: no Run button');
+  run.click();
+  await settleFor(900);
+
+  // The response gets the larger share: a request body is a few lines, a response is
+  // hundreds, and an even split gave half the window to whitespace.
+  const cols = doc.getElementById('c-columns');
+  ok(!!cols, 'console: the two panes are not a resizable split');
+  if (cols) {
+    const tpl = cols.style.gridTemplateColumns;
+    const nums = (tpl.match(/([\d.]+)fr/g) || []).map((x) => parseFloat(x));
+    ok(nums.length === 2, `console: expected two proportional columns, got "${tpl}"`);
+    ok(nums[1] > nums[0], `console: the result column (${nums[1]}) is not bigger than the query (${nums[0]})`);
+    ok(Math.abs(nums[0] - 35) < 0.5 && Math.abs(nums[1] - 65) < 0.5,
+      `console: expected a 35/65 split, got ${nums[0]}/${nums[1]}`);
+    ok(!!cols.querySelector('.split-handle'), 'console: no handle to resize the split');
+  }
+
+  // Search inside the response.
+  const find = doc.getElementById('c-find');
+  ok(!!find, 'console: no search box on the results');
+  if (find) {
+    // A term the fixture's health response actually contains — "cluster" is not in it,
+    // which is how the first version of this case failed for its own reasons.
+    find.value = 'shards';
+    find.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(300);
+    const marks = doc.querySelectorAll('#c-response mark').length;
+    ok(marks > 0, `console: searching marked nothing — response was ${doc.getElementById('c-response').textContent.slice(0, 80)}`);
+    ok(/hit/.test(doc.getElementById('c-response').textContent), 'console: the search does not say how many it found');
+
+    // A response is cluster data. Marking matches must not turn it into markup.
+    const nonsense = doc.getElementById('c-find');
+    nonsense.value = 'zzzznotpresentzzzz';
+    nonsense.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(250);
+    ok(/no hits/.test(doc.getElementById('c-response').textContent),
+      'console: a search with no matches should say so');
+    nonsense.value = '';
+    nonsense.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(200);
+  }
+
+  // Editable after the fact.
+  const editBtn = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Edit');
+  ok(!!editBtn, 'console: the response cannot be edited');
+  if (editBtn) {
+    editBtn.click();
+    await settleFor(300);
+    const box = doc.getElementById('c-edit');
+    ok(!!box, 'console: pressing Edit produced no editable field');
+    ok(box && box.value.length > 0, 'console: the editor opened empty instead of holding the response');
+    const done = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Done');
+    ok(!!done, 'console: no way to stop editing');
+    if (done) { done.click(); await settleFor(250); }
+  }
+
+  // Full screen, and Escape out of it.
+  const full = doc.getElementById('c-full');
+  ok(!!full, 'console: no full-screen control on the results');
+  if (full) {
+    full.click();
+    await settleFor(300);
+    ok(!doc.getElementById('c-columns'), 'console: full screen still shows the query column');
+    ok(!doc.getElementById('c-run'), 'console: full screen still shows the request bar');
+    ok(!!doc.getElementById('c-response'), 'console: full screen lost the response');
+    doc.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settleFor(350);
+    ok(!!doc.getElementById('c-columns'), 'console: Escape did not leave full screen');
+  }
+}
+
 /* ----------------- the brand is the product, not the filename ----------------- */
 
 {

@@ -98,11 +98,35 @@ export function mount(el, ...kids) {
     } catch (_) { /* not a text control; focus alone is enough */ }
   }
 
+  // Where the page was. Emptying the container makes the document briefly shorter than
+  // the current scroll offset, so the browser clamps it to the top — and re-appending
+  // does not put it back. That is why searching or refreshing threw you to the top of
+  // every page: nothing scrolled, the page just stopped being tall enough for a moment.
+  //
+  // Both the element's scrollable ancestors and the document itself, because which one
+  // actually scrolls depends on the page's layout and on the window size.
+  const scrolled = [];
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    if (n.scrollTop) scrolled.push([n, n.scrollTop]);
+  }
+  const page = document.scrollingElement || document.documentElement;
+  if (page && page.scrollTop) scrolled.push([page, page.scrollTop]);
+
   clear(el);
   kids.flat().forEach((k) => k && el.append(k));
 
+  // After appending, so the content is tall enough to hold the offset again. A shorter
+  // result clamps naturally, which is right — there is nowhere further down to be.
+  for (const [n, top] of scrolled) {
+    if (n.scrollTop !== top) n.scrollTop = top;
+  }
+
   if (restore) {
-    const next = el.querySelector(`#${CSS.escape(restore.id)}`);
+    // getElementById rather than a selector: an id is not always a valid selector
+    // fragment, CSS.escape is not everywhere (jsdom has no such thing), and a throw here
+    // would take the whole redraw with it. Containment keeps the meaning the same.
+    const found = document.getElementById(restore.id);
+    const next = found && el.contains(found) ? found : null;
     if (next && typeof next.focus === 'function') {
       next.focus({ preventScroll: true });
       if (restore.start !== undefined && typeof next.setSelectionRange === 'function') {

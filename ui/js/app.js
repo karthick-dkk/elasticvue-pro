@@ -476,11 +476,26 @@ function resolveSelection(page) {
   }
 }
 
+/**
+ * Moving to a different page starts at the top of it.
+ *
+ * The counterpart to mount() keeping the scroll position: re-rendering the page you are
+ * on must not move you, and arriving at a different page must not leave you halfway down
+ * it because the last one was long.
+ */
+function scrollPageTop() {
+  const page = document.scrollingElement || document.documentElement;
+  if (page) page.scrollTop = 0;
+  const main = document.querySelector('main.main');
+  if (main) main.scrollTop = 0;
+}
+
 export function go(id) {
   // A hash typed by hand, or one left in the address bar by a previous session under a
   // different account, must not land on a tab this role does not have.
   const allowed = visiblePages();
   const page = allowed.find((p) => p.id === id) || allowed[0] || PAGES[0];
+  const changed = currentPage !== page.id;
   currentPage = page.id;
   location.hash = `#/${page.id}`;
   resolveSelection(page);
@@ -496,6 +511,10 @@ export function go(id) {
     console.error(e);
     mount(view, h('div.banner.err', h('div', h('div.ttl', 'Page failed to render'), h('div.mono', String(e && e.stack || e)))));
   }
+  // Only when the page actually changed. go() is also how a page redraws itself after a
+  // cluster is picked, and that must keep your position the way every other redraw now
+  // does.
+  if (changed) scrollPageTop();
 }
 
 /* ----------------------------------- boot ----------------------------------- */
@@ -621,6 +640,12 @@ window.addEventListener('hashchange', () => {
 
 document.addEventListener('keydown', (e) => {
   const t = e.target;
+  // Escape first, and before the typing guard: leaving a full-screen view is the one
+  // key that has to work while the cursor is in that view's own search box.
+  if (e.key === 'Escape') {
+    const cur = PAGES.find((x) => x.id === currentPage);
+    if (cur && cur.mod.onKey && cur.mod.onKey(e)) return;
+  }
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Number keys used to jump between pages. They are gone: a stray digit moving the

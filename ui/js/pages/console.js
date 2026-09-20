@@ -4,6 +4,24 @@ import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { bytes, num, dur, ago, dt, download } from '../lib/fmt.js';
 import { state, client, activeClusters } from '../core/state.js';
 import { idb } from '../lib/idb.js';
+
+/**
+ * Write to the query history, and carry on if it cannot be written.
+ *
+ * The history is a convenience; the response is the point. These calls were awaited
+ * bare, so a browser with no IndexedDB — a private window, site data blocked — rejected
+ * inside the click handler and the response that had already arrived was never drawn.
+ * Pressing Run appeared to do nothing at all.
+ */
+function remember(fn) {
+  // Deliberately not awaited by its callers and deliberately not returning anything to
+  // await: IndexedDB can hang rather than fail, and nothing on this page may wait on
+  // storage to finish before showing what the cluster said.
+  try {
+    const p = fn();
+    if (p && typeof p.catch === 'function') p.catch(() => { /* no history; the request still ran */ });
+  } catch (_) { /* storage unavailable */ }
+}
 import { jsonView } from '../lib/jsonview.js';
 import { card, empty, pill } from './common.js';
 import { isSnapshotMode } from '../core/snapshot.js';
@@ -135,19 +153,59 @@ const SNIPPETS = [
 let host = null;
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
+/** The response gets the larger share — see the comment where the columns are built. */
+const DEFAULT_SPLIT = 35;
+
 const ui = { method: 'GET', path: '/_cluster/health', body: '', running: false, res: null, raw: false,
-             filter: '', showFav: false };
+             filter: '', showFav: false,
+             split: DEFAULT_SPLIT,   // percent of the row given to the query pane
+             find: '',               // search within the response
+             full: false };          // response filling the window
 let history = [];
+
+/* ------------------------------ the split handle ------------------------------ */
+
+function setSplit(pct) {
+  ui.split = Math.max(20, Math.min(70, Math.round(pct)));
+  const cols = $('#c-columns');
+  if (cols) cols.style.gridTemplateColumns = `minmax(0,${ui.split}fr) 6px minmax(0,${100 - ui.split}fr)`;
+  try { localStorage.setItem('espro.console.split', String(ui.split)); } catch (_) { /* private window */ }
+}
+
+function startDrag(e) {
+  const cols = $('#c-columns');
+  if (!cols) return;
+  e.preventDefault();
+  const rect = cols.getBoundingClientRect();
+  const move = (ev) => setSplit(((ev.clientX - rect.left) / rect.width) * 100);
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
 
 export function render(el) {
   host = el;
+  try {
+    const saved = Number(localStorage.getItem('espro.console.split'));
+    if (isFinite(saved) && saved >= 20 && saved <= 70) ui.split = saved;
+  } catch (_) { /* private window: the default is fine */ }
   if (intent.console) { Object.assign(ui, intent.console); intent.console = null; ui.res = null; }
-  idb.allQueries().then((q) => { history = (q || []).sort((a, b) => b.ts - a.ts); drawHistory(); });
+  idb.allQueries().then((q) => { history = (q || []).sort((a, b) => b.ts - a.ts); drawHistory(); })
+    .catch(() => { /* no stored history to show */ });
   // The core owns the unlock, not this page — re-read it rather than trusting our copy.
   syncWrites().then(draw).catch(() => {});
   draw();
 }
 export function onData() {}
+
+/** Esc leaves full screen — the way every other full-screen view behaves. */
+export function onKey(e) {
+  if (e.key === 'Escape' && ui.full) { ui.full = false; draw(); return true; }
+  return false;
+}
 
 function cluster() { return activeClusters()[0] || null; }
 
@@ -235,11 +293,29 @@ function draw() {
 
   const results = h('div#c-response', { style: { minWidth: 0, display: 'flex' } }, responseCard());
 
-  const columns = h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: '14px', alignItems: 'stretch' } }, query, results);
+  // 35/65. A request body is usually a few lines and a response is usually hundreds, so
+  // an even split gave half the window to whitespace and made the half that matters
+  // scroll. Draggable, because "usually" is not "always" — a long aggregation body wants
+  // the space back, and the position is remembered.
+  const split = h('div.split-handle', {
+    title: 'Drag to resize · double-click to reset to 35/65',
+    ondblclick: () => setSplit(DEFAULT_SPLIT),
+    onpointerdown: startDrag,
+  });
+  const columns = h('div#c-columns', {
+    style: { display: 'grid', gridTemplateColumns: `minmax(0,${ui.split}fr) 6px minmax(0,${100 - ui.split}fr)`,
+             gap: '8px', alignItems: 'stretch' },
+  }, query, split, results);
 
   // ---- History (full width)
   const hist = h('div#c-history', historyCard());
 
+  if (ui.full) {
+    // Everything else is hidden rather than scrolled past: a full-screen response that
+    // still has the request bar above it is not full screen, it is a taller column.
+    mount(host, dl, h('div#c-response', { style: { display: 'flex', minHeight: '78vh' } }, responseCard()));
+    return;
+  }
   mount(host, dl, h('div', { style: { display: 'grid', gap: '14px' } }, requestBar, columns, hist));
 }
 
@@ -302,10 +378,16 @@ async function run() {
     method: ui.method, path: ui.path, body: ui.body,
     status: res.status || 0, ok: !!res.ok, tookMs: res.tookMs || 0, fav: 0,
   };
-  await idb.putQuery(entry);
+  // Show the response first. Saving it to the history is bookkeeping, and it used to be
+  // awaited before the result was drawn — so a browser whose IndexedDB never answers
+  // (blocked site data, some private modes) left the console reading "nothing run yet"
+  // for a request that had already come back 200. It does not reject, it simply never
+  // settles, which is why no catch helped.
+  mount($('#c-response'), responseCard());
+
   history = [entry, ...history].slice(0, 500);
   drawHistory();
-  mount($('#c-response'), responseCard());
+  remember(() => idb.putQuery(entry));
 
   // The response panel sits below the fold on a small window, and a request that failed
   // looks the same as one that has not run yet until you scroll down to it. The toast
@@ -333,9 +415,64 @@ async function saveFav() {
     cluster: c ? c.name : '', clusterId: c ? c.id : '', method: ui.method, path: ui.path, body: ui.body,
     status: 0, ok: true, tookMs: 0, fav: 1,
   };
-  await idb.putQuery(entry);
+  remember(() => idb.putQuery(entry));
   history = [entry, ...history];
   drawHistory();
+}
+
+/** What is on screen now: the edited copy if there is one, else what came back. */
+function currentText(bodyText) {
+  return ui.edit && ui.edited != null ? ui.edited : bodyText;
+}
+
+/** Search within the response. */
+function findBox(bodyText) {
+  const hits = ui.find ? countHits(bodyText, ui.find) : 0;
+  const input = h('input#c-find', {
+    type: 'search', value: ui.find, placeholder: 'find in results',
+    style: { width: '150px', fontSize: '11.5px' },
+    oninput: (e) => { ui.find = e.target.value; mount($('#c-response'), responseCard());
+                      const el = $('#c-find'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } },
+  });
+  return h('span', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center' } },
+    input,
+    ui.find
+      ? h('span.muted', { style: { fontSize: '11px', minWidth: '52px' } },
+          hits ? `${hits} hit${hits === 1 ? '' : 's'}` : 'no hits')
+      : null);
+}
+
+function countHits(text, needle) {
+  if (!needle) return 0;
+  let n = 0, i = 0;
+  const hay = text.toLowerCase(), q = needle.toLowerCase();
+  for (;;) {
+    const at = hay.indexOf(q, i);
+    if (at < 0) return n;
+    n += 1; i = at + q.length;
+  }
+}
+
+/**
+ * The response with every match marked.
+ *
+ * Built as nodes rather than by splicing HTML: a response body is cluster data, and
+ * putting it through innerHTML would make a document containing "&lt;img onerror&gt;"
+ * into markup this page executes. Searching a response must not be a way to run
+ * something.
+ */
+function highlightFind(text) {
+  if (!ui.find) return text;
+  const frag = document.createDocumentFragment();
+  const hay = text.toLowerCase(), q = ui.find.toLowerCase();
+  let i = 0;
+  for (;;) {
+    const at = hay.indexOf(q, i);
+    if (at < 0) { frag.append(text.slice(i)); return frag; }
+    if (at > i) frag.append(text.slice(i, at));
+    frag.append(h('mark', text.slice(at, at + q.length)));
+    i = at + q.length;
+  }
 }
 
 function responseCard() {
@@ -366,13 +503,35 @@ function responseCard() {
         /^tls|tunnel_error/.test(r.kind || '')
           ? h('button.btn.sm.primary', { style: { marginTop: '8px' }, onclick: () => navigateTo('overview') }, 'Fix on the Clusters page')
           : null)
-    : ui.raw ? h('pre.json', { style: { margin: 0 } }, bodyText) : jsonView(bodyText);
+    : ui.edit
+      // Editable after the fact. It is a scratch copy — the response that came back is
+      // still in the history — so this is for pulling a document out, changing two
+      // fields and sending it somewhere, without a round trip through an editor.
+      ? h('textarea#c-edit', {
+          spellcheck: false,
+          style: { width: '100%', minHeight: '320px', fontFamily: 'var(--mono)', fontSize: '12px',
+                   resize: 'vertical', boxSizing: 'border-box' },
+          oninput: (e) => { ui.edited = e.target.value; },
+        }, ui.edited != null ? ui.edited : bodyText)
+    : ui.raw ? h('pre.json', { style: { margin: 0 } }, highlightFind(bodyText))
+    : ui.find ? h('pre.json', { style: { margin: 0 } }, highlightFind(bodyText))
+    : jsonView(bodyText);
 
   return h('section.card', { style: { flex: '1', display: 'flex', flexDirection: 'column', minWidth: 0 } },
     head(meta, [
+      findBox(bodyText),
+      h('button.btn.sm', {
+        title: ui.edit ? 'Back to the response as it came back' : 'Edit this copy of the response',
+        onclick: () => { ui.edit = !ui.edit; if (!ui.edit) ui.edited = null; mount($('#c-response'), responseCard()); },
+      }, ui.edit ? 'Done' : 'Edit'),
       h('button.btn.sm', { onclick: () => { ui.raw = !ui.raw; mount($('#c-response'), responseCard()); } }, ui.raw ? 'Highlighted' : 'Raw'),
-      h('button.btn.sm', { onclick: () => navigator.clipboard.writeText(bodyText) }, 'Copy'),
-      h('button.btn.sm', { onclick: () => download(`response-${Date.now()}.json`, bodyText, 'application/json') }, 'Save…')]),
+      h('button.btn.sm', { onclick: () => navigator.clipboard.writeText(currentText(bodyText)) }, 'Copy'),
+      h('button.btn.sm', { onclick: () => download(`response-${Date.now()}.json`, currentText(bodyText), 'application/json') }, 'Save…'),
+      h('button.btn.sm.ghost', {
+        id: 'c-full',
+        title: ui.full ? 'Leave full screen (Esc)' : 'Fill the window with the response',
+        onclick: () => { ui.full = !ui.full; draw(); },
+      }, ui.full ? '\u2715 Close' : '\u26F6 Full screen')]),
     h('div.body', { style: { padding: '10px', flex: '1', minHeight: '340px', maxHeight: '64vh', overflow: 'auto' } },
       h('div.mono.muted.trunc', { style: { fontSize: '10.5px', marginBottom: '6px' }, title: r.url }, `${ui.method} ${r.url || ''}`),
       body));
@@ -395,7 +554,7 @@ function historyCard() {
     ...activatable((e) => { if (e.target.closest && e.target.closest('button')) return; load(x); }),
   },
     h('td', h('button.btn.sm.ghost', { title: x.fav ? 'Unstar' : 'Star', style: { padding: '0 4px', color: x.fav ? 'var(--warning)' : 'var(--text-muted)' },
-      onclick: async () => { x.fav = x.fav ? 0 : 1; await idb.putQuery(x); drawHistory(); } }, x.fav ? '★' : '☆')),
+      onclick: async () => { x.fav = x.fav ? 0 : 1; remember(() => idb.putQuery(x)); drawHistory(); } }, x.fav ? '★' : '☆')),
     h('td.muted', { style: { fontSize: '11px', whiteSpace: 'nowrap' }, title: dt(x.ts) }, ago(x.ts)),
     h('td', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } }, x.cluster || '?'),
     h('td.mono', { style: { fontSize: '11px', fontWeight: 700, color: 'var(--accent)' } }, x.method),
@@ -406,7 +565,7 @@ function historyCard() {
     h('td', h('div', { style: { display: 'flex', gap: '4px', justifyContent: 'flex-end' } },
       h('button.btn.sm', { onclick: () => load(x) }, 'Load'),
       h('button.btn.sm', { title: 'Load and run', onclick: async () => { load(x); await run(); } }, 'Run'),
-      h('button.btn.sm.ghost', { title: 'Delete', onclick: async () => { await idb.delQuery(x.id); history = history.filter((y) => y.id !== x.id); drawHistory(); } }, '×')))));
+      h('button.btn.sm.ghost', { title: 'Delete', onclick: async () => { remember(() => idb.delQuery(x.id)); history = history.filter((y) => y.id !== x.id); drawHistory(); } }, '×')))));
 
   return card('History', `${history.length} saved · ${history.filter((x) => x.fav).length} favourites`,
     h('div', { style: { display: 'grid', gap: '8px' } },
@@ -427,8 +586,8 @@ function historyCard() {
           'Everything except starred favourites is removed from this machine. Nothing on any ' +
           'cluster is affected.', { yes: 'clear it', danger: true }))) return;
         const favs = history.filter((x) => x.fav);
-        await idb.clearQueries();
-        for (const f of favs) await idb.putQuery(f);
+        remember(() => idb.clearQueries());
+        for (const f of favs) remember(() => idb.putQuery(f));
         history = favs; drawHistory();
       } }, 'Clear')]);
 }
