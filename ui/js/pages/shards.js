@@ -12,7 +12,7 @@ import { h, mount } from '../lib/dom.js';
 import { bytes, num, pct, compact } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices,
          diskAccounting, setDangling, danglingFor } from '../core/state.js';
-import { card, statTile, table, empty, pill, connectionBanner } from './common.js';
+import { card, table, empty, pill, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
@@ -119,16 +119,13 @@ function block(c) {
   const unassigned = all.filter((s) => s.state === 'UNASSIGNED');
   const nodes = d.nodes || [];
 
+  // No stat tiles. They said Nodes / Shards / Unassigned / Moving, which is precisely
+  // what the gauge and its legend say one card below — the same duplication that cost
+  // the honeycomb its place. The figures that were only on the tiles moved into the
+  // summary card instead.
   return h('div', { style: { display: 'grid', gap: '10px' } },
-    h('div.grid.c4',
-      statTile('Nodes', num(nodes.length), d.master ? `master ${d.master}` : 'no master elected'),
-      statTile('Shards', num(all.length), c.name),
-      statTile('Unassigned', num(unassigned.length),
-        unassigned.length ? 'not placed on any node' : 'every shard is placed'),
-      statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
-
+    glanceCard(c, all, d, { nodes, moving, unassigned }),
     nodesAndLoadCard(c, d),
-    shardsAndStorageCard(c, all, d),
     shardsCard(c, d, all, raw, started));
 }
 
@@ -322,34 +319,56 @@ function shardMixBody(c, all, d) {
 
   return {
     sub,
-    node: h('div', { style: { display: 'grid', gap: '8px', justifyItems: 'center' } },
-      splitGauge(segments, { total, centreLabel: 'shards total', format: (v) => num(v) }),
-      unassigned
-        ? h('div.muted', { style: { fontSize: '11.5px', textAlign: 'center', maxWidth: '30ch' } },
-            'An unassigned shard holds no data that can be read. The table below says why.')
-        : null),
+    node: h('div', { style: { display: 'grid', gap: '9px', justifyItems: 'center' } },
+      splitGauge(segments, {
+        total, size: 140, centreLabel: 'shards total', format: (v) => num(v),
+        // Stacked: three items wrapping two-then-one in a narrow column reads as a
+        // grouping that is not there.
+        legendColumn: true,
+      })),
   };
 }
 
 /**
- * Where the shards are, and where the disk went — one card, two halves.
+ * What this cluster is, in one band: the shard split on the left, the figures on the
+ * right.
  *
- * These were two cards side by side, and the shapes did not match: the gauge half is
- * tall and fixed, the storage half is four figures and short, so whichever column was
- * shorter left a block of empty page under it. Two cards cannot avoid that; one card
- * with a divider down the middle cannot produce it.
+ * This replaced two cards side by side, then one card with two columns, and both had the
+ * same fault — the gauge half is tall and the figures half was short, so whichever ran
+ * out first left a slab of empty page. The fix was not a better column ratio, it was
+ * putting enough in the right half to match: everything the stat tiles used to carry is
+ * there now, in a grid that fills the height rather than a row that stops after four.
  *
- * The gauge column is sized to the gauge. Anything storage accounting needs to say at
- * length — a dangling index, indices past retention — goes full width underneath both,
- * because those are paragraphs and paragraphs do not belong in a 300px column.
+ * Anything that needs a paragraph — a dangling index, indices past retention — runs full
+ * width underneath both, because a paragraph in a 240px column is a column of syllables.
  */
-function shardsAndStorageCard(c, all, d) {
+function glanceCard(c, all, d, counts) {
   const mix = shardMixBody(c, all, d);
   const acct = accountingBody(c, d);
-  return card('Shards & storage', `${mix.sub} · ${acct.sub}`,
-    h('div', { style: { display: 'grid', gap: '14px', gridTemplateColumns: 'minmax(220px, 270px) 1fr', alignItems: 'start' } },
-      mix.node,
-      h('div', { style: { borderLeft: '1px solid var(--border)', paddingLeft: '16px' } }, acct.node)));
+  const indices = state.indices.get(c.id) || [];
+
+  const figures = h('div', {
+    style: { display: 'grid', gap: '14px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' },
+  },
+    figure('Nodes', num(counts.nodes.length), d.master ? `master ${d.master}` : 'no master elected'),
+    figure('Indices', num(indices.length), `${num(all.length)} shards in total`),
+    ...acct.figures);
+
+  return card('Cluster at a glance', `${c.name} · ${mix.sub} · ${acct.sub}`,
+    h('div', { style: { display: 'grid', gap: '12px' } },
+      h('div', { style: { display: 'grid', gap: '18px', gridTemplateColumns: 'minmax(190px, 220px) 1fr', alignItems: 'start' } },
+        mix.node,
+        h('div', { style: { borderLeft: '1px solid var(--border)', paddingLeft: '18px' } }, figures)),
+      unassigned(all)
+        ? h('div.muted', { style: { fontSize: '11.5px' } },
+            'An unassigned shard holds no data that can be read. The table below says why each one is unplaced.')
+        : null,
+      ...acct.notes));
+}
+
+/** How many shards are not placed — asked by the glance card for its footnote. */
+function unassigned(all) {
+  return all.filter((x) => String(x.state || '').toUpperCase() === 'UNASSIGNED').length;
 }
 
 /**
@@ -420,16 +439,21 @@ function accountingBody(c, d) {
   // The two figures are always worth showing — "how much do the indices hold against how
   // much is on disk" is asked whether or not they disagree. The explanation below only
   // appears when they do.
-  const figures = h('div', { style: { display: 'flex', gap: '20px', flexWrap: 'wrap' } },
+  // Handed back one by one rather than pre-wrapped, so the caller can lay them out with
+  // its own figures in a single grid. A pre-built row of four could only ever be a row
+  // of four, which is what left the right half of the card short.
+  const figures = [
     figure('Indices hold', acct.known ? bytes(acct.accounted) : '–',
       acct.known ? `${num((state.indices.get(c.id) || []).length)} indices` : 'index list not read yet'),
     figure('Elasticsearch holds', d.disk ? bytes(d.disk.indicesBytes || 0) : '–', 'on the data path'),
     figure('Disk used', d.disk ? bytes(d.disk.used || 0) : '–',
       d.disk && isFinite(d.disk.percent) ? `${d.disk.percent.toFixed(1)}% of ${bytes(d.disk.total)}` : ''),
     figure('Unaccounted', acct.known ? bytes(Math.max(0, acct.gap)) : 'unknown',
-      acct.known ? (acct.material ? 'worth a look' : 'within rounding') : 'needs the index list'));
+      acct.known ? (acct.material ? 'worth a look' : 'within rounding') : 'needs the index list'),
+  ];
 
-  const body = [figures];
+  // Everything below is a paragraph or a table, and runs full width under both columns.
+  const body = [];
 
   if (acct.material) {
     body.push(h('div.banner.warn', { style: { margin: 0 } },
@@ -470,7 +494,7 @@ function accountingBody(c, d) {
   const sub = acct.material ? `${bytes(acct.gap)} unexplained`
     : stale.list.length ? `${num(stale.list.length)} indices past retention`
     : 'indices and disk agree';
-  return { sub, node: h('div', { style: { display: 'grid', gap: '10px' } }, ...body) };
+  return { sub, figures, notes: body };
 }
 
 function figure(label, value, sub) {

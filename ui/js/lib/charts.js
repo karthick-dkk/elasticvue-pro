@@ -283,13 +283,18 @@ export function splitGauge(segments, opts = {}) {
     at += span;
   }
 
+  // In a narrow column a wrapping legend breaks two-then-one, which reads as a
+  // grouping that is not there. `legendColumn` stacks it instead, one per line.
+  const legendStyle = opts.legendColumn
+    ? { display: 'grid', gap: '3px', justifyItems: 'start' }
+    : { display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' };
   return h('div', { style: { display: 'grid', justifyItems: 'center', gap: '2px' } },
     h('div', { style: { position: 'relative', lineHeight: 0 } }, s,
       h('div', { style: { position: 'absolute', inset: 0, display: 'grid', placeContent: 'center',
                           textAlign: 'center', lineHeight: 1.15 } },
         h('div', { style: { fontSize: '22px', fontWeight: 680 } }, fmt(total)),
         h('div.muted', { style: { fontSize: '10.5px' } }, opts.centreLabel || 'total'))),
-    h('div', { style: { display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' } },
+    h('div', { style: legendStyle },
       ...parts.map((part) => h('div', {
         style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px' },
         title: `${part.label}: ${fmt(part.value)}`,

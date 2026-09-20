@@ -193,7 +193,7 @@ await go('shards');
   ok(/master/i.test(doc.body.textContent), 'shards: the master node is not marked');
 
   // The honeycomb is gone: several hundred hexagons answered "how many are wrong" at a
-  // glance, and the split gauge in Shards & storage answers the same question in a tenth
+  // glance, and the split gauge in Cluster at a glance answers the same question in a tenth
   // of the height. Two pictures of one fact is one too many.
   ok(!titles.includes('Shard states'), `shards: the honeycomb card is still here — ${titles.join(' | ')}`);
   ok(doc.querySelectorAll('polygon').length === 0, 'shards: honeycomb cells are still being drawn');
@@ -201,27 +201,39 @@ await go('shards');
   // Placement and storage share one card, because their shapes do not match: the gauge
   // half is tall and fixed, the storage half is four short figures, and side by side as
   // separate cards whichever was shorter left a block of empty page under it.
-  ok(titles.includes('Shards & storage'), `shards: placement and storage are not one card — ${titles.join(' | ')}`);
+  ok(titles.includes('Cluster at a glance'), `shards: no single glance card — ${titles.join(' | ')}`);
   ok(!titles.includes('Shard placement') && !titles.includes('Storage accounting'),
     `shards: the old separate cards survive — ${titles.join(' | ')}`);
+  // The stat tiles said Nodes / Shards / Unassigned / Moving, which the gauge and its
+  // legend say in the same card. Two pictures of one fact; the tiles were the redundant
+  // half, and what only they carried moved into the glance card's figures.
+  ok(!doc.querySelector('.stat'), 'shards: the stat tiles are still here, duplicating the gauge');
+  {
+    const glance = [...doc.querySelectorAll('section.card')]
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
+    for (const label of ['Nodes', 'Indices', 'Indices hold', 'Disk used']) {
+      ok(glance && glance.textContent.includes(label),
+        `glance card: "${label}" is missing — the tiles' figures must survive their removal`);
+    }
+  }
   {
     const merged = [...doc.querySelectorAll('section.card')]
-      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shards & storage');
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
     ok(merged && merged.querySelectorAll('svg').length === 1,
-      'shards & storage: expected exactly one chart — the split gauge');
+      'glance card: expected exactly one chart — the split gauge');
     ok(merged && /Indices hold/i.test(merged.textContent),
-      'shards & storage: the storage figures are missing from the merged card');
+      'glance card: the storage figures are missing from the merged card');
     const marks = merged ? [...merged.querySelectorAll('div[title]')].map((d) => d.getAttribute('title')) : [];
     for (const want of ['assigned', 'moving', 'unassigned']) {
-      ok(marks.some((t) => t.startsWith(`${want}:`)), `shards & storage: "${want}" is not marked — ${marks.join(' | ')}`);
+      ok(marks.some((t) => t.startsWith(`${want}:`)), `glance card: "${want}" is not marked — ${marks.join(' | ')}`);
     }
   }
 
   // Storage accounting is shown whether or not the figures disagree — the two numbers are
   // asked for either way.
   const acct = [...doc.querySelectorAll('section.card')]
-    .find((sec) => /Shards & storage/.test((sec.querySelector('header h2') || {}).textContent || ''));
-  ok(!!acct, `shards: no shards & storage card, saw ${titles.join(' | ')}`);
+    .find((sec) => /Cluster at a glance/.test((sec.querySelector('header h2') || {}).textContent || ''));
+  ok(!!acct, `shards: no glance card, saw ${titles.join(' | ')}`);
   for (const label of ['Indices hold', 'Elasticsearch holds', 'Disk used', 'Unaccounted']) {
     ok(acct && acct.textContent.includes(label), `shards: accounting is missing "${label}"`);
   }
@@ -496,8 +508,8 @@ await go('shards');
   // And it holds both halves — the node table and what the cluster is busy doing.
   ok(merged && /Uptime/.test(merged.textContent), 'shards: the merged pane lost the node table');
 
-  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shards & storage');
-  ok(!!mix, `shards: no shards & storage card, saw ${titles.join(' | ')}`);
+  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
+  ok(!!mix, `shards: no glance card, saw ${titles.join(' | ')}`);
   if (mix) {
     // One arc split, not three gauges: a single svg carrying the track plus a segment
     // per non-zero part.
