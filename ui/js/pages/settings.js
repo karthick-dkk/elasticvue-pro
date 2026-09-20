@@ -579,7 +579,7 @@ function credentialsCard() {
 
 function trustSection() {
   return card('Jump hosts & trust', 'SSH tunnels, pinned host keys, pinned certificates',
-    h('div#trust-card', h('div.muted', 'loading…')));
+    h('div#trust-card', h('div.muted', 'Loading…')));
 }
 
 function clustersCard() {
@@ -625,7 +625,7 @@ function diagnosticsCard() {
     h('div', { style: { display: 'grid', gap: '10px' } },
       table([], [
         kvRow('Write protection', isReadOnly() ? 'read-only — GET/HEAD + search POSTs only' : 'DISABLED — writes permitted (readOnly: false)'),
-        kvRow('Enforced by the core', 'checking…'),
+        kvRow('Enforced by the core', 'Loading…'),
         kvRow('Routes', `${clusters().filter((c) => c.via).length} via jump host · ${clusters().filter((c) => !c.via).length} direct`),
         kvRow('App version', h('span#core-version', '…')),
         kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),

@@ -514,7 +514,7 @@ function coverageCard() {
   const yes = rows.filter(({ d }) => d.pre && d.pre.ok && !d.pre.unknown).length;
 
   const stateCell = ({ d }) => {
-    if (d.state === 'waiting') return h('span.muted', { style: { fontSize: '11.5px' } }, 'waiting…');
+    if (d.state === 'waiting') return h('span.muted', { style: { fontSize: '11.5px' } }, 'Loading…');
     if (d.state === 'skipped' || d.state === 'not-asked') return pill('never asked', 'grey');
     if (d.state === 'error') return pill('could not ask', 'orange');
     if (!d.pre) return h('span.muted', '—');
@@ -546,7 +546,7 @@ function coverageCard() {
   };
 
   const fetchCell = ({ d }) => {
-    if (d.state === 'fetching') return h('span.muted', { style: { fontSize: '11.5px' } }, 'fetching…');
+    if (d.state === 'fetching') return h('span.muted', { style: { fontSize: '11.5px' } }, 'Loading…');
     if (d.state === 'failed') return h('span', { title: d.fetchError }, pill('query failed', 'red'));
     if (d.records) return h('span.num', num(d.records.length));
     return h('span.muted', '—');
@@ -663,7 +663,7 @@ function watchCard() {
   const s = w.snap;
 
   const head = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-    s ? pill(STATUS[s.status].label, STATUS[s.status].cls) : h('span.muted', 'asking…'),
+    s ? pill(STATUS[s.status].label, STATUS[s.status].cls) : h('span.muted', 'Loading…'),
     s && s.latest !== null
       ? h('b', { style: { fontSize: '15px' } }, fmtDelay(s.latest))
       : h('span.muted', 'no measurable delay'),
@@ -672,7 +672,7 @@ function watchCard() {
       : null,
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' } },
       h('span.muted', { style: { fontSize: '11px' } },
-        w.running ? 'asking…' : w.at ? `updated ${ago(w.at)}` : ''),
+        w.running ? 'Loading…' : w.at ? `updated ${ago(w.at)}` : ''),
       h('button.btn.sm', { id: 'watch-live', onclick: toggleWatchLive },
         w.live ? `⏸ Pause (every ${w.seconds}s)` : '▶ Resume'),
       h('button.btn.sm', { id: 'watch-now', disabled: w.running, onclick: pollWatch }, '↻ Now'),
@@ -715,7 +715,7 @@ function watchCard() {
         : null,
       figures,
       table(['Event time', 'Arrival', { label: 'Delay', num: true }, 'Status', 'Index'], rows,
-        { emptyText: w.running ? 'Asking…' : 'No document matched this device in the index pattern.' })));
+        { emptyText: w.running ? 'Loading…' : 'No document matched this device in the index pattern.' })));
 }
 
 /** Every device across the fleet, worst first, with why and what to do about it. */

@@ -85,7 +85,7 @@ function clusterUsersCard() {
       h('span.mono.muted', { style: { fontSize: '10.5px' } }, c.url),
       h('div', { style: { marginLeft: 'auto' } },
         h('button.btn.sm.ghost', { onclick: () => loadClusterUsers(c.id) },
-          cu.loading.has(c.id) ? 'Reading…' : '↻')));
+          cu.loading.has(c.id) ? 'Loading…' : '↻')));
 
     if (!got) return h('div', head, h('div.muted', { style: { fontSize: '11.5px' } }, 'not read yet'));
     if (got.error) {
