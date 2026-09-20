@@ -90,6 +90,40 @@
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
 }
 
+/* Dark blue — for long sessions.
+   Two things make a dark theme tiring rather than restful, and this avoids both: a pure
+   black ground, which maximises the luminance step to any lit pixel, and pure white
+   text, which haloes against it. So the ground is a deep navy and the brightest text
+   stops short of white. The accent is desaturated for the same reason — a saturated blue
+   on navy vibrates at the edges.
+
+   Note on blue light: this is a blue-TINTED theme, which is not the same as a
+   blue-REDUCED one. If the goal is less blue emission after dark, a warm/amber theme is
+   the thing that does it, and the OS night-shift setting does it better than any palette
+   here can. What this buys is lower overall luminance and softer contrast. */
+:root[data-theme="dark-blue"] {
+  color-scheme: dark;
+  --surface-0: #0c1322;
+  --surface-1: #111a2c;
+  --surface-2: #18243c;
+  --surface-3: #212f4c;
+  --border:    #25334e;
+  --border-strong: #3c4f74;
+  --text-primary:   #dde5f2;
+  --text-secondary: #aab8cf;
+  --text-muted:     #8090a8;
+  --text-invert:    #0a111f;
+  --accent:      #5c9ef6;
+  --accent-soft: #14294a;
+  --series-1: #5c9ef6; --series-2: #e3794a; --series-3: #35b58c; --series-4: #d9a43c;
+  --series-5: #dd7aa6; --series-6: #46b04a; --series-7: #9b8ef0; --series-8: #ea7070;
+  --seq-100: #17325c; --seq-250: #24518f; --seq-400: #3d7fd4; --seq-550: #79aaea; --seq-700: #c6ddf8;
+  --good-bg: #10281f; --warning-bg: #322a12; --critical-bg: #331a20; --serious-bg: #33241a;
+  --good-ink: #52c78a; --warning-ink: #e8bf5f; --serious-ink: #ef9a72; --critical-ink: #f07b83;
+  --grid: #1d2a42;
+  --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.4);
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {

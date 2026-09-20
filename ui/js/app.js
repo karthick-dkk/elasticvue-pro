@@ -103,9 +103,28 @@ function applyTheme(t) {
   else document.documentElement.setAttribute('data-theme', t);
   idb.setKV('theme', t);
 }
+/**
+ * The themes, in the order the button walks through them.
+ *
+ * One list, so the button's label, its cycle and the stylesheet cannot disagree about
+ * what exists — adding a fourth theme used to mean editing three places and finding the
+ * third one later.
+ */
+const THEMES = [
+  { id: 'system',    label: '\u25D2 System' },
+  { id: 'light',     label: '\u25CB Light' },
+  { id: 'dark',      label: '\u25D1 Dark' },
+  { id: 'dark-blue', label: '\u25D5 Dark blue' },
+];
+
+function themeLabel(id) {
+  return (THEMES.find((t) => t.id === id) || THEMES[0]).label;
+}
+
 function cycleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') || 'system';
-  applyTheme(cur === 'system' ? 'light' : cur === 'light' ? 'dark' : 'system');
+  const i = THEMES.findIndex((t) => t.id === cur);
+  applyTheme(THEMES[(i + 1) % THEMES.length].id);
   renderTopbar();
 }
 
@@ -342,8 +361,8 @@ function renderTopbar() {
           onclick: () => refreshAll({ force: true, selected: true }),
           title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
         }, '↻ Refresh'),
-    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme}` },
-      theme === 'dark' ? '\u25D1 Dark' : theme === 'light' ? '\u25CB Light' : '\u25D2 System'),
+    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme} — click for the next one` },
+      themeLabel(theme)),
     // Only where accounts exist. The portable build has nobody to sign out.
     me
       ? h('button.btn.sm.ghost', {
