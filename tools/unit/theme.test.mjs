@@ -142,3 +142,26 @@ test('the accent clears AA as text on its own card surface', () => {
     assert.ok(r >= 4.5, `${sel.trim()} renders links at ${r.toFixed(2)}:1 on a card, under AA`);
   }
 });
+
+/* ------------------------- the app does not advertise ghosts ------------------------- */
+
+/**
+ * A shortcut the app lists but does not implement.
+ *
+ * The number keys that jumped between pages were removed on purpose, and the Config
+ * page went on offering them. Documentation drifting from behaviour is invisible to
+ * every other check here, because both halves are individually fine.
+ */
+test('the keyboard hints name only shortcuts that exist', () => {
+  const appJs = fs.readFileSync(path.join(ROOT, 'ui/js/app.js'), 'utf8');
+  const settings = fs.readFileSync(path.join(ROOT, 'ui/js/pages/settings.js'), 'utf8');
+  const hint = settings.slice(settings.indexOf("h('b', 'Keyboard: ')"));
+  const line = hint.slice(0, hint.indexOf('),\n'));
+
+  const claimsDigits = /switch pages/.test(line);
+  const handlesDigits = /e\.key\s*>=\s*'1'|Number\(e\.key\)|\/\^\[1-9\]\$\//.test(appJs);
+  assert.equal(claimsDigits, handlesDigits,
+    claimsDigits
+      ? 'the Config page offers number-key page switching, which app.js does not implement'
+      : 'app.js implements number-key switching that the Config page no longer mentions');
+});

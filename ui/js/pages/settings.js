@@ -625,9 +625,13 @@ function diagnosticsCard() {
         kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),
         kvRow('Auto-refresh', state.autoRefresh ? `every ${d.refreshIntervalSec}s` : 'paused'),
       ]),
+      // Advertise what exists. The number keys that used to jump between pages were
+      // removed — a stray digit moving the page out from under somebody was worse than
+      // the shortcut was worth — and this line kept offering them for eleven pages that
+      // never had them.
       h('div', { style: { fontSize: '12px' } },
-        h('b', 'Keyboard: '), h('code.inline', '1'), '–', h('code.inline', '7'), ' switch pages · ',
-        h('code.inline', 'r'), ' refresh · ', h('code.inline', 'Ctrl/⌘+Enter'), ' run request in the console')),
+        h('b', 'Keyboard: '), h('code.inline', 'r'), ' refresh · ',
+        h('code.inline', 'Ctrl/⌘+Enter'), ' run the request in the console')),
     [
       h('button.btn.sm', { onclick: () => saveTextAs('clusters.example.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
       isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Force refresh all'),
