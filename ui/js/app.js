@@ -115,6 +115,7 @@ const THEMES = [
   { id: 'light',     label: '\u25CB Light' },
   { id: 'dark',      label: '\u25D1 Dark' },
   { id: 'dark-blue', label: '\u25D5 Dark blue' },
+  { id: 'warm',      label: '\u25D0 Warm' },
 ];
 
 function themeLabel(id) {
@@ -361,7 +362,7 @@ function renderTopbar() {
           onclick: () => refreshAll({ force: true, selected: true }),
           title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
         }, '↻ Refresh'),
-    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme} — click for the next one` },
+    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme} \u2014 click for the next one${theme === 'warm' ? ' (warm emits the least blue light)' : ''}` },
       themeLabel(theme)),
     // Only where accounts exist. The portable build has nobody to sign out.
     me

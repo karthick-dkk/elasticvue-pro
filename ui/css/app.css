@@ -16,8 +16,13 @@
   --text-muted:     #7a7973;
   --text-invert:    #ffffff;
 
-  --accent:      #2a78d6;
+  /* Darkened from #2a78d6, which read 4.30:1 as link text on a card and 4.42:1
+     behind a white button label — both under AA. Same blue, one step down. */
+  --accent:      #1d63b4;
   --accent-soft: #e8f0fd;
+  /* What a label sitting ON the accent is coloured. Themed, because whether
+     white or near-black wins depends entirely on how light the accent is. */
+  --on-accent:   #ffffff;
 
   /* categorical (light steps) */
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
@@ -58,6 +63,7 @@
     --text-invert:    #0b0b0b;
     --accent:      #3987e5;
     --accent-soft: #16283f;
+  --on-accent: #0b0b0b;
     --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
     --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
@@ -81,6 +87,7 @@
   --text-invert:    #0b0b0b;
   --accent:      #3987e5;
   --accent-soft: #16283f;
+  --on-accent: #0b0b0b;
   --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
   --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
@@ -115,6 +122,7 @@
   --text-invert:    #0a111f;
   --accent:      #5c9ef6;
   --accent-soft: #14294a;
+  --on-accent: #0a111f;
   --series-1: #5c9ef6; --series-2: #e3794a; --series-3: #35b58c; --series-4: #d9a43c;
   --series-5: #dd7aa6; --series-6: #46b04a; --series-7: #9b8ef0; --series-8: #ea7070;
   --seq-100: #17325c; --seq-250: #24518f; --seq-400: #3d7fd4; --seq-550: #79aaea; --seq-700: #c6ddf8;
@@ -122,6 +130,41 @@
   --good-ink: #52c78a; --warning-ink: #e8bf5f; --serious-ink: #ef9a72; --critical-ink: #f07b83;
   --grid: #1d2a42;
   --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.4);
+}
+
+/* Warm — the low-blue one.
+   Dark blue is a blue-TINTED theme; this is the blue-REDUCED one. Every surface and
+   every text colour is pulled toward amber, and the accent is amber rather than blue,
+   because a blue accent is the single largest lit area on most screens here and would
+   undo the point. Summed across the surfaces and body text, this emits roughly a third
+   less blue than the dark theme and forty percent less than dark blue.
+
+   It is still not a substitute for the OS night-shift setting, which filters the whole
+   display including images and other apps. What a palette can do is not fight it. */
+:root[data-theme="warm"] {
+  color-scheme: dark;
+  --surface-0: #16120c;
+  --surface-1: #1e1811;
+  --surface-2: #282017;
+  --surface-3: #342a1e;
+  --border:    #372d20;
+  --border-strong: #54452f;
+  --text-primary:   #f2e6d2;
+  --text-secondary: #cbb99c;
+  --text-muted:     #9d8c73;
+  --text-invert:    #16120c;
+  --accent:      #e3a44e;
+  --accent-soft: #3a2a12;
+  --on-accent:   #16120c;
+  /* Categorical steps, kept apart by hue without reaching for blue. */
+  --series-1: #e3a44e; --series-2: #e07a4a; --series-3: #8fbf6a; --series-4: #d9b64a;
+  --series-5: #dd8f8f; --series-6: #7fae5a; --series-7: #c08fa8; --series-8: #ea8570;
+  /* The sequential ramp is amber here rather than blue — it is a ramp, not a brand. */
+  --seq-100: #3d2e14; --seq-250: #6b5220; --seq-400: #a67c2e; --seq-550: #d1a552; --seq-700: #f0d49a;
+  --good-bg: #14240f; --warning-bg: #2e2410; --critical-bg: #2e1813; --serious-bg: #2e2014;
+  --good-ink: #6fbf73; --warning-ink: #e8c168; --serious-ink: #eda179; --critical-ink: #f08a7a;
+  --grid: #2b2318;
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.42);
 }
 
 * { box-sizing: border-box; }
@@ -269,7 +312,7 @@ table.tbl tbody tr:focus-visible,
   outline-offset: 1px;
 }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.danger { color: var(--critical); border-color: var(--critical); background: transparent; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }

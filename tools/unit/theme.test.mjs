@@ -30,7 +30,8 @@ const UNTHEMED = ['--radius', '--radius-sm', '--mono', '--sans',
                   '--good', '--warning', '--serious', '--critical'];
 
 const root = tokensIn(':root {');
-const DARK_THEMES = [':root[data-theme="dark"] {', ':root[data-theme="dark-blue"] {'];
+const DARK_THEMES = [':root[data-theme="dark"] {', ':root[data-theme="dark-blue"] {',
+                     ':root[data-theme="warm"] {'];
 
 test('the light palette defines the untheme-able tokens too', () => {
   for (const t of UNTHEMED) assert.ok(root.has(t), `:root is missing ${t}`);
@@ -68,5 +69,76 @@ test('every theme the button offers has a stylesheet block', () => {
     if (id === 'light') { assert.ok(css.includes(':root {'), 'light lives on bare :root'); continue; }
     assert.ok(css.includes(`:root[data-theme="${id}"]`),
       `the button offers "${id}" but app.css has no block for it`);
+  }
+});
+
+/* ---------------------- colour that escapes the token system ---------------------- */
+
+/**
+ * A label sitting on the accent has to be themed.
+ *
+ * `.btn.primary` hard-coded `color: #fff`, which meant the one control the eye is
+ * supposed to land on was the one colour no theme could touch. White on the accent
+ * measured 4.42:1 in light, 3.64:1 in dark and 2.74:1 on the dark-blue accent — all
+ * below AA, and invisible to a token-parity check because the value was never a token.
+ */
+test('the primary button takes its label colour from a token', () => {
+  const rule = css.slice(css.indexOf('.btn.primary {'), css.indexOf('}', css.indexOf('.btn.primary {')));
+  assert.match(rule, /color:\s*var\(--on-accent\)/,
+    '.btn.primary must not hard-code its label colour');
+  assert.ok(!/color:\s*#/.test(rule), `.btn.primary still carries a literal colour: ${rule}`);
+});
+
+/**
+ * Every theme must clear WCAG AA for a label on its own accent.
+ *
+ * Whether white or near-black wins depends entirely on how light that theme's accent is,
+ * which is exactly why it is a token and not a constant.
+ */
+test('a label on the accent clears AA in every theme', () => {
+  const lum = (hex) => {
+    const h = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const valueIn = (sel, token) => {
+    const i = css.indexOf(sel);
+    const body = css.slice(i, css.indexOf('}', i));
+    const m = body.match(new RegExp(`${token}\\s*:\\s*(#[0-9a-fA-F]{6})`));
+    assert.ok(m, `${sel} does not define ${token}`);
+    return m[1];
+  };
+  for (const sel of [':root {', ...DARK_THEMES]) {
+    const r = ratio(valueIn(sel, '--on-accent'), valueIn(sel, '--accent'));
+    assert.ok(r >= 4.5,
+      `${sel.trim()} renders its primary button label at ${r.toFixed(2)}:1, under the 4.5:1 AA floor`);
+  }
+});
+
+/** The accent is also link text on a card, which is the other place it has to hold up. */
+test('the accent clears AA as text on its own card surface', () => {
+  const lum = (hex) => {
+    const h = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const valueIn = (sel, token) => {
+    const i = css.indexOf(sel);
+    const body = css.slice(i, css.indexOf('}', i));
+    return (body.match(new RegExp(`${token}\\s*:\\s*(#[0-9a-fA-F]{6})`)) || [])[1];
+  };
+  for (const sel of [':root {', ...DARK_THEMES]) {
+    const r = ratio(valueIn(sel, '--accent'), valueIn(sel, '--surface-1'));
+    assert.ok(r >= 4.5, `${sel.trim()} renders links at ${r.toFixed(2)}:1 on a card, under AA`);
   }
 });
