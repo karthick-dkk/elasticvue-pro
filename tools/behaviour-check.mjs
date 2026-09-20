@@ -192,60 +192,41 @@ await go('shards');
   }
   ok(/master/i.test(doc.body.textContent), 'shards: the master node is not marked');
 
-  // The honeycomb: one cell per shard, which is the point — a table of several hundred
-  // rows answers "what are the values", not "how many are wrong".
-  ok(titles.includes('Shard states'), `shards: no honeycomb card, saw ${titles.join(' | ')}`);
-  const cells = doc.querySelectorAll('polygon').length;
-  ok(cells === shardRows, `shards: ${cells} honeycomb cells for ${shardRows} shards — should be one each`);
-  // Scoped to the honeycomb's own card. The page carries other charts now, and taking
-  // the first svg on the page meant these were checking whichever one came first.
-  const combCard = [...doc.querySelectorAll('section.card')]
-    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shard states');
-  ok(!!combCard, 'shards: no shard-states card to hold the honeycomb');
-  const svgs = combCard ? [...combCard.querySelectorAll('svg')] : [];
-  ok(svgs.length >= 1 && /^0 0 \d/.test(svgs[0].getAttribute('viewBox') || ''),
-    'shards: the honeycomb has no usable viewBox');
-  // It shrinks to fit rather than running off the page.
-  const vb = (svgs[0].getAttribute('viewBox') || '0 0 0 0').split(' ');
-  const vw = Number(vb[2]), vh = Number(vb[3]);
-  ok(vh > 0 && vh <= 300, `shards: the honeycomb is ${vh} tall — it should fit above the fold`);
-  // Wide and short, not a block in the corner: it must be much wider than it is tall, and
-  // nothing may cap its rendered width or it leaves half the row empty.
-  ok(vw >= 1200, `shards: the honeycomb coordinate space is ${vw} wide — too narrow to fill the card`);
-  ok(vw / vh > 3, `shards: the honeycomb is ${vw}x${vh} — it should be wide and short`);
-  ok(!svgs[0].style.maxWidth, `shards: the honeycomb is capped at ${svgs[0].style.maxWidth}`);
-  ok(!svgs[0].style.height, 'shards: a fixed pixel height stops the honeycomb scaling to the card');
+  // The honeycomb is gone: several hundred hexagons answered "how many are wrong" at a
+  // glance, and the split gauge in Shards & storage answers the same question in a tenth
+  // of the height. Two pictures of one fact is one too many.
+  ok(!titles.includes('Shard states'), `shards: the honeycomb card is still here — ${titles.join(' | ')}`);
+  ok(doc.querySelectorAll('polygon').length === 0, 'shards: honeycomb cells are still being drawn');
 
-  // The legend carries counts, not just colours.
-  const legend = doc.querySelector('.legend');
-  ok(!!legend, 'shards: the honeycomb has no legend');
-  const legendText = legend ? legend.textContent.replace(/\s+/g, ' ') : '';
-  for (const word of ['started', 'moving', 'unassigned', 'total']) {
-    ok(legendText.includes(word), `shards: the legend is missing "${word}" — saw "${legendText}"`);
+  // Placement and storage share one card, because their shapes do not match: the gauge
+  // half is tall and fixed, the storage half is four short figures, and side by side as
+  // separate cards whichever was shorter left a block of empty page under it.
+  ok(titles.includes('Shards & storage'), `shards: placement and storage are not one card — ${titles.join(' | ')}`);
+  ok(!titles.includes('Shard placement') && !titles.includes('Storage accounting'),
+    `shards: the old separate cards survive — ${titles.join(' | ')}`);
+  {
+    const merged = [...doc.querySelectorAll('section.card')]
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shards & storage');
+    ok(merged && merged.querySelectorAll('svg').length === 1,
+      'shards & storage: expected exactly one chart — the split gauge');
+    ok(merged && /Indices hold/i.test(merged.textContent),
+      'shards & storage: the storage figures are missing from the merged card');
+    const marks = merged ? [...merged.querySelectorAll('div[title]')].map((d) => d.getAttribute('title')) : [];
+    for (const want of ['assigned', 'moving', 'unassigned']) {
+      ok(marks.some((t) => t.startsWith(`${want}:`)), `shards & storage: "${want}" is not marked — ${marks.join(' | ')}`);
+    }
   }
-  ok(/\d/.test(legendText), `shards: the legend shows no counts — "${legendText}"`);
-
-  // Clicking a cell filters the table to that index, so the two halves are one tool.
-  const shardRowsNow = () => [...doc.querySelectorAll('section.card')]
-    .filter((sec) => (sec.querySelector('header h2') || {}).textContent?.startsWith('Shards —'))
-    .reduce((n, sec) => n + sec.querySelectorAll('table.tbl tbody tr').length, 0);
-  const before = shardRowsNow();
-  doc.querySelector('polygon').dispatchEvent(new window.Event('click', { bubbles: true }));
-  await settleFor(250);
-  const after = shardRowsNow();
-  ok(after < before, `shards: clicking a honeycomb cell did not filter the table (${before} → ${after})`);
 
   // Storage accounting is shown whether or not the figures disagree — the two numbers are
   // asked for either way.
-  ok(titles.includes('Storage accounting'), `shards: no storage accounting card, saw ${titles.join(' | ')}`);
   const acct = [...doc.querySelectorAll('section.card')]
-    .find((sec) => /Storage accounting/.test((sec.querySelector('header h2') || {}).textContent || ''));
+    .find((sec) => /Shards & storage/.test((sec.querySelector('header h2') || {}).textContent || ''));
+  ok(!!acct, `shards: no shards & storage card, saw ${titles.join(' | ')}`);
   for (const label of ['Indices hold', 'Elasticsearch holds', 'Disk used', 'Unaccounted']) {
     ok(acct && acct.textContent.includes(label), `shards: accounting is missing "${label}"`);
   }
 
-  // Clear the filter the honeycomb click just applied — it landed on the unassigned
-  // shard's index, which by definition has nothing movable on it.
+  // Clear any name filter before counting movable shards.
   const idxFilter = [...doc.querySelectorAll('input[type=search]')]
     .find((x) => x.placeholder === 'filter by name');
   if (idxFilter) {
@@ -451,6 +432,51 @@ await go('settings');
     'settings: the triggers card should send new-rule authoring to Automation');
 }
 
+/* --------- nodes & shards opens on one cluster, and honours an explicit "all" --------- */
+
+{
+  const st = await load('core/state.js');
+  // Arrive from a fleet-wide page. The selection is "all" and was never asked for, so
+  // the shards page opens on a single cluster rather than a long scroll of repeats.
+  st.state.selected = 'all';
+  await go('overview');
+  await go('shards');
+  ok(st.state.selected !== 'all',
+    'shards: opened on the whole fleet without anyone asking for it');
+  const one = [...doc.querySelectorAll('section.card header h2')]
+    .filter((x) => x.textContent.startsWith('Shards —')).length;
+  ok(one === 1, `shards: ${one} shard tables on entry, expected the one selected cluster`);
+
+  // Now ask for the fleet by name. It is offered — the page is multi — and the choice
+  // sticks, including after leaving and coming back.
+  const sel = doc.getElementById('cluster-select');
+  ok(sel && [...sel.options].some((o) => o.value === 'all'),
+    'shards: "All clusters" is not offered, so the choice cannot be made');
+  if (sel) {
+    sel.value = 'all';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await settleFor(500);
+    const many = [...doc.querySelectorAll('section.card header h2')]
+      .filter((x) => x.textContent.startsWith('Shards —')).length;
+    ok(many === config.clusters.length,
+      `shards: asked for all ${config.clusters.length} clusters, drew ${many}`);
+
+    await go('overview');
+    await go('shards');
+    await settleFor(400);
+    const still = [...doc.querySelectorAll('section.card header h2')]
+      .filter((x) => x.textContent.startsWith('Shards —')).length;
+    ok(still === config.clusters.length,
+      `shards: the explicit fleet choice was forgotten on the way back (${still} tables)`);
+
+    // Leave the fleet selected: later cases drive the fleet-wide log delay view, and a
+    // single-cluster selection here would silently narrow them.
+    sel.value = 'all';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await settleFor(400);
+  }
+}
+
 /* ------------- the nodes page: one pane on top, one arc for the shards ------------- */
 
 await go('shards');
@@ -470,8 +496,8 @@ await go('shards');
   // And it holds both halves — the node table and what the cluster is busy doing.
   ok(merged && /Uptime/.test(merged.textContent), 'shards: the merged pane lost the node table');
 
-  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shard placement');
-  ok(!!mix, `shards: no shard placement gauge, saw ${titles.join(' | ')}`);
+  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Shards & storage');
+  ok(!!mix, `shards: no shards & storage card, saw ${titles.join(' | ')}`);
   if (mix) {
     // One arc split, not three gauges: a single svg carrying the track plus a segment
     // per non-zero part.

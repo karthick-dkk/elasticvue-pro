@@ -17,7 +17,7 @@ import { navigateTo } from '../core/intent.js';
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
-import { honeycomb, splitGauge, STATUS } from '../lib/charts.js';
+import { splitGauge, STATUS } from '../lib/charts.js';
 import { parseRetention } from '../core/volume.js';
 
 let host = null;
@@ -128,57 +128,8 @@ function block(c) {
       statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
 
     nodesAndLoadCard(c, d),
-    // aside, not c2: the gauge is 150px wide whatever column it is given, so an equal
-    // split left it centred in half a screen with dead space under the shorter card
-    // beside it. It gets the width it needs and storage accounting gets the rest.
-    h('div.grid.aside',
-      shardMixCard(c, all, d),
-      accountingCard(c, d)),
-    combCard(c, all),
+    shardsAndStorageCard(c, all, d),
     shardsCard(c, d, all, raw, started));
-}
-
-/**
- * Every shard as one cell, coloured by state.
- *
- * The table below is the right tool once you know which shard you want. This is for
- * before that: a few hundred rows is a scroll nobody does, and "are any of them unhappy,
- * and is it one index or all of them" is answered here in a glance. Clicking a cell
- * filters the table to that index, so the two halves work as one.
- */
-function combCard(c, all) {
-  if (all.length < 2) return null;
-  const colour = (st) => (st === 'STARTED' ? STATUS.good
-    : st === 'RELOCATING' || st === 'INITIALIZING' ? STATUS.warning
-    : st === 'UNASSIGNED' ? STATUS.critical : 'var(--surface-3)');
-
-  // Unhealthy first, so a handful of bad cells among hundreds are together and visible
-  // rather than scattered through the grid in index order.
-  const counts = all.reduce((m, s) => { m[s.state] = (m[s.state] || 0) + 1; return m; }, {});
-  const rank = (s) => (s.state === 'UNASSIGNED' ? 0 : s.state === 'STARTED' ? 2 : 1);
-  const items = [...all].sort((a, b) => rank(a) - rank(b) || a.index.localeCompare(b.index))
-    .map((s) => ({
-      key: `${s.index}/${s.shard}/${s.primary ? 'p' : 'r'}`,
-      label: `${s.index}[${s.shard}] ${s.primary ? 'primary' : 'replica'}`,
-      state: s.state.toLowerCase(),
-      color: colour(s.state),
-      detail: s.node ? `on ${s.node}${s.store ? ` · ${bytes(s.store)}` : ''}`
-                     : (s.reason ? s.reason.replace(/_/g, ' ').toLowerCase() : 'not placed'),
-    }));
-
-  const sub = Object.entries(counts).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `${num(v)} ${k.toLowerCase()}`).join(' · ');
-
-  return card('Shard states', sub,
-    honeycomb(items, {
-      legendFor: [
-        { label: 'started', color: STATUS.good, count: counts.STARTED || 0 },
-        { label: 'moving', color: STATUS.warning,
-          count: (counts.RELOCATING || 0) + (counts.INITIALIZING || 0) },
-        { label: 'unassigned', color: STATUS.critical, count: counts.UNASSIGNED || 0 },
-      ],
-      onSelect: (it) => { ui.index = String(it.key).split('/')[0]; draw(); },
-    }));
 }
 
 /** A task running longer than this is worth looking at rather than scrolling past. */
@@ -345,7 +296,7 @@ function nodesBody(c, d) {
  * assigned — a cluster mid-rebalance is not broken — but lumping them in would hide the
  * one thing that tells you to wait a minute before worrying.
  */
-function shardMixCard(c, all, d) {
+function shardMixBody(c, all, d) {
   const h2 = d.health || {};
   const state = (x) => String(x.state || '').toUpperCase();
   const started = all.filter((x) => state(x) === 'STARTED').length;
@@ -356,8 +307,8 @@ function shardMixCard(c, all, d) {
   const total = all.length || (Number(h2.active_shards) || 0) + (Number(h2.unassigned_shards) || 0);
 
   if (!total) {
-    return card('Shard placement', 'nothing reported',
-      empty('No shard listing and no health count — unknown, not zero.'));
+    return { sub: 'nothing reported',
+             node: empty('No shard listing and no health count — unknown, not zero.') };
   }
 
   const segments = [
@@ -369,13 +320,36 @@ function shardMixCard(c, all, d) {
     ? `${num(unassigned)} of ${num(total)} not placed`
     : moving ? `all placed · ${num(moving)} in flight` : 'every shard is placed';
 
-  return card('Shard placement', sub,
-    h('div', { style: { display: 'grid', gap: '8px', justifyItems: 'center' } },
+  return {
+    sub,
+    node: h('div', { style: { display: 'grid', gap: '8px', justifyItems: 'center' } },
       splitGauge(segments, { total, centreLabel: 'shards total', format: (v) => num(v) }),
       unassigned
         ? h('div.muted', { style: { fontSize: '11.5px', textAlign: 'center', maxWidth: '30ch' } },
             'An unassigned shard holds no data that can be read. The table below says why.')
-        : null));
+        : null),
+  };
+}
+
+/**
+ * Where the shards are, and where the disk went — one card, two halves.
+ *
+ * These were two cards side by side, and the shapes did not match: the gauge half is
+ * tall and fixed, the storage half is four figures and short, so whichever column was
+ * shorter left a block of empty page under it. Two cards cannot avoid that; one card
+ * with a divider down the middle cannot produce it.
+ *
+ * The gauge column is sized to the gauge. Anything storage accounting needs to say at
+ * length — a dangling index, indices past retention — goes full width underneath both,
+ * because those are paragraphs and paragraphs do not belong in a 300px column.
+ */
+function shardsAndStorageCard(c, all, d) {
+  const mix = shardMixBody(c, all, d);
+  const acct = accountingBody(c, d);
+  return card('Shards & storage', `${mix.sub} · ${acct.sub}`,
+    h('div', { style: { display: 'grid', gap: '14px', gridTemplateColumns: 'minmax(220px, 270px) 1fr', alignItems: 'start' } },
+      mix.node,
+      h('div', { style: { borderLeft: '1px solid var(--border)', paddingLeft: '16px' } }, acct.node)));
 }
 
 /**
@@ -438,7 +412,7 @@ function roleTitle(letters) {
  * Shown only when they disagree materially. Agreeing is the normal case and a card saying
  * "these two numbers match" every time is a card nobody reads.
  */
-function accountingCard(c, d) {
+function accountingBody(c, d) {
   const acct = diskAccounting(d, state.indices.get(c.id));
   const dang = danglingFor(c.id);
   const stale = staleIndices(c, state.indices.get(c.id));
@@ -496,7 +470,7 @@ function accountingCard(c, d) {
   const sub = acct.material ? `${bytes(acct.gap)} unexplained`
     : stale.list.length ? `${num(stale.list.length)} indices past retention`
     : 'indices and disk agree';
-  return card('Storage accounting', sub, h('div', { style: { display: 'grid', gap: '10px' } }, ...body));
+  return { sub, node: h('div', { style: { display: 'grid', gap: '10px' } }, ...body) };
 }
 
 function figure(label, value, sub) {

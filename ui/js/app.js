@@ -62,7 +62,7 @@ const PAGES = [
   { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  minRole: 'user' },
   { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
   { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, minRole: 'user' },
-  { id: 'shards',    label: 'Nodes & shards', icon: '☷', mod: pShards,    multi: true,  minRole: 'user' },
+  { id: 'shards',    label: 'Nodes & shards', icon: '☷', mod: pShards,    multi: true,  minRole: 'user', defaultSingle: true },
   // multi: the Log delay view asks every selected cluster at once. The live tail is
   // still one cluster — it picks which, and says so, rather than the page silently
   // collapsing the fleet selection on the way in.
@@ -303,6 +303,9 @@ function renderTopbar() {
     // page borrowed from it.
     state.selected = e.target.value;
     fleetView = e.target.value === 'all';
+    // Picking "All clusters" here is the deliberate choice a defaultSingle page waits
+    // for; picking one cluster withdraws it.
+    fleetChosen = e.target.value === 'all';
     go(currentPage);
   } });
   if (page.multi) sel.append(h('option', { value: 'all' }, `All clusters (${clusters().length})`));
@@ -447,10 +450,28 @@ function renderSideFoot() {
  */
 let fleetView = true;
 
+/**
+ * Whether "All clusters" was asked for, as opposed to inherited.
+ *
+ * `fleetView` cannot answer that: it starts true, so on the first visit it is
+ * indistinguishable from a deliberate choice. This is set only by the picker, which is
+ * the only place a person can express one.
+ */
+let fleetChosen = false;
+
 function resolveSelection(page) {
   if (!page.multi) {
     if (state.selected === 'all' && clusters()[0]) state.selected = clusters()[0].id;
-  } else if (fleetView && state.selected !== 'all') {
+    return;
+  }
+  // `defaultSingle`: the page offers every cluster but opens on one. Nodes & shards is
+  // this — a page of per-cluster tables, where the fleet view is one long scroll of
+  // repeats and is worth having only when somebody asks for it by name.
+  if (page.defaultSingle && state.selected === 'all' && !fleetChosen && clusters()[0]) {
+    state.selected = clusters()[0].id;
+    return;
+  }
+  if (!page.defaultSingle && fleetView && state.selected !== 'all') {
     state.selected = 'all';
   }
 }
