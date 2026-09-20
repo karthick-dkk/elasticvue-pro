@@ -909,6 +909,21 @@ await go('logs');
       const first = [...trs[0].children][2].textContent.trim();
       ok(first === 'critical', `the first row should be the worst, was "${first}"`);
 
+      // The report: a spreadsheet of what is on screen, produced in the browser.
+      const reportBtn = [...pane.querySelectorAll('button')].find((b) => /Report \(xlsx\)/.test(b.textContent));
+      ok(!!reportBtn, 'delay view: no Report button');
+      const schedBtn = doc.getElementById('delay-schedule');
+      ok(!!schedBtn, 'delay view: no way to schedule the report');
+      if (reportBtn) {
+        files.length = 0;
+        reportBtn.click();
+        await settleFor(500);
+        // bootApp captures anchor downloads; a real workbook is bytes, so what matters is
+        // that a download with an .xlsx name was started.
+        ok(files.some((f) => /\.xlsx$/.test(f.name)),
+          `delay view: pressing Report produced ${files.map((f) => f.name).join(', ') || 'no download'}`);
+      }
+
       // Filtering to unhealthy drops the healthy one and keeps the clock-ahead one.
       const showSel = [...pane.querySelectorAll('select')].find((x) => [...x.options].some((o) => o.value === 'unhealthy'));
       ok(!!showSel, 'delay view: no unhealthy filter');

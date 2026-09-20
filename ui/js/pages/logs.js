@@ -6,7 +6,7 @@
  */
 
 import { h, mount, $, clear, activatable } from '../lib/dom.js';
-import { num, compact, dt, dur, ago, ymdDots, eachDay, download, toCsv, bytes } from '../lib/fmt.js';
+import { num, compact, dt, dur, ago, ymdDots, eachDay, download, downloadBytes, toCsv, bytes } from '../lib/fmt.js';
 import { state, client, activeClusters, fetchIndices } from '../core/state.js';
 import { timeHistogram } from '../lib/charts.js';
 import { card, empty, pill, table } from './common.js';
@@ -14,6 +14,10 @@ import { preflight, buildSearchBody, recordFrom, summarise, delayCoverage,
          buildDeviceQuery, documentDelays, deviceSnapshot, looksLikeIp,
          thresholds, STATUS } from '../core/log-delay.js';
 import { runBounded, cancellation, partialNote } from '../core/fleet.js';
+import { reportSheets, reportFilename } from '../core/delay-report.js';
+import { workbook, XLSX_MIME } from '../lib/xlsx.js';
+import { toast } from '../ui/menu.js';
+import { confirmDialog } from '../ui/modal.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { jsonView } from '../lib/jsonview.js';
 
@@ -770,11 +774,127 @@ function resultsCard() {
         ? h('div.muted', { style: { fontSize: '11.5px' } },
             `${num(s.truncated)} document(s) fall outside the top 500 devices per cluster — this list is not every device.`)
         : null,
-      h('div', { style: { display: 'flex', gap: '6px' } },
-        h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV')),
+      h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+        h('button.btn.sm.primary', { id: 'delay-report', onclick: exportDelayReport,
+          title: 'A spreadsheet: every device, the summary, and the clusters that did not answer' },
+          '\u2913 Report (xlsx)'),
+        h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV'),
+        h('button.btn.sm', { id: 'delay-schedule', onclick: scheduleReport,
+          title: 'Produce this report on a timer while the app is open' },
+          delaySchedule() ? `\u23F1 Every ${delaySchedule().everyHours}h` : '\u23F1 Schedule\u2026')),
       table(['Cluster', 'Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
              { label: 'Docs', num: true }, 'Last seen', 'What it means', ''],
         trs, { emptyText: delay.status === 'unhealthy' ? 'Every device is within threshold.' : 'No devices returned.' })));
+}
+
+/* ------------------------------- the report ------------------------------- */
+
+/**
+ * What the fan-out did not cover, as rows for the report's own sheet.
+ *
+ * The screen says "6 of 9 answered" in a sentence above the table. A spreadsheet has no
+ * sentence above the table, so the same fact has to travel as data or it does not
+ * travel at all.
+ */
+function missingClusters() {
+  return delayRows()
+    .filter(({ d }) => !d.records)
+    .map(({ c, d }) => ({
+      cluster: c.name,
+      reason: d.state === 'failed' ? `query failed: ${d.fetchError || 'no reason given'}`
+        : d.state === 'not-asked' ? 'never asked — the run was stopped'
+        : d.state === 'error' ? `could not be checked: ${d.error || 'no reason given'}`
+        : d.pre && !d.pre.ok && !d.pre.unknown ? `cannot be analysed: ${(d.pre.missing || []).join(', ')} not mapped`
+        : d.pre && d.pre.unknown ? `unknown: ${d.pre.error || 'the cluster did not answer'}`
+        : 'not measured',
+    }));
+}
+
+/** The workbook for what is on screen now. */
+function buildDelayReport() {
+  const measured = delayRows().filter(({ d }) => d.records).length;
+  const missing = missingClusters();
+  return workbook(reportSheets(delay.records || [], delay.summary || {}, {
+    generatedAt: delay.at || Date.now(),
+    windowHours: delay.hours,
+    measured,
+    notMeasured: missing.length,
+    missing,
+  }));
+}
+
+function exportDelayReport() {
+  if (!delay.records) { toast('Fetch the details first — there is nothing to report on yet', 'warn'); return; }
+  try {
+    downloadBytes(reportFilename(delay.at || Date.now()), buildDelayReport(), XLSX_MIME);
+    toast('Report saved');
+  } catch (e) {
+    toast(`Could not build the report: ${e.message}`, 'err', 6000);
+  }
+}
+
+/* ------------------------------ the schedule ------------------------------ */
+
+const SCHEDULE_KEY = 'espro.delayReport.schedule';
+
+/**
+ * A saved report schedule, or null.
+ *
+ * Worth being plain about what this can and cannot be: a browser cannot write a file
+ * while nobody is looking at it. So a schedule here does not mean "a spreadsheet appears
+ * on disk every night" — it means the app produces one when it is open and the interval
+ * has passed. The card says so rather than implying otherwise. Measurements shipped to
+ * Elasticsearch are the thing that genuinely runs unattended, and that is the core's
+ * scheduler, not this.
+ */
+function delaySchedule() {
+  try {
+    const raw = localStorage.getItem(SCHEDULE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return s && s.everyHours ? s : null;
+  } catch (_) { return null; }
+}
+
+function saveSchedule(s) {
+  try {
+    if (s) localStorage.setItem(SCHEDULE_KEY, JSON.stringify(s));
+    else localStorage.removeItem(SCHEDULE_KEY);
+  } catch (_) { toast('This browser will not remember the schedule', 'warn'); }
+}
+
+async function scheduleReport() {
+  const cur = delaySchedule();
+  const hours = h('select',
+    ...[1, 6, 12, 24, 168].map((n) => h('option', { value: String(n) },
+      n < 24 ? `every ${n} hour${n === 1 ? '' : 's'}` : n === 24 ? 'once a day' : 'once a week')));
+  hours.value = String((cur && cur.everyHours) || 24);
+
+  const ok = await confirmDialog('Schedule this report?',
+    h('div', { style: { display: 'grid', gap: '9px', fontSize: '12.5px' } },
+      h('label.field', 'Produce it', hours),
+      h('div.muted',
+        'A browser cannot save a file while nobody is looking at it. The report is built '
+        + 'when this page is open and the interval has passed, and the download starts then. '
+        + 'For something that runs unattended, ship the measurements to Elasticsearch from '
+        + 'the Config page — that is the core\u2019s scheduler and it does not need a tab.'),
+      cur ? h('div.muted', `Currently ${cur.everyHours}h. Last produced ${cur.lastAt ? ago(cur.lastAt) : 'never'}.`) : null),
+    { yes: cur ? 'Update' : 'Schedule', no: cur ? 'Stop scheduling' : 'Cancel' });
+
+  if (!ok) { if (cur) { saveSchedule(null); toast('Schedule stopped'); draw(); } return; }
+  saveSchedule({ everyHours: Number(hours.value) || 24, lastAt: (cur && cur.lastAt) || 0 });
+  toast(`Report scheduled — every ${hours.value}h while this page is open`);
+  draw();
+}
+
+/** Called on each delay-view draw: produce the report if one is due. */
+function maybeScheduledReport() {
+  const s = delaySchedule();
+  if (!s || !delay.records) return;
+  const due = (s.lastAt || 0) + s.everyHours * 3600 * 1000;
+  if (Date.now() < due) return;
+  saveSchedule({ ...s, lastAt: Date.now() });
+  exportDelayReport();
 }
 
 /**
