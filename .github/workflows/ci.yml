@@ -45,9 +45,17 @@ jobs:
       - name: parse modules and resolve imports
         run: node tools/check-ui.mjs
 
-      # Pure arithmetic — delay classification, trend, pattern detection. No DOM, no
-      # bridge, no fixture, so it runs in under a second and the fine-grained cases
-      # actually get written. node:test is stdlib; this adds no dependency.
+      # Most of the unit suite is pure arithmetic — delay classification, trend, pattern
+      # detection — with no bridge and no fixture, which is why the fine-grained cases
+      # actually get written. A few of them build DOM nodes (a chart, an empty state, the
+      # redraw that has to keep its scroll position) and need a document to build into.
+      #
+      # jsdom is installed here rather than further down because these run first. It used
+      # to be installed only before the render step, so the DOM-building tests failed on
+      # main while passing on every machine that happened to have it already.
+      - name: install jsdom
+        run: npm install --no-save --no-fund --no-audit jsdom
+
       - name: unit tests
         run: node tools/unit-check.mjs
 
@@ -65,8 +73,6 @@ jobs:
 
       - name: render every page, then drive the ones with behaviour
         run: |
-          npm install --no-save --no-fund --no-audit jsdom
-
           node tools/mock-es.mjs 9299 &
           until curl -sf http://127.0.0.1:9299/_cluster/health >/dev/null; do sleep 1; done
 
