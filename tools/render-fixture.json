@@ -26,7 +26,16 @@
         "lab"
       ],
       "liveRetention": "30d",
-      "snapshotRetention": "6M"
+      "snapshotRetention": "6M",
+      "s3": {
+        "bucket": "mock-lab-archive",
+        "region": "eu-west-2",
+        "rawPrefix": "rawlog",
+        "enrichedPrefix": "enrichedlog",
+        "auth": {
+          "useRole": false
+        }
+      }
     }
   ]
 }

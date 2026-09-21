@@ -174,6 +174,7 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       volumeFields: normFields(c.volumeFields || c.volume_fields || defaults.volumeFields),
       logSearchFields: normFields(c.logSearchFields || c.log_search_fields || defaults.logSearchFields),
       delayFields: normDelayFields(c.delayFields || c.delay_fields, defaults.delayFields),
+      s3: normS3(c.s3),
       liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
       snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
       backupCapacity: c.backupCapacity || c.backup_capacity || defaults.backupCapacity || '',
@@ -185,6 +186,39 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
 }
 
 /** `tag1, src_hostname` or a YAML list — either way, a clean array of field names. */
+/**
+ * The archive bucket for one client, or null.
+ *
+ * Per cluster because the buckets are per client — one account per customer is the usual
+ * shape, and a single set of keys for the fleet would be the wrong grant even where it
+ * worked. Absent means this client has no archive, which is a normal state and not a
+ * misconfiguration: ULM simply has nothing to say about them.
+ *
+ * `useRole` and explicit keys are not exclusive. Keys win when both are present, because
+ * somebody wrote them down for this bucket on purpose; the role is the fallback.
+ */
+function normS3(v) {
+  if (!v || typeof v !== 'object') return null;
+  const bucket = String(v.bucket || '').trim();
+  if (!bucket) return null;
+  const auth = (v.auth && typeof v.auth === 'object') ? v.auth : v;
+  return {
+    bucket,
+    region: String(v.region || 'us-east-1').trim(),
+    endpoint: String(v.endpoint || '').trim() || null,
+    // Where the two log copies live. Defaults match the layout ULM was specified
+    // against; a bucket that arranges them differently says so here rather than in code.
+    rawPrefix: String(v.rawPrefix || v.raw_prefix || 'rawlog').replace(/^\/+|\/+$/g, ''),
+    enrichedPrefix: String(v.enrichedPrefix || v.enriched_prefix || 'enrichedlog').replace(/^\/+|\/+$/g, ''),
+    auth: {
+      accessKeyId: String(auth.accessKeyId || auth.access_key_id || '').trim() || null,
+      secretAccessKey: String(auth.secretAccessKey || auth.secret_access_key || '').trim() || null,
+      sessionToken: String(auth.sessionToken || auth.session_token || '').trim() || null,
+      useRole: auth.useRole ?? auth.use_role ?? !(auth.accessKeyId || auth.access_key_id),
+    },
+  };
+}
+
 /** A partial delayFields block overrides only the parts it names. */
 function normDelayFields(v, defaults) {
   const d = v && typeof v === 'object' ? v : {};

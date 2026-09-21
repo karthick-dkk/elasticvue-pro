@@ -556,6 +556,24 @@ export function stopAutoRefresh() {
  * `<cluster>:disk`, not "disk 87.3%". An acknowledgement is stored against that key, so
  * it survives the number moving and only disappears when the problem itself clears.
  */
+/**
+ * What ULM found the last time somebody pulled, per cluster.
+ *
+ * Published by the page rather than computed here, because the archive is only ever
+ * listed by hand: alerts() runs on every refresh, and a rule that listed a bucket would
+ * turn a monitoring dashboard into a recurring S3 bill. What alerts() does is surface
+ * what the last manual pull already established.
+ */
+const archiveFindings = new Map();
+
+export function setArchiveFindings(clusterId, findings) {
+  if (findings && findings.length) archiveFindings.set(clusterId, findings);
+  else archiveFindings.delete(clusterId);
+  bus.emit('data');
+}
+
+export function archiveFindingsFor(clusterId) { return archiveFindings.get(clusterId) || []; }
+
 export function alerts() {
   const out = [];
   const add = (...a) => out.push(...a.filter(Boolean));
@@ -566,6 +584,12 @@ export function alerts() {
       add({ key: `${c.id}:unreachable`, level: 'critical', cluster: c, title: `${c.name} unreachable`,
         detail: (cl && cl.lastError && cl.lastError.message) || 'No response', kind: cl && cl.state });
       continue;
+    }
+    // The archive gap. One alert per day found, because "three days are missing" and
+    // "which three" are different facts and the second is the one somebody acts on.
+    for (const f of archiveFindings.get(c.id) || []) {
+      add({ key: `${c.id}:archive-missing:${f.tag}:${f.day}`, level: 'critical', cluster: c,
+            title: `${c.name}: ${f.day} is not archived for ${f.tag}`, detail: f.reason });
     }
     if (d.health && d.health.status === 'red') add({ key: `${c.id}:health`, level: 'critical', cluster: c, title: `${c.name} health is RED`, detail: `${d.health.unassigned_shards} unassigned shards` });
     else if (d.health && d.health.status === 'yellow') add({ key: `${c.id}:health`, level: 'warning', cluster: c, title: `${c.name} health is YELLOW`, detail: `${d.health.unassigned_shards} unassigned shards` });

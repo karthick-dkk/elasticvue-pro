@@ -190,6 +190,9 @@ pub fn required_role(msg_type: &str) -> Option<Role> {
 
         // Fleet facts with no index names, but they name hosts and jump hosts.
         "TUNNELS" | "PINS" | "REQUEST_STATS" => Some(Role::User),
+        // Listing the archive names object keys, which carry client and branch names —
+        // the same shape of fact as an index name, and gated the same way.
+        "S3_LIST" => Some(Role::User),
 
         // Everything below either writes, or hands back something secret.
         // CONFIG_READ returns the raw config, which carries cluster credentials.

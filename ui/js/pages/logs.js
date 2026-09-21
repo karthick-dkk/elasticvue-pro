@@ -7,14 +7,17 @@
 
 import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { num, compact, dt, dur, ago, ymdDots, eachDay, download, downloadBytes, toCsv, bytes } from '../lib/fmt.js';
-import { state, client, activeClusters, fetchIndices } from '../core/state.js';
-import { timeHistogram } from '../lib/charts.js';
-import { card, empty, pill, table } from './common.js';
+import { state, client, activeClusters, fetchIndices, setArchiveFindings } from '../core/state.js';
+import { timeHistogram, hbarList } from '../lib/charts.js';
+import { card, empty, pill, table, figure } from './common.js';
 import { preflight, buildSearchBody, recordFrom, summarise, delayCoverage,
          buildDeviceQuery, documentDelays, deviceSnapshot, looksLikeIp,
          thresholds, STATUS } from '../core/log-delay.js';
 import { runBounded, cancellation, partialNote } from '../core/fleet.js';
 import { reportSheets, reportFilename } from '../core/delay-report.js';
+import * as ulm from '../core/ulm.js';
+import { s3List } from '../core/es.js';
+import { navigateTo } from '../core/intent.js';
 import { workbook, XLSX_MIME } from '../lib/xlsx.js';
 import { toast } from '../ui/menu.js';
 import { confirmDialog } from '../ui/modal.js';
@@ -227,6 +230,7 @@ function draw() {
   // The delay view is fleet-wide and draws its own "no cluster" state, so it is reached
   // before the single-cluster guard the live tail needs.
   if (ui.view === 'delay') return mount(host, viewSwitch(), delayView());
+  if (ui.view === 'ulm') return mount(host, viewSwitch(), ulmView());
   if (!c) return mount(host, empty('No cluster selected'));
   const known = state.indices.get(c.id) || [];
   const sourceNames = [...new Set(known.filter((r) => r.source).map((r) => r.source))].sort();
@@ -299,7 +303,8 @@ function viewSwitch() {
   }, label);
   return h('div', { style: { display: 'flex', gap: '4px', marginBottom: '10px' } },
     btn('tail', 'Live tail', 'Search and follow documents as they arrive'),
-    btn('delay', 'Log delay', 'How far behind real time each device is shipping'));
+    btn('delay', 'Log delay', 'How far behind real time each device is shipping'),
+    btn('ulm', 'ULM', 'Archive: is every day in S3, in both copies'));
 }
 /* ------------------------- the delay view, across the fleet ------------------------- */
 
@@ -935,6 +940,396 @@ function exportDelayCsv() {
   }
   download(`log-delay-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`, toCsv(rows));
 }
+/* =============================== ULM =============================== */
+
+/**
+ * The archive, per day, in both copies.
+ *
+ * Deliberately manual. Listing a bucket is the expensive operation here — thousands of
+ * objects per client per month — and every other page in this app refreshes on a timer.
+ * This one does not: nothing is fetched until Pull Now is pressed, so opening the page
+ * costs nothing and an S3 bill cannot be run up by leaving a tab open.
+ */
+const ulmState = {
+  tag: '',
+  running: false,
+  error: null,
+  at: 0,
+  objects: [],        // every key pulled, both copies
+  truncated: false,   // the bucket had more than we were willing to walk
+  pages: 0,
+  credSource: '',
+  grain: 'day',
+  pulledDays: new Set(),
+};
+
+/** How many pages of 1000 keys one Pull walks before it stops and says so. */
+const ULM_PAGE_CAP = 25;
+
+function ulmCluster() {
+  return activeClusters().find((c) => c.s3) || activeClusters()[0] || null;
+}
+
+/** Every tag this cluster's parser is configured to carry, for the picker. */
+function ulmTags(c) {
+  const meta = (c && c.delayFields && c.delayFields.metadata) || [];
+  return meta.filter((f) => /tag/i.test(f));
+}
+
+async function ulmPull() {
+  const c = ulmCluster();
+  if (!c || !c.s3 || ulmState.running) return;
+  const tag = ulmState.tag.trim();
+  if (!tag) { toast('Name the tag to look for', 'warn'); return; }
+
+  ulmState.running = true;
+  ulmState.error = null;
+  ulmState.objects = [];
+  ulmState.truncated = false;
+  ulmState.pages = 0;
+  draw();
+
+  try {
+    for (const copy of ulm.COPIES) {
+      let token = null;
+      for (let page = 0; page < ULM_PAGE_CAP; page += 1) {
+        const res = await s3List(c.id, {
+          prefix: ulm.tagPrefix(c.s3, copy.id, tag),
+          maxKeys: 1000,
+          continuationToken: token,
+        });
+        ulmState.pages += 1;
+        if (!res || !res.ok) {
+          // One copy failing does not discard the other: half an answer, clearly
+          // labelled, beats none.
+          ulmState.error = (res && res.message) || 'the bucket could not be listed';
+          break;
+        }
+        ulmState.credSource = res.credSource || '';
+        const listing = res.listing || {};
+        ulmState.objects.push(...(listing.objects || []));
+        token = listing.nextToken;
+        if (!listing.truncated || !token) break;
+        if (page === ULM_PAGE_CAP - 1) ulmState.truncated = true;
+      }
+    }
+    // Which days this pull actually covered, so the alert never fires on a day nobody
+    // looked at. Derived from what came back rather than from the range asked for.
+    const archive = ulm.byDay(ulmState.objects, c.s3);
+    ulmState.pulledDays = new Set(archive.rows.map((r) => r.day));
+    ulmState.at = Date.now();
+
+    // Publish the gap for the Alerts page. This is the only moment it can be computed:
+    // alerts() runs on every refresh, and a rule that listed a bucket would turn the
+    // dashboard into a recurring S3 bill.
+    const today = new Date().toISOString().slice(0, 10);
+    const findings = ulm.missingArchive(indexDaysFor(c, tag), archive, {
+      pulledDays: ulmState.pulledDays, today,
+    });
+    setArchiveFindings(c.id, findings);
+    ulmState.findings = findings;
+
+    // A pull that failed and returned nothing is not an archive with nothing in it.
+    // Drawing the empty table would say "no days are archived" when the truth is "the
+    // bucket could not be read" — the one confusion this page exists to prevent. The
+    // error stays on screen and the table does not appear.
+    if (ulmState.error && !ulmState.objects.length) ulmState.at = 0;
+  } catch (e) {
+    ulmState.error = e.message || String(e);
+  } finally {
+    ulmState.running = false;
+    if (host && host.isConnected) draw();
+  }
+}
+
+/**
+ * Which days this cluster actually holds data for, from the daily indices.
+ *
+ * Read off the index names the app already has rather than queried: the indices page
+ * lists `logstash-<source>-YYYY.MM.DD`, and the day in that name is the day the archive
+ * is being compared against. Asking Elasticsearch again for something already on hand
+ * would be a second definition of "what days exist", and they would disagree the first
+ * time an index was closed.
+ *
+ * Docs counts come along where the listing has them, because "900 documents are not
+ * archived" is a different sentence from "a day is not archived".
+ */
+function indexDaysFor(c, tag) {
+  const known = state.indices.get(c.id) || [];
+  const byDay = new Map();
+  for (const r of known) {
+    if (!r.day) continue;
+    // `2026.09.20` in an index name is the same day as `2026-09-20` here.
+    const day = String(r.day).replace(/\./g, '-');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    byDay.set(day, (byDay.get(day) || 0) + (Number(r['docs.count']) || 0));
+  }
+  return [...byDay.entries()].map(([day, docs]) => ({ tag, day, docs }));
+}
+
+function ulmView() {
+  maybeScheduledPull();
+  const c = ulmCluster();
+  if (!c) return card('ULM', '', empty('No cluster selected'));
+  if (!c.s3) {
+    return card('ULM', c.name,
+      empty('This cluster has no archive configured.', {
+        detail: h('span', 'Add an ', h('code.inline', 's3'), ' block to it — bucket, region and either '
+          + 'keys or a role — and ULM can report on what is stored there.'),
+        actions: [h('button.btn.sm', { onclick: () => navigateTo('settings') }, 'Open Config')],
+      }));
+  }
+
+  const tags = ulmTags(c);
+  if (!ulmState.tag && tags.length) ulmState.tag = tags[0];
+
+  const tagInput = h('input#ulm-tag', {
+    type: 'text', value: ulmState.tag, placeholder: 'tag1', list: 'ulm-tags',
+    style: { width: '140px', fontFamily: 'var(--mono)' },
+    oninput: (e) => { ulmState.tag = e.target.value; },
+    onkeydown: (e) => { if (e.key === 'Enter') ulmPull(); },
+  });
+
+  const head = h('div.toolbar',
+    h('span.muted', { style: { fontSize: '11.5px' } },
+      'Nothing is fetched until you ask. Listing a bucket is the expensive call here, so this page never refreshes on its own.'),
+    h('label.field', 'Tag', tagInput),
+    h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' } },
+      ulmState.at ? h('span.muted', { style: { fontSize: '11px' } }, `pulled ${ago(ulmState.at)}`) : null,
+      h('button.btn.sm.primary', { id: 'ulm-pull', disabled: ulmState.running, onclick: ulmPull },
+        ulmState.running ? 'Loading…' : '↧ Pull Now'),
+      h('button.btn.sm', { id: 'ulm-report', disabled: !ulmState.objects.length, onclick: ulmExport },
+        '⤓ Report (xlsx)'),
+      h('button.btn.sm.ghost', { id: 'ulm-schedule', onclick: ulmSchedule },
+        ulmSchedule.saved() ? '⏱ Daily' : '⏱ Schedule…')));
+
+  const list = h('datalist#ulm-tags', ...tags.map((t) => h('option', { value: t })));
+
+  // A pull that failed with nothing to show lands here, so this state has to carry the
+  // reason. Without it the fix for "a failed pull looks like an empty archive" would
+  // simply have moved the lie: the page would say nothing had been pulled, when what
+  // happened is that the pull was refused.
+  if (!ulmState.at && !ulmState.running) {
+    return h('div', list, head,
+      ulmState.error
+        ? card('ULM', `${c.name} · ${c.s3.bucket}`,
+            empty('The bucket could not be listed.', {
+              detail: h('span.mono', { style: { fontSize: '11.5px' } }, ulmState.error),
+              actions: [
+                h('button.btn.sm.primary', { onclick: ulmPull }, 'Try again'),
+                h('button.btn.sm', { onclick: () => navigateTo('settings') }, 'Check the s3 block'),
+              ],
+            }))
+        : card('ULM', `${c.name} · ${c.s3.bucket}`,
+            empty('Nothing pulled yet.', {
+              detail: `Press Pull Now to list ${c.s3.bucket} for tag "${ulmState.tag || 'tag1'}". `
+                    + 'Both copies are walked, up to 25 pages of 1000 objects each.',
+            })));
+  }
+
+  const archive = ulm.byDay(ulmState.objects, c.s3);
+  const t = ulm.totals(archive);
+
+  const figures = h('div', { style: { display: 'grid', gap: '14px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' } },
+    figure('Days archived', num(t.days), ulmState.truncated ? 'more exist — not all walked' : 'in this pull'),
+    figure('Raw', bytes(t.rawBytes), `${num(t.rawObjects)} object(s)`),
+    figure('Enriched', bytes(t.enrichedBytes), `${num(t.enrichedObjects)} object(s)`),
+    figure('Total in S3', bytes(t.rawBytes + t.enrichedBytes), `${num(ulmState.pages)} listing call(s)`));
+
+  const trs = archive.rows.map((r) => {
+    const st = ulm.dayStatus(r);
+    return h('tr',
+      h('td.mono', r.day),
+      h('td.mono', { style: { fontSize: '11.5px' } }, r.tags.join(', ')),
+      h('td.muted', { style: { fontSize: '11.5px' } }, r.branches.join(', ')),
+      h('td', pill(st.label, st.cls)),
+      h('td.num', r.raw.objects ? bytes(r.raw.bytes) : h('span.muted', '—')),
+      h('td.num.muted', { style: { fontSize: '11.5px' } }, r.raw.objects ? num(r.raw.objects) : '—'),
+      h('td.num', r.enriched.objects ? bytes(r.enriched.bytes) : h('span.muted', '—')),
+      h('td.num.muted', { style: { fontSize: '11.5px' } }, r.enriched.objects ? num(r.enriched.objects) : '—'),
+      h('td.num', h('b', bytes(r.raw.bytes + r.enriched.bytes))));
+  });
+
+  const grainBtn = (id, label) => h(`button.btn.sm${ulmState.grain === id ? '.primary' : ''}`, {
+    onclick: () => { ulmState.grain = id; draw(); },
+  }, label);
+
+  return h('div', list, head,
+    ulmState.error
+      ? h('div.banner.err', { style: { margin: '0 0 10px' } },
+          h('div', h('div.ttl', 'The bucket could not be listed in full'), h('div.mono', ulmState.error),
+            ulmState.objects.length
+              ? h('div.muted', { style: { fontSize: '11.5px' } },
+                  `${num(ulmState.objects.length)} object(s) did come back and are shown below — this is part of the picture, not all of it.`)
+              : null))
+      : null,
+    ulmState.truncated
+      ? h('div.banner.warn', { style: { margin: '0 0 10px', fontSize: '12px' } },
+          `Stopped after ${ULM_PAGE_CAP} pages. The bucket holds more than this pull walked, so the totals are a floor, not a total.`)
+      : null,
+    archive.unparsed
+      ? h('div.muted', { style: { fontSize: '11.5px', marginBottom: '8px' } },
+          `${num(archive.unparsed)} object(s) did not match the expected layout and are not counted.`)
+      : null,
+
+    // The finding this page exists for, shown here as well as on Alerts: somebody who
+    // just pulled should not have to go somewhere else to learn what the pull found.
+    (ulmState.findings || []).length
+      ? h('div.banner.err', { style: { margin: '0 0 10px' } },
+          h('div',
+            h('div.ttl', `${num(ulmState.findings.length)} day(s) held by this cluster and archived nowhere`),
+            h('div', { style: { fontSize: '12px' } },
+              'Elasticsearch has data for these days and neither S3 copy does. They are on the '
+              + 'Alerts page too, one per day.'),
+            h('div.mono', { style: { fontSize: '11px', marginTop: '4px' } },
+              ulmState.findings.slice(0, 8).map((f) => f.day).join(' · ')
+              + (ulmState.findings.length > 8 ? ` …and ${ulmState.findings.length - 8} more` : ''))))
+      : null,
+
+    card('Archive', `${c.name} · ${c.s3.bucket} · ${ulmState.credSource || 'credentials unknown'}`,
+      h('div', { style: { display: 'grid', gap: '12px' } },
+        figures,
+        h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+          h('span.muted', { style: { fontSize: '11.5px' } }, 'Size over time'),
+          h('div', { style: { display: 'flex', gap: '4px', marginLeft: '6px' } },
+            grainBtn('day', 'Daily'), grainBtn('week', 'Weekly'), grainBtn('month', 'Monthly'))),
+        ulmSizeChart(archive))),
+
+    h('div', { style: { marginTop: '10px' } },
+      card(`Daily availability — ${ulmState.tag}`,
+        `${num(archive.rows.length)} day(s) · newest first`,
+        table(['Day', 'Tag', 'Branches', 'Status',
+               { label: 'Raw', num: true }, { label: 'obj', num: true },
+               { label: 'Enriched', num: true }, { label: 'obj', num: true },
+               { label: 'Total', num: true }],
+          trs, { emptyText: empty('No day matched this tag in the archive.', {
+            detail: `Nothing under ${ulm.tagPrefix(c.s3, 'raw', ulmState.tag)} or `
+                  + `${ulm.tagPrefix(c.s3, 'enriched', ulmState.tag)}.`,
+          }) }))));
+}
+
+/**
+ * One report covering both copies, as asked for.
+ *
+ * Two sheets, not two files: the question is whether a day is in *both*, and putting the
+ * copies in separate workbooks makes the comparison somebody else's join.
+ */
+function ulmExport() {
+  const c = ulmCluster();
+  if (!c || !c.s3 || !ulmState.objects.length) { toast('Pull the archive first', 'warn'); return; }
+  const archive = ulm.byDay(ulmState.objects, c.s3);
+  const t = ulm.totals(archive);
+
+  const days = [
+    ['Day', 'Tag', 'Branches', 'Status', 'Raw bytes', 'Raw objects', 'Enriched bytes', 'Enriched objects', 'Total bytes'],
+    ...archive.rows.map((r) => [
+      r.day, r.tags.join(', '), r.branches.join(', '), ulm.dayStatus(r).label,
+      r.raw.bytes, r.raw.objects, r.enriched.bytes, r.enriched.objects,
+      r.raw.bytes + r.enriched.bytes,
+    ]),
+  ];
+
+  const summary = [
+    ['Generated (UTC)', new Date().toISOString().replace('.000Z', 'Z')],
+    ['Cluster', c.name],
+    ['Bucket', c.s3.bucket],
+    ['Region', c.s3.region],
+    ['Tag', ulmState.tag],
+    ['Credentials', ulmState.credSource || 'unknown'],
+    [],
+    ['Days archived', t.days],
+    ['Raw bytes', t.rawBytes],
+    ['Raw objects', t.rawObjects],
+    ['Enriched bytes', t.enrichedBytes],
+    ['Enriched objects', t.enrichedObjects],
+    ['Total bytes', t.rawBytes + t.enrichedBytes],
+    [],
+    // Both caveats travel with the file. A spreadsheet has no banner above it, and a
+    // floor presented as a total is the way this number gets quoted wrongly later.
+    ['Listing complete', ulmState.truncated ? 'NO — stopped at the page cap, these totals are a floor' : 'yes'],
+    ['Objects not matching the layout', archive.unparsed],
+    ['Listing error', ulmState.error || 'none'],
+  ];
+
+  try {
+    downloadBytes(reportFilename(Date.now(), `ulm-${ulmState.tag || 'archive'}`),
+      workbook([{ name: 'Daily availability', rows: days }, { name: 'Summary', rows: summary }]),
+      XLSX_MIME);
+    toast('Report saved');
+  } catch (e) {
+    toast(`Could not build the report: ${e.message}`, 'err', 6000);
+  }
+}
+
+/* --------------------------- the daily pull --------------------------- */
+
+const ULM_SCHEDULE_KEY = 'espro.ulm.schedule';
+
+ulmSchedule.saved = function savedSchedule() {
+  try { return JSON.parse(localStorage.getItem(ULM_SCHEDULE_KEY) || 'null'); }
+  catch (_) { return null; }
+};
+
+/**
+ * Pull once a day, while the page is open.
+ *
+ * The same honesty as the delay report's schedule: a browser tab is not a cron. What
+ * this buys is that somebody who leaves the page open gets a fresh listing each day
+ * without remembering to press anything — and the card says plainly that closing the tab
+ * stops it, rather than letting somebody believe the archive is being watched.
+ */
+async function ulmSchedule() {
+  const cur = ulmSchedule.saved();
+  const ok = await confirmDialog(cur ? 'Stop the daily pull?' : 'Pull once a day?',
+    h('div', { style: { display: 'grid', gap: '8px', fontSize: '12.5px' } },
+      h('div', 'While this page is open, ULM will list the bucket once a day for the tag above.'),
+      h('div.muted',
+        'A browser tab is not a cron: close it and nothing runs. This saves you pressing '
+        + 'Pull Now, it does not watch the archive for you.'),
+      cur ? h('div.muted', `Currently on. Last pull ${cur.lastAt ? ago(cur.lastAt) : 'never'}.`) : null),
+    { yes: cur ? 'Stop it' : 'Turn it on', no: 'Cancel' });
+  if (!ok) return;
+  try {
+    if (cur) { localStorage.removeItem(ULM_SCHEDULE_KEY); toast('Daily pull stopped'); }
+    else { localStorage.setItem(ULM_SCHEDULE_KEY, JSON.stringify({ lastAt: 0 })); toast('Daily pull on, while this page is open'); }
+  } catch (_) { toast('This browser will not remember the schedule', 'warn'); }
+  draw();
+}
+
+/** Called when the ULM view draws: pull if a day has passed. */
+function maybeScheduledPull() {
+  const s = ulmSchedule.saved();
+  if (!s || ulmState.running || !ulmState.tag) return;
+  if (Date.now() - (s.lastAt || 0) < 86400000) return;
+  try { localStorage.setItem(ULM_SCHEDULE_KEY, JSON.stringify({ lastAt: Date.now() })); } catch (_) { /* not remembered */ }
+  ulmPull();
+}
+
+/** Raw and enriched, stacked, over whichever grain is chosen. */
+function ulmSizeChart(archive) {
+  const pts = ulm.rollUp(archive.rows, ulmState.grain);
+  if (!pts.length) return h('div.muted', { style: { fontSize: '12px' } }, 'Nothing to chart yet.');
+  // sort:false and no "Other" bucket. hbarList ranks by value by default, which is
+  // right for "who is biggest" and wrong for "what happened over time" — ordering the
+  // days by size would turn a movement chart into a league table. The last 14 points,
+  // newest at the bottom, because that is the end you read first.
+  const shown = pts.slice(-14);
+  return hbarList(shown.map((p) => ({
+    key: p.at,
+    label: p.at,
+    value: p.rawBytes + p.enrichedBytes,
+  })), {
+    format: (v) => bytes(v),
+    sort: false,
+    topN: shown.length,
+    showOther: false,
+    tipTitle: (i) => {
+      const pt = shown.find((x) => x.at === i.key) || { rawBytes: 0, enrichedBytes: 0 };
+      return `${i.label} — raw ${bytes(pt.rawBytes)} · enriched ${bytes(pt.enrichedBytes)}`;
+    },
+  });
+}
+
 /** Minutes are unreadable past an hour or two. */
 function fmtDelay(mins) {
   const sign = mins < 0 ? '-' : '';

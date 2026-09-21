@@ -9,7 +9,7 @@ export async function primeWorker(clusters, readOnly = true, jumpHosts = []) {
   return send({
     type: 'PRIME',
     readOnly,
-    clusters: clusters.map((c) => ({ id: c.id, url: c.url, authHeader: c.authHeader, via: c.via || null, tls: c.tls || null })),
+    clusters: clusters.map((c) => ({ id: c.id, url: c.url, authHeader: c.authHeader, via: c.via || null, tls: c.tls || null, s3: c.s3 || null })),
     jumpHosts: jumpHosts.map((j) => ({ id: j.id, host: j.host, port: j.port, user: j.user, keyFile: j.keyFile || null })),
   });
 }
@@ -37,6 +37,22 @@ export const delaySinkGet = () => send({ type: 'DELAY_SINK_GET' });
 export const delaySinkSet = (config) => send({ type: 'DELAY_SINK_SET', config });
 /** Run it now, at a moment a person chose. Same work the timer does. */
 export const delaySinkRun = () => send({ type: 'DELAY_SINK_RUN' });
+
+/**
+ * One page of the archive bucket for a cluster.
+ *
+ * The core signs and sends it: a page cannot hold the secret, and S3 will not answer a
+ * browser cross-origin. Listing only — there is no read, write or delete on the other
+ * side of this message.
+ */
+export const s3List = (clusterId, opts = {}) => send({
+  type: 'S3_LIST',
+  clusterId,
+  prefix: opts.prefix || '',
+  delimiter: opts.delimiter || null,
+  maxKeys: opts.maxKeys || 1000,
+  continuationToken: opts.continuationToken || null,
+});
 
 export const vaultGet = (scope) => send({ type: 'VAULT_GET', scope });
 export const vaultSet = (scope, value) => send({ type: 'VAULT_SET', scope, value });

@@ -315,6 +315,7 @@ impl Core {
                 json!({ "ok": true })
             }
             "ES" => self.es(msg).await,
+            "S3_LIST" => self.s3_list(&msg).await,
             "DELAY_SINK_GET" | "DELAY_SINK_SET" | "DELAY_SINK_RUN" => self.delay_sink_msg(&t, &msg).await,
             "TUNNELS" => json!({ "ok": true, "tunnels": self.tunnel_status().await }),
             "TUNNEL_RECONNECT" => {
@@ -947,6 +948,56 @@ impl Core {
             self.record_request(&req.cluster_id);
         }
         out
+    }
+}
+
+impl Core {
+    /// One page of a bucket listing, for the ULM page.
+    ///
+    /// Reading, and only reading. The module underneath has no way to write, so there is
+    /// no read-only gate to apply here — there is nothing this message could do that a
+    /// gate would stop.
+    ///
+    /// Credentials are resolved per call rather than cached. They can be a role's, which
+    /// expire, and a listing that started failing an hour after the app opened would be
+    /// a bad way to learn that.
+    async fn s3_list(self: &Arc<Self>, msg: &Value) -> Value {
+        let cluster_id = msg.get("clusterId").and_then(|v| v.as_str()).unwrap_or("");
+        let cfg = {
+            let p = self.primed.read();
+            p.clusters.get(cluster_id).and_then(|c| c.s3.clone())
+        };
+        let Some(cfg) = cfg else {
+            return json!({ "ok": false, "kind": "no_bucket",
+                           "message": format!("cluster {cluster_id:?} has no s3 block in the config") });
+        };
+        if cfg.bucket.trim().is_empty() {
+            return json!({ "ok": false, "kind": "no_bucket", "message": "the s3 block names no bucket" });
+        }
+
+        let creds = match crate::s3::resolve_creds(&cfg.auth).await {
+            Ok(c) => c,
+            Err(e) => return json!({ "ok": false, "kind": "no_creds", "message": e }),
+        };
+
+        let prefix = msg.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
+        let delimiter = msg.get("delimiter").and_then(|v| v.as_str());
+        let max_keys = msg.get("maxKeys").and_then(|v| v.as_u64()).unwrap_or(1000) as u32;
+        let token = msg.get("continuationToken").and_then(|v| v.as_str());
+
+        let started = std::time::Instant::now();
+        match crate::s3::list_objects(&cfg, &creds, prefix, delimiter, max_keys, token,
+                                      crate::delay_sink::now_ms()).await {
+            Ok(l) => {
+                tracing::info!(target: "audit", message = "s3 list", bucket = %cfg.bucket,
+                               prefix = %prefix, objects = l.objects.len(), creds = creds.source);
+                json!({ "ok": true, "bucket": cfg.bucket, "region": cfg.region,
+                        "credSource": creds.source, "tookMs": started.elapsed().as_millis() as u64,
+                        "listing": l })
+            }
+            Err(e) => json!({ "ok": false, "kind": "s3_error", "message": e,
+                              "bucket": cfg.bucket, "credSource": creds.source }),
+        }
     }
 }
 

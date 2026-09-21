@@ -128,6 +128,20 @@ export function unreadable(what, reasonText, actions = null) {
 }
 
 /**
+ * A labelled figure: a small caption, a large number, a quiet note under it.
+ *
+ * Here rather than on a page because two pages show these side by side and a second copy
+ * would drift in size, weight and casing — which is exactly how a row of figures stops
+ * reading as one row.
+ */
+export function figure(label, value, sub) {
+  return h('div', { style: { minWidth: '140px' } },
+    h('div.muted', { style: { fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '.03em' } }, label),
+    h('div', { style: { fontSize: '17px', fontWeight: 660 } }, value),
+    sub ? h('div.muted', { style: { fontSize: '11px' } }, sub) : null);
+}
+
+/**
  * A table, optionally sortable by clicking its headers.
  *
  * A header carries `sort: 'key'` to become clickable, and `opts.sort` says which key is

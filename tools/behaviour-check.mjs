@@ -489,6 +489,91 @@ await go('settings');
   }
 }
 
+/* --------------- ULM: manual only, and honest about not being set up --------------- */
+
+await go('logs');
+{
+  const stateMod0 = await load('core/state.js');
+  // A cluster with no bucket, chosen explicitly: ULM prefers one that has an archive, so
+  // the unconfigured state only shows when the selection offers nothing else. Set after
+  // go(), because go() re-resolves the selection and would put the fleet straight back.
+  const noBucket = stateMod0.clusters().find((c) => !c.s3);
+  ok(!!noBucket, 'fixture: every cluster has a bucket, so the unconfigured state cannot be reached');
+  if (noBucket) stateMod0.state.selected = noBucket.id;
+
+  const pane = doc.getElementById('view');
+  const toUlm = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'ULM');
+  ok(!!toUlm, 'logs: no ULM view');
+  if (toUlm) {
+    toUlm.click();
+    await settleFor(500);
+
+    // The fixture's clusters have no s3 block, so this is the path a real operator hits
+    // first. It has to name what is missing and where to add it — not read as an error.
+    const text = pane.textContent;
+    ok(/no archive configured/i.test(text),
+      `ULM: an unconfigured cluster should say so — saw ${text.slice(0, 140)}`);
+    ok(/s3/.test(text), 'ULM: the empty state should name the config block to add');
+    ok([...pane.querySelectorAll('button')].some((b) => /Open Config/.test(b.textContent)),
+      'ULM: no way to get to the place the block is added');
+
+    // And nothing was fetched on the way in. This page is manual by design: listing a
+    // bucket is the expensive call, and an open tab must not run up a bill.
+    ok(!/pulled/.test(text), 'ULM: something was pulled without being asked');
+  }
+
+  // A cluster that does have a bucket: the manual-only guarantee is only meaningful
+  // here, and so is the error path when the bucket cannot be reached.
+  {
+    const stateMod = await load('core/state.js');
+    const withBucket = stateMod.clusters().find((c) => c.s3);
+    ok(!!withBucket, 'fixture: no cluster carries an s3 block, so ULM cannot be driven');
+    if (withBucket) {
+      let listCalls = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        if (body.type === 'S3_LIST') listCalls += 1;
+        return realFetch(input, init);
+      };
+
+      stateMod.state.selected = withBucket.id;
+      const p2 = doc.getElementById('view');
+      [...p2.querySelectorAll('button')].find((b) => b.textContent === 'ULM').click();
+      await settleFor(600);
+
+      ok(listCalls === 0,
+        `ULM: ${listCalls} listing call(s) were made just by opening the page — it must not fetch on its own`);
+      ok(/Nothing pulled yet/i.test(p2.textContent),
+        `ULM: a configured bucket should invite a pull — saw ${p2.textContent.slice(0, 140)}`);
+      ok(/mock-lab-archive/.test(p2.textContent), 'ULM: the bucket is not named on screen');
+
+      const pull = doc.getElementById('ulm-pull');
+      ok(!!pull, 'ULM: no Pull Now button');
+      const report = doc.getElementById('ulm-report');
+      ok(report && report.disabled, 'ULM: the report should wait until something has been pulled');
+
+      if (pull) {
+        pull.click();
+        await settleFor(1200);
+        ok(listCalls > 0, 'ULM: pressing Pull Now made no listing call');
+        // No credentials in the fixture, so this must fail and say why rather than
+        // showing an empty archive — "nothing there" and "could not look" are the two
+        // answers this whole page exists to keep apart.
+        ok(/could not be listed/i.test(p2.textContent),
+          `ULM: a failed pull should say so — saw ${p2.textContent.slice(0, 200)}`);
+        ok(!/0 day\(s\)/.test(p2.textContent),
+          'ULM: a failed pull must not render as an empty archive');
+      }
+      globalThis.fetch = realFetch;
+    }
+
+    // Back to the tail, so later cases see the view they expect.
+    const back = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Live tail');
+    if (back) { back.click(); await settleFor(400); }
+  }
+}
+
 /* ------------- the nodes page: one pane on top, one arc for the shards ------------- */
 
 await go('shards');

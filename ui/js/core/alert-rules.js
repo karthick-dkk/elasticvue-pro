@@ -36,6 +36,9 @@ export const ALERT_RULES = [
     why: 'Data the cluster state does not know about — a dangling index or orphaned shard directories.' },
   { id: 'capacity', label: 'Disk capacity changed', level: 'critical',
     why: 'The size of the storage itself moved. Growing is worth knowing; shrinking is a lost data path.' },
+  { id: 'archive-missing', label: 'A day is in the cluster but not in the archive', level: 'critical',
+    why: 'Elasticsearch holds that day for the tag and neither S3 copy does. The logs were '
+       + 'received and not kept, which is discovered — if at all — when somebody needs them.' },
   { id: 'no-master', label: 'No master node', level: 'critical',
     why: 'The cluster cannot accept changes to its state until one is elected.' },
   { id: 'master-changed', label: 'Master moved', level: 'critical',

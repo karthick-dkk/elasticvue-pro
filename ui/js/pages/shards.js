@@ -12,7 +12,7 @@ import { h, mount } from '../lib/dom.js';
 import { bytes, num, pct, compact } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices,
          diskAccounting, setDangling, danglingFor } from '../core/state.js';
-import { card, table, empty, pill, connectionBanner } from './common.js';
+import { card, table, empty, pill, figure, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
@@ -497,12 +497,7 @@ function accountingBody(c, d) {
   return { sub, figures, notes: body };
 }
 
-function figure(label, value, sub) {
-  return h('div', { style: { minWidth: '140px' } },
-    h('div.muted', { style: { fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '.03em' } }, label),
-    h('div', { style: { fontSize: '17px', fontWeight: 660 } }, value),
-    sub ? h('div.muted', { style: { fontSize: '11px' } }, sub) : null);
-}
+
 
 /**
  * Indices whose data is older than the retention this cluster promises.
