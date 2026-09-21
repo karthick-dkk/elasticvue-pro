@@ -1,5 +1,57 @@
 # Changelog
 
+## 2.4.0
+
+**Log delay, across the fleet.** The delay view asks every selected cluster at once,
+bounded to three at a time — the clusters this is pointed at are the ones already under
+load. A run that comes back short says so: the coverage line carries "6 of 9 answered",
+and a cluster that was never reached is named rather than missing. Each device opens a
+live close-up of its newest documents, and an address is looked up in the address field
+rather than the hostname one, because searching the wrong field returns nothing and reads
+on screen as a device that has gone silent.
+
+**Reports as spreadsheets.** Log delay and ULM both export .xlsx, written here rather
+than fetched — the app ships unbundled with no npm and no CDN. Numbers stay numbers so a
+column can be summed; an unmeasurable delay is an empty cell, never a zero. Every report
+carries the clusters it could not measure on their own sheet, because a spreadsheet has
+no sentence above the table.
+
+**ULM — the archive.** A new view in Live logs: does S3 hold yesterday, for this tag, as
+raw bytes and as a parsed copy. Critical alert when Elasticsearch has a day the archive
+does not. Manual by design — nothing is fetched until Pull Now, because listing a bucket
+is thousands of objects and a monitoring tab must not run up a bill by being left open.
+The core signs its own S3 requests (SigV4, checked against AWS's published vectors) and
+can list, but has no way to read, write or delete.
+
+**The measurement scheduler.** The hosted bridge measures log delay every two hours and
+ships the raw figures to a cluster you name. Hosted only — it is the one edition that is
+still running when nobody is looking. It is the first thing here that writes without a
+person present, and it still takes two decisions a person made: the config must already
+permit writes, and an admin must arm it.
+
+**Two new themes.** Dark blue for long sessions, and Warm, which is the blue-reduced one
+— a navy interface emits more blue light, not less, and it is worth being straight about
+which lever each pulls. Fixing the theme mapping found a real bug: the primary button's
+label colour was hard-coded white and failed WCAG AA on three of four themes.
+
+**Interface.** Config is eight tabs instead of one scroll. The cluster summary names the
+JVM and flags a fleet running two. Nodes & shards is one view with the shard split as a
+single arc. Empty states say why they are empty and what to do. The REST console gets a
+35/65 split, search with next/previous, direct editing and full screen.
+
+**Fixed: searching or refreshing threw you to the top of every page.** Nothing was
+scrolling — the page briefly stopped being tall enough to hold its position while it
+redrew.
+
+**Fixed: a REST console response could vanish.** The history write was awaited before the
+result was drawn, and IndexedDB does not fail when it is unavailable, it never answers —
+so in a private window a request that came back 200 left the console reading "nothing run
+yet", permanently.
+
+Known: ULM's day prefix is built unpadded (`date=2026.8.1`), matching the layout it was
+specified against. Both forms are read correctly; only the prefix it constructs assumes
+the unpadded form, and it has not yet been checked against a production bucket.
+
 ## Unreleased
 - **The hosted Linux stack is built and trialled in CI.** Nothing tested the Dockerfile or
   the compose stack, so a broken image or a hole in the auth gate would have been found by
