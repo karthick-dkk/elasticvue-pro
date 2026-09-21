@@ -696,7 +696,8 @@ await go('console');
     await settleFor(300);
     const marks = doc.querySelectorAll('#c-response mark').length;
     ok(marks > 0, `console: searching marked nothing — response was ${doc.getElementById('c-response').textContent.slice(0, 80)}`);
-    ok(/hit/.test(doc.getElementById('c-response').textContent), 'console: the search does not say how many it found');
+    ok(/\d+ of \d+/.test(doc.getElementById('c-response').textContent),
+      'console: the search does not say which match you are on, out of how many');
 
     // A response is cluster data. Marking matches must not turn it into markup.
     const nonsense = doc.getElementById('c-find');
@@ -710,18 +711,48 @@ await go('console');
     await settleFor(200);
   }
 
-  // Editable after the fact.
-  const editBtn = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Edit');
-  ok(!!editBtn, 'console: the response cannot be edited');
-  if (editBtn) {
-    editBtn.click();
+  // Editable where it sits: no button, no mode.
+  ok(![...pane.querySelectorAll('button')].some((b) => b.textContent === 'Edit'),
+    'console: there is still an Edit button — the response should just be editable');
+  {
+    const out = doc.getElementById('c-out');
+    ok(!!out, 'console: the response is not an editable region');
+    ok(out && (out.contentEditable === 'true' || out.contentEditable === 'plaintext-only'),
+      `console: the response is not editable (contentEditable=${out && out.contentEditable})`);
+    ok(out && out.textContent.length > 0, 'console: the editable region is empty');
+    ok(out && out.spellcheck === false, 'console: spellcheck should be off on a response body');
+  }
+
+  // Next/previous match, and a distinct mark for the one you are on.
+  {
+    const f = doc.getElementById('c-find');
+    f.value = 'shards';
+    f.dispatchEvent(new window.Event('input', { bubbles: true }));
     await settleFor(300);
-    const box = doc.getElementById('c-edit');
-    ok(!!box, 'console: pressing Edit produced no editable field');
-    ok(box && box.value.length > 0, 'console: the editor opened empty instead of holding the response');
-    const done = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Done');
-    ok(!!done, 'console: no way to stop editing');
-    if (done) { done.click(); await settleFor(250); }
+    const total = doc.querySelectorAll('#c-response mark').length;
+    ok(total > 1, `console: need several matches to test stepping, found ${total}`);
+    ok(doc.querySelectorAll('#c-response mark.on').length === 1,
+      'console: exactly one match should be marked as current');
+    ok(/1 of \d/.test(doc.getElementById('c-response').textContent),
+      'console: the find bar does not say which match you are on');
+
+    const next = [...pane.querySelectorAll('button')].find((b) => b.title && /Next match/.test(b.title));
+    const prev = [...pane.querySelectorAll('button')].find((b) => b.title && /Previous match/.test(b.title));
+    ok(!!next && !!prev, 'console: no next/previous match buttons');
+    if (next && prev) {
+      next.click();
+      await settleFor(250);
+      ok(/2 of \d/.test(doc.getElementById('c-response').textContent),
+        'console: Next did not move to the second match');
+      prev.click(); await settleFor(200);
+      prev.click(); await settleFor(250);
+      // Wrapping backwards from the first lands on the last, as every find bar does.
+      ok(new RegExp(`${total} of ${total}`).test(doc.getElementById('c-response').textContent),
+        'console: Previous did not wrap to the last match');
+    }
+    f.value = '';
+    f.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(200);
   }
 
   // Full screen, and Escape out of it.

@@ -175,6 +175,14 @@
 .split-handle:hover, .split-handle:active { background: var(--accent-soft); border-left-color: var(--accent); }
 @media (max-width: 900px) { .split-handle { display: none; } }
 
+/* Search matches in the REST console. Every hit is marked; the one you are on is marked
+   differently, because "which of these am I on" must be answerable without scrolling. */
+.json mark, pre mark { background: color-mix(in srgb, var(--warning) 45%, transparent); color: inherit; border-radius: 2px; }
+.json mark.on, pre mark.on {
+  background: var(--accent); color: var(--on-accent);
+  outline: 1px solid var(--accent); border-radius: 2px;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {

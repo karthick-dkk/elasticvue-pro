@@ -160,6 +160,8 @@ const ui = { method: 'GET', path: '/_cluster/health', body: '', running: false, 
              filter: '', showFav: false,
              split: DEFAULT_SPLIT,   // percent of the row given to the query pane
              find: '',               // search within the response
+             findAt: 0,              // which match is current
+             findTotal: 0,
              full: false };          // response filling the window
 let history = [];
 
@@ -313,7 +315,9 @@ function draw() {
   if (ui.full) {
     // Everything else is hidden rather than scrolled past: a full-screen response that
     // still has the request bar above it is not full screen, it is a taller column.
-    mount(host, dl, h('div#c-response', { style: { display: 'flex', minHeight: '78vh' } }, responseCard()));
+    mount(host, dl, h('div#c-response', {
+      style: { display: 'flex', flexDirection: 'column', height: 'calc(100vh - 118px)', minHeight: '0' },
+    }, responseCard()));
     return;
   }
   mount(host, dl, h('div', { style: { display: 'grid', gap: '14px' } }, requestBar, columns, hist));
@@ -420,26 +424,90 @@ async function saveFav() {
   drawHistory();
 }
 
-/** What is on screen now: the edited copy if there is one, else what came back. */
-function currentText(bodyText) {
-  return ui.edit && ui.edited != null ? ui.edited : bodyText;
+/**
+ * Make the response directly editable.
+ *
+ * `plaintext-only` where the browser has it, so pasting into a response cannot bring
+ * markup with it; plain `true` elsewhere, which every current browser accepts.
+ */
+function editable(node) {
+  node.id = 'c-out';
+  node.spellcheck = false;
+  try { node.contentEditable = 'plaintext-only'; } catch (_) { node.contentEditable = 'true'; }
+  if (!node.isContentEditable && node.contentEditable !== 'plaintext-only') node.contentEditable = 'true';
+  return node;
 }
 
-/** Search within the response. */
+/** What is on screen now — including anything typed into it — else what came back. */
+function currentText(bodyText) {
+  const live = $('#c-out');
+  return live ? live.textContent : bodyText;
+}
+
+/**
+ * Search within the response, one match at a time.
+ *
+ * A count alone is not a search: "312 hits" in a 20,000-line response tells you the word
+ * is in there somewhere and leaves you scrolling. So the matches are numbered, the
+ * current one is marked differently from the rest, and the view moves to it.
+ */
+function step(by) {
+  const total = ui.findTotal || 0;
+  if (!total) return;
+  // Wraps both ways: at the last match, next goes to the first, which is what every
+  // find bar does and what the number under the cursor implies.
+  ui.findAt = ((ui.findAt + by) % total + total) % total;
+  mount($('#c-response'), responseCard());
+  scrollToMatch();
+  const el = $('#c-find'); if (el) el.focus();
+}
+
+/** Put the current match in the middle of the scroller, not just barely on screen. */
+function scrollToMatch() {
+  const on = $('#c-response mark.on');
+  if (on && typeof on.scrollIntoView === 'function') {
+    try { on.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (_) { on.scrollIntoView(); }
+  }
+}
+
 function findBox(bodyText) {
   const hits = ui.find ? countHits(bodyText, ui.find) : 0;
+  ui.findTotal = hits;
+  if (ui.findAt >= hits) ui.findAt = 0;
+
   const input = h('input#c-find', {
     type: 'search', value: ui.find, placeholder: 'find in results',
     style: { width: '150px', fontSize: '11.5px' },
-    oninput: (e) => { ui.find = e.target.value; mount($('#c-response'), responseCard());
-                      const el = $('#c-find'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } },
+    oninput: (e) => {
+      ui.find = e.target.value;
+      ui.findAt = 0;                      // a new search starts at its first match
+      mount($('#c-response'), responseCard());
+      const el = $('#c-find');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      scrollToMatch();
+    },
+    onkeydown: (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      step(e.shiftKey ? -1 : 1);          // Enter / Shift+Enter, as in every editor
+    },
   });
-  return h('span', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center' } },
+
+  const nav = (label, by, title) => h('button.btn.sm.ghost', {
+    disabled: !hits,
+    title,
+    style: { padding: '2px 7px' },
+    onclick: () => step(by),
+  }, label);
+
+  return h('span', { style: { display: 'inline-flex', gap: '4px', alignItems: 'center' } },
     input,
     ui.find
-      ? h('span.muted', { style: { fontSize: '11px', minWidth: '52px' } },
-          hits ? `${hits} hit${hits === 1 ? '' : 's'}` : 'no hits')
-      : null);
+      ? h('span.muted', { style: { fontSize: '11px', minWidth: '58px', fontVariantNumeric: 'tabular-nums' } },
+          hits ? `${ui.findAt + 1} of ${hits}` : 'no hits')
+      : null,
+    ui.find ? nav('\u2039', -1, 'Previous match (Shift+Enter)') : null,
+    ui.find ? nav('\u203a', 1, 'Next match (Enter)') : null);
 }
 
 function countHits(text, needle) {
@@ -466,11 +534,15 @@ function highlightFind(text) {
   const frag = document.createDocumentFragment();
   const hay = text.toLowerCase(), q = ui.find.toLowerCase();
   let i = 0;
+  let n = 0;
   for (;;) {
     const at = hay.indexOf(q, i);
     if (at < 0) { frag.append(text.slice(i)); return frag; }
     if (at > i) frag.append(text.slice(i, at));
-    frag.append(h('mark', text.slice(at, at + q.length)));
+    // The current match is a different mark, not merely a scrolled-to one: with three
+    // matches on screen, "which of these am I on" has to be answerable without moving.
+    frag.append(h(n === ui.findAt ? 'mark.on' : 'mark', text.slice(at, at + q.length)));
+    n += 1;
     i = at + q.length;
   }
 }
@@ -503,27 +575,17 @@ function responseCard() {
         /^tls|tunnel_error/.test(r.kind || '')
           ? h('button.btn.sm.primary', { style: { marginTop: '8px' }, onclick: () => navigateTo('overview') }, 'Fix on the Clusters page')
           : null)
-    : ui.edit
-      // Editable after the fact. It is a scratch copy — the response that came back is
-      // still in the history — so this is for pulling a document out, changing two
-      // fields and sending it somewhere, without a round trip through an editor.
-      ? h('textarea#c-edit', {
-          spellcheck: false,
-          style: { width: '100%', minHeight: '320px', fontFamily: 'var(--mono)', fontSize: '12px',
-                   resize: 'vertical', boxSizing: 'border-box' },
-          oninput: (e) => { ui.edited = e.target.value; },
-        }, ui.edited != null ? ui.edited : bodyText)
-    : ui.raw ? h('pre.json', { style: { margin: 0 } }, highlightFind(bodyText))
-    : ui.find ? h('pre.json', { style: { margin: 0 } }, highlightFind(bodyText))
-    : jsonView(bodyText);
+    // Editable where it sits, with no mode to enter or leave. Changes are scratch: the
+    // response that came back is still in the history, nothing is sent anywhere, and the
+    // next search or re-run redraws from the original. It is for reading — widening a
+    // line, deleting noise to see what is left — not for keeping.
+    : ui.raw || ui.find
+      ? editable(h('pre.json', { style: { margin: 0 } }, highlightFind(bodyText)))
+      : editable(jsonView(bodyText));
 
   return h('section.card', { style: { flex: '1', display: 'flex', flexDirection: 'column', minWidth: 0 } },
     head(meta, [
       findBox(bodyText),
-      h('button.btn.sm', {
-        title: ui.edit ? 'Back to the response as it came back' : 'Edit this copy of the response',
-        onclick: () => { ui.edit = !ui.edit; if (!ui.edit) ui.edited = null; mount($('#c-response'), responseCard()); },
-      }, ui.edit ? 'Done' : 'Edit'),
       h('button.btn.sm', { onclick: () => { ui.raw = !ui.raw; mount($('#c-response'), responseCard()); } }, ui.raw ? 'Highlighted' : 'Raw'),
       h('button.btn.sm', { onclick: () => navigator.clipboard.writeText(currentText(bodyText)) }, 'Copy'),
       h('button.btn.sm', { onclick: () => download(`response-${Date.now()}.json`, currentText(bodyText), 'application/json') }, 'Save…'),
@@ -532,7 +594,14 @@ function responseCard() {
         title: ui.full ? 'Leave full screen (Esc)' : 'Fill the window with the response',
         onclick: () => { ui.full = !ui.full; draw(); },
       }, ui.full ? '\u2715 Close' : '\u26F6 Full screen')]),
-    h('div.body', { style: { padding: '10px', flex: '1', minHeight: '340px', maxHeight: '64vh', overflow: 'auto' } },
+    // Beside the query pane the body is capped so the history stays reachable. In full
+    // screen there is nothing else on the page, so it takes the window — the whole point
+    // of pressing the button was to stop reading a response through a letterbox.
+    h('div.body', {
+      style: ui.full
+        ? { padding: '10px', flex: '1', minHeight: '0', height: 'calc(100vh - 150px)', overflow: 'auto' }
+        : { padding: '10px', flex: '1', minHeight: '340px', maxHeight: '64vh', overflow: 'auto' },
+    },
       h('div.mono.muted.trunc', { style: { fontSize: '10.5px', marginBottom: '6px' }, title: r.url }, `${ui.method} ${r.url || ''}`),
       body));
 }
