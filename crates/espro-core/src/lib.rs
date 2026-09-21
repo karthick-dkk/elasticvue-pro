@@ -14,6 +14,8 @@ pub mod crypto;
 pub mod delay_sink;
 pub mod guard;
 pub mod http;
+pub mod s3;
+pub mod sigv4;
 pub mod socks;
 pub mod ssh;
 pub mod tls;
