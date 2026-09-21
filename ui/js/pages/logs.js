@@ -495,7 +495,21 @@ function delayView() {
         disabled: busy || !can.length,
         title: can.length ? '' : 'No cluster has reported that it can be analysed yet',
         onclick: fetchDelay,
-      }, delay.records ? '↻ Fetch again' : `Fetch details (${can.length})`)));
+      }, delay.records ? '↻ Fetch again' : `Fetch details (${can.length})`),
+      // In the toolbar rather than inside the results card. The report was only
+      // reachable after a successful fetch, which is exactly backwards: a fleet where
+      // nothing can be analysed is the case somebody most needs to hand to someone else.
+      h('button.btn.sm', {
+        id: 'delay-report',
+        disabled: !delay.byCluster.size,
+        title: 'A spreadsheet: every device measured, the summary, and every cluster that was not',
+        onclick: exportDelayReport,
+      }, '\u2913 Report (xlsx)'),
+      h('button.btn.sm.ghost', {
+        id: 'delay-schedule',
+        title: 'Produce this report on a timer while the app is open',
+        onclick: scheduleReport,
+      }, delaySchedule() ? `\u23F1 ${delaySchedule().everyHours}h` : '\u23F1 Schedule\u2026')));
 
   if (!list.length) return h('div', head, card('Log delay', '', empty('No cluster selected')));
   if (!delay.byCluster.size) {
@@ -774,14 +788,8 @@ function resultsCard() {
         ? h('div.muted', { style: { fontSize: '11.5px' } },
             `${num(s.truncated)} document(s) fall outside the top 500 devices per cluster — this list is not every device.`)
         : null,
-      h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
-        h('button.btn.sm.primary', { id: 'delay-report', onclick: exportDelayReport,
-          title: 'A spreadsheet: every device, the summary, and the clusters that did not answer' },
-          '\u2913 Report (xlsx)'),
-        h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV'),
-        h('button.btn.sm', { id: 'delay-schedule', onclick: scheduleReport,
-          title: 'Produce this report on a timer while the app is open' },
-          delaySchedule() ? `\u23F1 Every ${delaySchedule().everyHours}h` : '\u23F1 Schedule\u2026')),
+      h('div', { style: { display: 'flex', gap: '6px' } },
+        h('button.btn.sm', { id: 'delay-csv', onclick: exportDelayCsv }, 'Export CSV')),
       table(['Cluster', 'Device', 'Status', { label: 'Delay', num: true }, 'Pattern',
              { label: 'Docs', num: true }, 'Last seen', 'What it means', ''],
         trs, { emptyText: delay.status === 'unhealthy' ? 'Every device is within threshold.' : 'No devices returned.' })));
@@ -824,7 +832,11 @@ function buildDelayReport() {
 }
 
 function exportDelayReport() {
-  if (!delay.records) { toast('Fetch the details first — there is nothing to report on yet', 'warn'); return; }
+  // No records is not a reason to refuse. A fleet where nothing could be analysed is
+  // still a finding, and the Not measured sheet is the whole answer: which cluster, and
+  // which fields it is missing. Refusing here would leave somebody with a screenful of
+  // red and nothing to send on.
+  if (!delay.byCluster.size) { toast('Check the fleet first — nothing has been looked at yet', 'warn'); return; }
   try {
     downloadBytes(reportFilename(delay.at || Date.now()), buildDelayReport(), XLSX_MIME);
     toast('Report saved');
