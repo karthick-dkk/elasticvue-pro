@@ -229,6 +229,82 @@ export function gauge(value, max, opts = {}) {
     opts.label ? h('div.muted', { style: { fontSize: '11px', marginTop: '-4px' } }, opts.label) : null);
 }
 
+/**
+ * One arc, split between the parts that make up a whole.
+ *
+ * `gauge` above answers "how far along one number is". This answers a different
+ * question: a total made of parts, where the parts are the point. Shards are the case it
+ * was written for — assigned and unassigned are not two readings, they are one
+ * population split two ways, and drawing them as two gauges invites the reader to
+ * compare two percentages that share a denominator they cannot see.
+ *
+ * Every segment is labelled with its own count underneath, because an arc gives you the
+ * proportion and nothing else: "most of them are fine" is not an answer to "how many are
+ * not". A segment with a zero value is still listed — "0 unassigned" is the reassurance
+ * somebody came to the page for, and a legend that drops it makes its absence
+ * indistinguishable from the chart not knowing.
+ *
+ * @param segments [{ key, label, value, color }]
+ * @param opts { size, total, centreLabel, format }
+ */
+export function splitGauge(segments, opts = {}) {
+  const size = opts.size || 150;
+  const r = size / 2 - 13;
+  const cx = size / 2, cy = size / 2 + 7;
+  const START = 150, SWEEP = 240;
+  const parts = (segments || []).map((x) => ({ ...x, value: Math.max(0, Number(x.value) || 0) }));
+  const sum = parts.reduce((n, x) => n + x.value, 0);
+  const total = opts.total == null ? sum : Math.max(0, Number(opts.total) || 0);
+  const fmt = opts.format || ((v) => String(v));
+
+  const pt = (deg) => {
+    const a = (Math.PI / 180) * deg;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const arc = (fromDeg, toDeg) => {
+    const [x0, y0] = pt(fromDeg), [x1, y1] = pt(toDeg);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${toDeg - fromDeg > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  };
+
+  const s = svg('svg', { viewBox: `0 0 ${size} ${size}`, style: { width: `${size}px`, height: `${size}px` } });
+  // The track is the total. When the parts do not add up to it — a count the cluster did
+  // not break down — the gap stays grey rather than being shared out among the parts.
+  s.append(svg('path', { d: arc(START, START + SWEEP),
+    style: { fill: 'none', stroke: 'var(--surface-3)', strokeWidth: 11, strokeLinecap: 'round' } }));
+
+  let at = START;
+  for (const part of parts) {
+    if (!total || part.value <= 0) continue;
+    const span = SWEEP * (part.value / total);
+    const seg = svg('path', { d: arc(at, Math.min(START + SWEEP, at + span)),
+      style: { fill: 'none', stroke: part.color, strokeWidth: 11 } });
+    seg.append(svg('title', {}, `${part.label}: ${fmt(part.value)}`));
+    s.append(seg);
+    at += span;
+  }
+
+  // In a narrow column a wrapping legend breaks two-then-one, which reads as a
+  // grouping that is not there. `legendColumn` stacks it instead, one per line.
+  const legendStyle = opts.legendColumn
+    ? { display: 'grid', gap: '3px', justifyItems: 'start' }
+    : { display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' };
+  return h('div', { style: { display: 'grid', justifyItems: 'center', gap: '2px' } },
+    h('div', { style: { position: 'relative', lineHeight: 0 } }, s,
+      h('div', { style: { position: 'absolute', inset: 0, display: 'grid', placeContent: 'center',
+                          textAlign: 'center', lineHeight: 1.15 } },
+        h('div', { style: { fontSize: '22px', fontWeight: 680 } }, fmt(total)),
+        h('div.muted', { style: { fontSize: '10.5px' } }, opts.centreLabel || 'total'))),
+    h('div', { style: legendStyle },
+      ...parts.map((part) => h('div', {
+        style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px' },
+        title: `${part.label}: ${fmt(part.value)}`,
+      },
+        h('span', { style: { width: '9px', height: '9px', borderRadius: '2px',
+                             background: part.color, flex: 'none' } }),
+        h('b', { style: { fontVariantNumeric: 'tabular-nums' } }, fmt(part.value)),
+        h('span.muted', part.label)))));
+}
+
 /* --------------------------------- honeycomb ---------------------------------- */
 
 /**
@@ -256,7 +332,10 @@ export function honeycomb(items, opts = {}) {
 
   const cap = opts.max || 1200;
   const shown = items.slice(0, cap);
-  const width = opts.width || 900;
+  // The viewBox is a coordinate space, not a pixel size: the svg below scales it to
+  // whatever width the card gives it. A wide space means more cells per row, so the grid
+  // ends up short and wide rather than a tall block occupying half the page.
+  const width = opts.width || 1600;
 
   // Hex geometry: pointy-top, so a row advances by 3/4 of the height and every other row
   // is offset by half a width.
@@ -267,8 +346,12 @@ export function honeycomb(items, opts = {}) {
   const W = perRow * w * 0.75 + w / 2;
   const H = rows * hgt + hgt / 2;
 
-  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`,
-    style: { width: '100%', maxWidth: `${W}px`, height: `${H}px` } });
+  // width:100% with no max and no fixed height — the viewBox aspect ratio decides the
+  // height, so it fills the card on a wide window and scales down on a narrow one. The
+  // old fixed pixel height capped it at the viewBox width and left the rest of the row
+  // empty, which is what made a 229-cell grid occupy half a page.
+  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMinYMin meet',
+    style: { width: '100%', display: 'block' } });
 
   shown.forEach((it, i) => {
     const col = i % perRow, row = Math.floor(i / perRow);
@@ -296,7 +379,7 @@ export function honeycomb(items, opts = {}) {
     el.append(h('div.muted', { style: { fontSize: '10.5px', marginTop: '4px' } },
       `showing ${num(shown.length)} of ${num(items.length)} — filter to see the rest`));
   }
-  if (opts.legendFor) el.append(legend(opts.legendFor));
+  if (opts.legendFor) el.append(countLegend(opts.legendFor, items.length));
   return el;
 }
 
@@ -307,9 +390,30 @@ function hexFor(n, width) {
     const w = size * 2;
     const perRow = Math.max(1, Math.floor((width - w / 2) / (w * 0.75)));
     const rows = Math.ceil(n / perRow);
-    if (rows * Math.sqrt(3) * size <= 260) return size;
+    if (rows * Math.sqrt(3) * size <= 300) return size;
   }
   return 5;
+}
+
+/**
+ * A legend that says how many, not just what the colours mean.
+ *
+ * "Red means unassigned" is only half the answer when the question is "how many are
+ * unassigned". The total goes on the end so the parts can be checked against the whole
+ * without counting cells.
+ */
+function countLegend(entries, total) {
+  return h('div.legend', { style: { alignItems: 'center', gap: '14px' } },
+    ...entries.map((e) => h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+      h('i', { style: { background: e.color } }),
+      h('span', e.label),
+      e.count !== undefined
+        ? h('b', { style: { color: e.count ? e.color : 'inherit' } }, num(e.count))
+        : null)),
+    total !== undefined
+      ? h('span', { style: { marginLeft: 'auto', color: 'var(--text-muted)' } },
+          h('span', 'total '), h('b', num(total)))
+      : null);
 }
 
 export function legend(entries) {

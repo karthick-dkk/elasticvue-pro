@@ -67,7 +67,7 @@ export async function ruleBuilder(existing) {
       mount(actionHost, empty('Nothing to preview.'));
       return;
     }
-    mount(matchHost, h('div.muted', { style: { fontSize: '11.5px' } }, 'checking…'));
+    mount(matchHost, h('div.muted', { style: { fontSize: '11.5px' } }, 'Loading…'));
     try {
       const { matched, total, unreadable } = await matchIndices(rule, previewCluster, indices);
       mount(matchHost, matchTable(matched, total, unreadable));

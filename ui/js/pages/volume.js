@@ -136,7 +136,11 @@ function fleetTable(reports) {
            'Live policy', 'Within policy',
            { label: 'Repo size', num: true },
            'Snapshot policy'],
-      trs, { emptyText: 'No clusters' }));
+      trs, {
+        emptyText: empty('No cluster is selected, so there is nothing to report on.', {
+          actions: [h('button.btn.sm', { onclick: () => navigateTo('settings') }, 'Add a cluster')],
+        }),
+      }));
 }
 
 /**

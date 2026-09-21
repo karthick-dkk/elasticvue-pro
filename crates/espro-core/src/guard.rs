@@ -15,6 +15,15 @@
 //!   that one request carries `allowWrites`. So an automatic refresh, a page load or a
 //!   future code path cannot write even while the session is unlocked — only the request
 //!   a person actually asked for.
+//!
+//! One thing writes without a person present: the scheduled log-delay measurement in
+//! `delay_sink.rs`, hosted edition only. It is not a third way in. It takes the first
+//! one — it refuses to run unless the config already permits writes — and it cannot take
+//! the second, because the session unlock is never persisted and a timer holds no
+//! session. Arming it is itself an admin action, so two people-made decisions still
+//! stand between this guard and every document it indexes. If anything else ever wants
+//! to write on a timer, it belongs on that same footing, and the sentence above should
+//! keep saying two.
 
 use regex::Regex;
 use std::sync::LazyLock;

@@ -5,13 +5,16 @@ import { bytes, dt, ago, download } from '../lib/fmt.js';
 import * as cfg from '../core/config.js';
 import { state, setConfig, refreshAll, clusters, client, hasSessionCredential,
          sessionCredentialLabel, clearSessionCredential, clustersNeedingCredential, isReadOnly } from '../core/state.js';
-import { workerStatus, forgetWorker, tunnels as fetchTunnels, listPins, untrustCert, untrustHostKey, tunnelReconnect } from '../core/es.js';
+import { workerStatus, forgetWorker, tunnels as fetchTunnels, listPins, untrustCert, untrustHostKey, tunnelReconnect,
+         delaySinkGet, delaySinkSet, delaySinkRun } from '../core/es.js';
 import { showCredentialDialog, forgetVaultCredential } from '../ui/credential-dialog.js';
 import { EXAMPLE_YAML } from '../core/example.js';
 import { saveTextAs } from '../core/platform.js';
 import { editCluster, editJumpHost, editCredentials, editDefaults, unlockSealed, saveRaw } from '../ui/config-editor.js';
 import { card, pill, table, empty } from './common.js';
 import { navigateTo } from '../core/intent.js';
+import { ALERT_RULES, loadAlertSettings, isEnabled } from '../core/alert-rules.js';
+import { toast } from '../ui/menu.js';
 import { isSnapshotMode } from '../core/snapshot.js';
 import { applyLoadedConfig } from '../ui/load-config.js';
 import { filePickerButton, canPickByPath, configHistory, readVersion } from '../ui/upload.js';
@@ -22,6 +25,7 @@ let host = null;
 
 let core = null;      // last PING
 let trust = null;     // last PINS + TUNNELS
+let sink = null;      // last DELAY_SINK_GET; null until asked, {supported:false} off hosted
 
 /* ------------------------- uploading a config, and its history ------------------- */
 
@@ -83,7 +87,13 @@ function historyBody() {
           h('td.num', bytes(v.bytes)),
           h('td', { style: { textAlign: 'right' } },
             h('button.btn.sm', { onclick: () => restore(v) }, 'Load this')))),
-        { emptyText: 'None' })),
+        {
+          // "None" was the whole message. This is a good empty state — nothing has gone
+          // wrong — so it says what would put something here rather than offering a button.
+          emptyText: empty('No earlier version saved yet.', {
+            detail: 'A copy is kept automatically each time the config is saved from this app.',
+          }),
+        })),
     h('div.muted', { style: { fontSize: '11px', paddingTop: '6px' } },
       'Loading an older version does not discard the current one — that is saved as a '
       + 'version first, so this goes both ways.'));
@@ -99,7 +109,14 @@ async function restore(v) {
   }
 }
 
-export function render(el) { host = el; draw(); confirmCoreGuard(); loadTrust(); }
+export function render(el) {
+  host = el;
+  // draw() asks for whatever the open section needs. loadSink is the exception: its
+  // answer decides whether the Scheduled log delay tab exists at all, so it has to be
+  // asked before the bar can be drawn correctly — and it redraws when it lands.
+  draw();
+  loadSink();
+}
 
 /** Read the guard back from the core itself rather than trusting the UI's copy. */
 async function confirmCoreGuard() {
@@ -182,12 +199,390 @@ function trustCard() {
     h('div.muted', { style: { fontSize: '11.5px' } },
       'Trust decisions record fingerprints only — never a key, a password or a certificate.'));
 }
-export function onData() { if (host && host.isConnected) { draw(); loadTrust(); } }
+export function onData() { if (host && host.isConnected) draw(); }
 
-function draw() {
+/* ------------------------------ alert triggers ------------------------------ */
+
+/**
+ * Every alert this app can raise, with a switch and its thresholds.
+ *
+ * The list is the registry, so a rule cannot exist in the code and be missing here.
+ * Switching one off stops it being shown; it does not stop it being computed, and it does
+ * not touch anything anybody acknowledged — the identity of an alert is unchanged by
+ * being disabled, which is what makes retuning safe.
+ *
+ * Writing a genuinely new rule is the Automation page's job. There is one rule editor in
+ * this product and this is not a second one.
+ */
+function alertRulesCard() {
+  const raw = state.config && state.config.raw;
+  const settings = loadAlertSettings(raw);
+  const admin = !!raw;
+  const off = ALERT_RULES.filter((r) => !isEnabled(settings, r.id)).length;
+
+  const save = async (mutate) => {
+    if (!raw) { toast('No config loaded', 'warn'); return; }
+    if (!raw.alertRules || typeof raw.alertRules !== 'object') raw.alertRules = {};
+    mutate(raw.alertRules);
+    try {
+      await saveRaw(raw);
+      await setConfig(await cfg.normalize(raw, (state.config.fileMeta || {}).name || 'config'), state.handle);
+      toast('Alert settings saved');
+    } catch (e) {
+      toast(`Could not save: ${e.message}`, 'err', 5000);
+    }
+    draw();
+  };
+
+  const trs = ALERT_RULES.map((r) => {
+    const on = isEnabled(settings, r.id);
+    const s = settings[r.id] || {};
+    return h('tr', { style: on ? null : { opacity: '.55' } },
+      h('td', h('input', { type: 'checkbox', checked: on, disabled: !admin,
+        title: on ? `Stop showing ${r.label}` : `Show ${r.label} again`,
+        onchange: (e) => {
+          const want = e.target.checked;
+          save((a) => { a[r.id] = { ...(a[r.id] || {}), enabled: want }; });
+        } })),
+      h('td', h('div', { style: { fontWeight: 620 } }, r.label),
+        h('div.muted', { style: { fontSize: '11px' } }, r.why)),
+      h('td', pill(r.level, r.level === 'critical' ? 'red' : 'yellow')),
+      h('td', (r.thresholds || []).length
+        ? h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap' } },
+            ...r.thresholds.map((t) => h('label', {
+              style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '11.5px' },
+            },
+              h('span.muted', t.label),
+              h('input', {
+                type: 'number', min: String(t.min), max: String(t.max), disabled: !admin,
+                value: String((s.thresholds && s.thresholds[t.key]) ?? state.defaults[t.key] ?? ''),
+                style: { width: '68px' },
+                title: `${t.min}–${t.max}${t.unit}`,
+                onchange: (e) => {
+                  const v = Number(e.target.value);
+                  if (!isFinite(v) || v < t.min || v > t.max) {
+                    toast(`${t.label} must be between ${t.min} and ${t.max}${t.unit}`, 'warn');
+                    draw(); return;
+                  }
+                  save((a) => {
+                    a[r.id] = { ...(a[r.id] || {}) };
+                    a[r.id].thresholds = { ...(a[r.id].thresholds || {}), [t.key]: v };
+                  });
+                },
+              }),
+              h('span.muted', t.unit))))
+        : h('span.muted', { style: { fontSize: '11.5px' } }, '\u2014')),
+      h('td.mono.muted', { style: { fontSize: '10.5px' } }, r.id));
+  });
+
+  return card('Alert triggers',
+    `${ALERT_RULES.length} rule(s)${off ? ` \u00b7 ${off} switched off` : ' \u00b7 all on'}`,
+    h('div', { style: { display: 'grid', gap: '8px' } },
+      h('div.muted', { style: { fontSize: '12px' } },
+        'Switching a rule off stops it appearing on the Alerts page. Anything already '
+        + 'acknowledged keeps its history \u2014 disabling a rule does not change what its '
+        + 'alerts are called. To write a rule of your own, use ',
+        h('button.btn.sm.ghost', { onclick: () => navigateTo('automation') }, 'Automation'),
+        '.'),
+      !admin ? h('div.muted', { style: { fontSize: '11.5px' } }, 'Read-only \u2014 no config is loaded.') : null,
+      table(['', 'Alert', 'Level', 'Thresholds', 'id'], trs)));
+}
+
+/* ----------------------- the scheduled log-delay measurement ----------------------- */
+
+/**
+ * The one thing in this product that acts without somebody present.
+ *
+ * It exists only in the hosted edition, so on a desktop build this card is absent rather
+ * than disabled — an option you cannot ever use is worse than no option. Everything the
+ * card shows about the last run comes from the core, which is the only thing that knows:
+ * the page is not running the timer and must not pretend to.
+ *
+ * Measurements are shipped raw. Whether 41 minutes counts as delayed is decided on the
+ * Log delay page, by the same thresholds that apply to a live run, which is why nothing
+ * here asks for one.
+ */
+async function loadSink() {
+  try {
+    sink = await delaySinkGet();
+  } catch (_) {
+    // A core too old to know the message, or an edition that does not schedule. Either
+    // way there is nothing to offer.
+    sink = null;
+  }
+  if (host && host.isConnected) draw();
+}
+
+function sinkField(label, key, opts = {}) {
+  const c = (sink && sink.config) || {};
+  return h('label', { style: { display: 'grid', gap: '3px', fontSize: '11.5px' } },
+    h('span.muted', label),
+    h('input', {
+      id: `sink-${key}`, type: opts.type || 'text',
+      value: String(c[key] ?? ''),
+      min: opts.min == null ? null : String(opts.min),
+      max: opts.max == null ? null : String(opts.max),
+      style: { width: opts.width || '100%' },
+      title: opts.title || '',
+    }));
+}
+
+function delaySinkCard() {
+  if (!sink || !sink.supported) return null;
+  const c = sink.config || {};
+  const st = sink.state || {};
+  const list = clusters();
+  const picked = new Set((c.clusters || []).length ? c.clusters : list.map((x) => x.id).filter((id) => id !== c.sinkClusterId));
+
+  const read = () => {
+    const v = (key) => { const el = $(`#sink-${key}`); return el ? el.value.trim() : ''; };
+    const chosen = list.map((x) => x.id).filter((id) => { const el = $(`#sink-pick-${id}`); return el && el.checked; });
+    return {
+      enabled: !!($('#sink-enabled') || {}).checked,
+      sinkClusterId: (($('#sink-target') || {}).value || '').trim(),
+      clusters: chosen,
+      everyHours: Number(v('everyHours')) || 2,
+      indexPrefix: v('indexPrefix'),
+      indexPattern: v('indexPattern'),
+      deviceField: v('deviceField'),
+      arrivalField: v('arrivalField'),
+      eventTimeFields: v('eventTimeFields').split(',').map((f) => f.trim()).filter(Boolean),
+      maxDevices: Number(v('maxDevices')) || 2000,
+    };
+  };
+
+  const save = async () => {
+    const next = read();
+    // Empty means "every cluster" to the core, which is right for a hand-edited file and
+    // wrong for a screen where somebody has just unticked the last box.
+    if (next.enabled && !next.clusters.length) { toast('Pick at least one cluster to measure', 'warn'); return; }
+    if (next.enabled && next.clusters.length === 1 && next.clusters[0] === next.sinkClusterId) {
+      toast('The only cluster picked is the one being written to', 'warn'); return;
+    }
+    try {
+      const res = await delaySinkSet(next);
+      if (!res || !res.ok) { toast(`Not saved: ${(res && res.message) || 'refused'}`, 'err', 6000); return; }
+      sink = { ...res, supported: true };
+      toast(next.enabled ? 'Scheduled measurement armed' : 'Scheduled measurement switched off');
+      draw();
+    } catch (e) {
+      toast(`Could not save: ${e.message}`, 'err', 5000);
+    }
+  };
+
+  const runNow = async () => {
+    toast('Measuring…');
+    try {
+      const res = await delaySinkRun();
+      if (res && res.skipped) toast(`Nothing was measured: ${res.skipped}`, 'warn', 8000);
+      else if (res && res.ok) toast(`Measured ${res.measured} device(s) across ${res.clusters} cluster(s) into ${res.index}`, 'ok', 8000);
+      else toast(`Run failed: ${(res && res.error) || 'unknown'}`, 'err', 8000);
+    } catch (e) {
+      toast(`Run failed: ${e.message}`, 'err', 6000);
+    }
+    loadSink();
+  };
+
+  const status = st.lastSkipped
+    ? pill('skipped', 'yellow')
+    : !st.runs ? pill('never run', 'grey')
+    : st.lastOk ? pill('ok', 'green') : pill('failed', 'red');
+
+  return card('Scheduled log delay',
+    c.enabled ? `every ${c.everyHours}h \u2192 ${c.sinkClusterId || 'nowhere'}` : 'switched off',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      h('div.muted', { style: { fontSize: '12px' } },
+        'The bridge measures each cluster\u2019s log delay on a timer and writes the raw '
+        + 'figures to the cluster you name below. Only the hosted edition does this \u2014 a '
+        + 'desktop app is not running when nobody is looking at it. Nothing is classified '
+        + 'on the way in: the ',
+        h('button.btn.sm.ghost', { onclick: () => navigateTo('logs') }, 'Log delay'),
+        ' page applies the thresholds when the data is read back.'),
+      sink.blocked
+        ? h('div.banner.warn', { style: { margin: 0, fontSize: '12px' } }, 'Cannot run right now: ', sink.blocked)
+        : null,
+      h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'end' } },
+        h('label', { style: { display: 'inline-flex', gap: '6px', alignItems: 'center', fontSize: '12px' } },
+          h('input#sink-enabled', { type: 'checkbox', checked: !!c.enabled }), 'Run on a timer'),
+        h('label', { style: { display: 'grid', gap: '3px', fontSize: '11.5px' } },
+          h('span.muted', 'Write measurements to'),
+          h('select#sink-target', {},
+            h('option', { value: '' }, '\u2014 pick a cluster \u2014'),
+            ...list.map((x) => h('option', { value: x.id, selected: x.id === c.sinkClusterId }, x.name)))),
+        sinkField('Every (hours)', 'everyHours', { type: 'number', min: 1, max: 24, width: '80px' }),
+        sinkField('Index prefix', 'indexPrefix', { title: 'Indices are <prefix>-YYYY.MM' }),
+        sinkField('Max devices per run', 'maxDevices', { type: 'number', min: 1, max: 10000, width: '110px' })),
+      h('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'end' } },
+        sinkField('Indices to measure', 'indexPattern'),
+        sinkField('Device field', 'deviceField'),
+        sinkField('Arrival time field', 'arrivalField'),
+        sinkField('Event time fields', 'eventTimeFields',
+          { title: 'Comma separated, tried in order \u2014 the first one present is used' })),
+      h('div', { style: { display: 'grid', gap: '4px' } },
+        h('span.muted', { style: { fontSize: '11.5px' } }, 'Clusters to measure'),
+        h('div', { style: { display: 'flex', gap: '12px', flexWrap: 'wrap' } },
+          ...list.map((x) => h('label', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px' } },
+            h('input', { id: `sink-pick-${x.id}`, type: 'checkbox', checked: picked.has(x.id) }), x.name)))),
+      table([], [
+        kvRow('Status', status),
+        kvRow('Last attempt', st.lastRunAt ? `${dt(st.lastRunAt)} (${ago(st.lastRunAt)})` : 'never'),
+        kvRow('Last result', st.lastSkipped ? st.lastSkipped
+          : st.runs ? `${st.lastMeasured} device(s) written, ${st.lastFailed} cluster(s) failed` : '\u2014'),
+        kvRow('Last error', st.lastError || '\u2014'),
+        kvRow('Next run', c.enabled && st.nextDueAt ? `${dt(st.nextDueAt)} (${ago(st.nextDueAt)})` : 'not scheduled'),
+        kvRow('Runs since start', String(st.runs || 0)),
+      ]),
+      h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+        h('button.btn.primary', { onclick: save }, 'Save'),
+        h('button.btn', { onclick: runNow }, 'Run now'))));
+}
+/* ---------------------------------- sections ---------------------------------- */
+
+/**
+ * The Config page is eight unrelated jobs, and it used to be all eight at once: a single
+ * scroll where "which certificate do we trust" sat under "what is the refresh interval"
+ * and the thing you came for was somewhere in the middle. Nothing was hard to find
+ * because it was hidden; it was hard to find because everything else was in the way.
+ *
+ * So they are tabs, in the same shape as the tabs at the top of the window. The bar is
+ * the page's table of contents: you can see every job this page does without scrolling,
+ * and you are only ever looking at one of them.
+ *
+ * A section may be absent — the schedule only exists on a build that can keep one — and
+ * an absent section has no tab. An option you can never use is worse than no option.
+ */
+const SECTIONS = [
+  { id: 'file',     label: 'Config file',  icon: '▤', build: fileCard },
+  { id: 'creds',    label: 'Credentials',  icon: '◈', build: credentialsCard },
+  { id: 'clusters', label: 'Clusters',     icon: '▦', build: clustersCard },
+  { id: 'trust',    label: 'Jump hosts & trust', icon: '⇄', build: trustSection, load: loadTrust },
+  { id: 'alerts',   label: 'Alert triggers', icon: '⚠', build: alertRulesCard },
+  { id: 'schedule', label: 'Scheduled log delay', icon: '⏱', build: delaySinkCard,
+    when: () => !!(sink && sink.supported) },
+  { id: 'defaults', label: 'Defaults',     icon: '⚙', build: defaultsCard },
+  { id: 'diag',     label: 'Diagnostics',  icon: '✚', build: diagnosticsCard, load: confirmCoreGuard },
+];
+
+/** Which section is open. Remembered across redraws so a save does not move you. */
+let section = 'file';
+
+function visibleSections() {
+  return SECTIONS.filter((s) => !s.when || s.when());
+}
+
+function activeSection() {
+  const shown = visibleSections();
+  return shown.find((s) => s.id === section) || shown[0];
+}
+
+/**
+ * The tab bar. Deliberately the same markup and the same `aria-current` as the window's
+ * own tabs, so it reads as navigation rather than as a row of buttons that happen to be
+ * next to each other — and so a screen reader calls it what it is.
+ */
+function sectionNav() {
+  const active = activeSection();
+  const nav = h('nav.subnav');
+  visibleSections().forEach((s) => {
+    nav.append(h('button', {
+      'aria-current': active && active.id === s.id ? 'page' : null,
+      title: s.label,
+      onclick: () => { section = s.id; draw(); },
+    }, h('span.ico', s.icon), h('span', s.label)));
+  });
+  return nav;
+}
+
+/* ------------------------------ the sections ------------------------------ */
+
+function fileCard() {
   const meta = (state.config && state.config.fileMeta) || {};
-  const d = state.defaults;
+  return card('Config file', meta.name || 'not loaded',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      table([], [
+        kvRow('File', meta.name || '–'),
+        kvRow('Size', meta.size ? bytes(meta.size) : '–'),
+        kvRow('Last modified on disk', meta.lastModified ? dt(meta.lastModified) : '–'),
+        kvRow('Loaded', state.config ? `${dt(state.config.loadedAt)} (${ago(state.config.loadedAt)})` : '–'),
+        kvRow('Path', meta.path || (meta.ephemeral ? 'loaded once — not remembered' : '–')),
+        kvRow('Format', state.config ? (state.config.format === 'json' ? 'JSON (config_cluster.json)' : 'YAML — edits from the UI are saved as config_cluster.json next to it') : '–'),
+        kvRow('Secrets in file', state.config ? (state.config.sealed ? 'encrypted (AES-256-GCM, PBKDF2-SHA512 master password)' : (clusters().some((c) => c.credSource === 'shared' || c.credSource === 'cluster') ? 'PLAIN TEXT — use "Store in config file (encrypted)" to fix' : 'none')) : '–'),
+        kvRow('Mode', isSnapshotMode()
+          ? `snapshot — collected ${state.snapshot && state.snapshot.generatedAt ? dt(state.snapshot.generatedAt) : '?'}`
+            + (state.snapshot && state.snapshot.host ? ` on ${state.snapshot.host}` : '')
+          : 'live — the app connects to each cluster (directly or through a jump host)'),
+      ]),
+      h('div#cfg-msg'),
+      historyBlock()),
+    // The actions this section is for, in the card's own footer rather than loose in the
+    // body — which is where the top of the page keeps its buttons, so they line up.
+    [
+      h('button.btn.sm.primary', { onclick: reload, disabled: !state.handle || isSnapshotMode() }, 'Reload from disk'),
+      // "Pick another file" asks the core for a path, which is the right question on a
+      // desktop and the wrong one on a server, where the file is on the operator's own
+      // machine.
+      canPickByPath()
+        ? h('button.btn.sm', { onclick: repick }, 'Pick another file…')
+        : filePickerButton('Upload a config…', {
+            accept: '.json,.yaml,.yml',
+            className: 'btn.sm',
+            onText: (txt, err, name) => uploadConfig(txt, err, name),
+          }),
+      h('button.btn.sm.ghost', { onclick: () => saveTextAs('clusters.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
+      h('button.btn.sm.danger', { onclick: forget }, 'Forget file & credentials'),
+    ]);
+}
 
+function credentialsCard() {
+  const needing = clustersNeedingCredential().length;
+  return card('Credentials',
+    hasSessionCredential() ? `session credential active — ${sessionCredentialLabel()}` : 'from the config file',
+    h('div', { style: { display: 'grid', gap: '11px' } },
+      hasSessionCredential()
+        ? h('div.banner', { style: { margin: 0 } },
+            h('div', h('div.ttl', `Using a credential you typed (${sessionCredentialLabel()})`),
+              h('div.sec', { style: { fontSize: '12px' } },
+                'Held in memory for this tab only. Reloading the dashboard will ask again.')))
+        : null,
+      h('div', { style: { fontSize: '12.5px', lineHeight: '1.65', display: 'grid', gap: '8px' } },
+        h('div', h('b', 'In memory. '),
+          'The password / API key from your YAML is held in the app process and discarded when it closes. Tick "remember on this machine" in the sign-in dialog to keep it in the Windows Credential Manager instead of typing it each start.'),
+        h('div', h('b', 'One credential, many clusters. '),
+          'The top-level ', h('code.inline', 'credentials:'), ' block authenticates every cluster; add ',
+          h('code.inline', 'username:'), '/', h('code.inline', 'apiKey:'), ' under a cluster only when it needs a different one.'),
+        h('div', h('b', 'Jump hosts. '),
+          'A cluster with ', h('code.inline', 'via: <jump>'), ' is reached through an SSH connection the app opens itself with your key file — no ssh.exe, no PuTTY, no SOCKS to configure. Passphrases are asked for, never read from the file.'),
+        h('div', h('b', 'Certificates you decide about. '),
+          'A certificate the OS does not trust is shown to you once — subject, issuer, SHA-256 — and pinned when you accept it. A different certificate at the same address is refused until you decide again. No CA import, no policy, no click-through.'),
+        h('div', h('b', 'Read-only by default. '),
+          'Monitoring uses GET only; the single POST it makes is ', h('code.inline', '_search'),
+          ', which cannot modify anything. Writes are refused in the core, so no page, console ',
+          'or future code path can reach a cluster with PUT/POST/DELETE while ', h('code.inline', 'readOnly'), ' is true.'),
+        h('div', h('b', 'No credential in the file? '),
+          'Leave ', h('code.inline', 'credentials:'), ' out entirely (or give only a ', h('code.inline', 'username:'),
+          ') and the app prompts once on start, then applies what you type to every cluster URL.'))),
+    [
+      h('button.btn.sm.primary', { onclick: () => showCredentialDialog('manual') },
+        needing ? `Sign in to ${needing} cluster(s)` : 'Set one credential for all clusters'),
+      h('button.btn.sm', {
+        onclick: async () => { if (await editCredentials()) draw(); },
+        title: 'Write it to config_cluster.json, encrypted with a master password',
+      }, 'Store in config file (encrypted)…'),
+      state.config && state.config.sealed && needing
+        ? h('button.btn.sm', { onclick: async () => { if (await unlockSealed()) { await refreshAll({ force: true }); draw(); } } }, 'Unlock with master password…')
+        : null,
+      hasSessionCredential()
+        ? h('button.btn.sm.danger', { onclick: async () => { await clearSessionCredential(); draw(); } }, 'Clear typed credential')
+        : null,
+    ].filter(Boolean));
+}
+
+function trustSection() {
+  return card('Jump hosts & trust', 'SSH tunnels, pinned host keys, pinned certificates',
+    h('div#trust-card', h('div.muted', 'Loading…')));
+}
+
+function clustersCard() {
   const clusterRows = clusters().map((c) => {
     const cl = client(c.id);
     return h('tr',
@@ -211,108 +606,51 @@ function draw() {
     h('td', { colspan: 4 }, pill('disabled', 'grey')),
     h('td', h('button.btn.sm', { onclick: async () => { if (await editCluster(rawClusterOf(c))) { draw(); loadTrust(); } } }, 'Edit'))));
 
-  mount(host,
-    h('div.grid.c2',
-      card('Config file', meta.name || 'not loaded',
-        h('div', { style: { display: 'grid', gap: '10px' } },
-          table([], [
-            kvRow('File', meta.name || '–'),
-            kvRow('Size', meta.size ? bytes(meta.size) : '–'),
-            kvRow('Last modified on disk', meta.lastModified ? dt(meta.lastModified) : '–'),
-            kvRow('Loaded', state.config ? `${dt(state.config.loadedAt)} (${ago(state.config.loadedAt)})` : '–'),
-            kvRow('Path', meta.path || (meta.ephemeral ? 'loaded once — not remembered' : '–')),
-            kvRow('Format', state.config ? (state.config.format === 'json' ? 'JSON (config_cluster.json)' : 'YAML — edits from the UI are saved as config_cluster.json next to it') : '–'),
-            kvRow('Secrets in file', state.config ? (state.config.sealed ? 'encrypted (AES-256-GCM, PBKDF2-SHA512 master password)' : (clusters().some((c) => c.credSource === 'shared' || c.credSource === 'cluster') ? 'PLAIN TEXT — use "Store in config file (encrypted)" to fix' : 'none')) : '–'),
-            kvRow('Mode', isSnapshotMode()
-              ? `snapshot — collected ${state.snapshot && state.snapshot.generatedAt ? dt(state.snapshot.generatedAt) : '?'}`
-                + (state.snapshot && state.snapshot.host ? ` on ${state.snapshot.host}` : '')
-              : 'live — the app connects to each cluster (directly or through a jump host)'),
-          ]),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.primary', { onclick: reload, disabled: !state.handle || isSnapshotMode() }, 'Reload from disk'),
-            // "Pick another file" asks the core for a path, which is the right question
-            // on a desktop and the wrong one on a server, where the file is on the
-            // operator's own machine.
-            canPickByPath()
-              ? h('button.btn', { onclick: repick }, 'Pick another file…')
-              : filePickerButton('Upload a config…', {
-                  accept: '.json,.yaml,.yml',
-                  className: 'btn',
-                  onText: (txt, err, name) => uploadConfig(txt, err, name),
-                }),
-            h('button.btn.danger', { onclick: forget }, 'Forget file & credentials')),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.sm.ghost', { onclick: () => saveTextAs('clusters.yaml', EXAMPLE_YAML) }, 'Save example YAML…')),
-          h('div#cfg-msg'),
-          historyBlock())),
+  return card('Clusters', `${clusters().length} enabled · ${disabledRows.length} disabled`,
+    table(['Name', 'URL', 'Credential', 'User', 'Log index pattern', 'Connection', 'Last success', ''],
+      [...clusterRows, ...disabledRows], { emptyText: 'No clusters yet — add one.' }),
+    [h('button.btn.sm.primary', { onclick: async () => { if (await editCluster(null)) { draw(); loadTrust(); } } }, '+ Add cluster')]);
+}
 
-      card('Credentials', hasSessionCredential() ? `session credential active — ${sessionCredentialLabel()}` : 'from the config file',
-        h('div', { style: { display: 'grid', gap: '11px' } },
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
-            h('button.btn.primary', { onclick: () => showCredentialDialog('manual') },
-              clustersNeedingCredential().length ? `Sign in to ${clustersNeedingCredential().length} cluster(s)` : 'Set one credential for all clusters'),
-            h('button.btn', { onclick: async () => { if (await editCredentials()) draw(); }, title: 'Write it to config_cluster.json, encrypted with a master password' }, 'Store in config file (encrypted)…'),
-            state.config && state.config.sealed && clustersNeedingCredential().length
-              ? h('button.btn', { onclick: async () => { if (await unlockSealed()) { await refreshAll({ force: true }); draw(); } } }, 'Unlock with master password…') : null,
-            hasSessionCredential()
-              ? h('button.btn.danger', { onclick: async () => { await clearSessionCredential(); draw(); } }, 'Clear typed credential')
-              : null),
-          hasSessionCredential()
-            ? h('div.banner', { style: { margin: 0 } },
-                h('div', h('div.ttl', `Using a credential you typed (${sessionCredentialLabel()})`),
-                  h('div.sec', { style: { fontSize: '12px' } },
-                    'Held in memory for this tab only. Reloading the dashboard will ask again.')))
-            : null,
-        h('div', { style: { fontSize: '12.5px', lineHeight: '1.65', display: 'grid', gap: '8px' } },
-          h('div', h('b', 'In memory. '),
-            'The password / API key from your YAML is held in the app process and discarded when it closes. Tick "remember on this machine" in the sign-in dialog to keep it in the Windows Credential Manager instead of typing it each start.'),
-          h('div', h('b', 'One credential, many clusters. '),
-            'The top-level ', h('code.inline', 'credentials:'), ' block authenticates every cluster; add ',
-            h('code.inline', 'username:'), '/', h('code.inline', 'apiKey:'), ' under a cluster only when it needs a different one.'),
-          h('div', h('b', 'Jump hosts. '),
-            'A cluster with ', h('code.inline', 'via: <jump>'), ' is reached through an SSH connection the app opens itself with your key file — no ssh.exe, no PuTTY, no SOCKS to configure. Passphrases are asked for, never read from the file.'),
-          h('div', h('b', 'Certificates you decide about. '),
-            'A certificate the OS does not trust is shown to you once — subject, issuer, SHA-256 — and pinned when you accept it. A different certificate at the same address is refused until you decide again. No CA import, no policy, no click-through.'),
-          h('div', h('b', 'Read-only by default. '),
-            'Monitoring uses GET only; the single POST it makes is ', h('code.inline', '_search'),
-            ', which cannot modify anything. Writes are refused in the core, so no page, console ',
-            'or future code path can reach a cluster with PUT/POST/DELETE while ', h('code.inline', 'readOnly'), ' is true.'),
-          h('div', h('b', 'No credential in the file? '),
-            'Leave ', h('code.inline', 'credentials:'), ' out entirely (or give only a ', h('code.inline', 'username:'),
-            ') and the app prompts once on start, then applies what you type to every cluster URL.'))))),
+function defaultsCard() {
+  const d = state.defaults;
+  return card('Effective defaults', 'from the defaults block, with built-in fallbacks',
+    table([], Object.entries(d).map(([k, v]) => kvRow(k, String(v)))),
+    [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]);
+}
 
-    h('div', { style: { marginTop: '14px' } },
-      card('Jump hosts & trust', 'SSH tunnels, pinned host keys, pinned certificates', h('div#trust-card', h('div.muted', 'loading…')))),
+function diagnosticsCard() {
+  const d = state.defaults;
+  return card('Diagnostics & shortcuts', '',
+    h('div', { style: { display: 'grid', gap: '10px' } },
+      table([], [
+        kvRow('Write protection', isReadOnly() ? 'read-only — GET/HEAD + search POSTs only' : 'DISABLED — writes permitted (readOnly: false)'),
+        kvRow('Enforced by the core', 'Loading…'),
+        kvRow('Routes', `${clusters().filter((c) => c.via).length} via jump host · ${clusters().filter((c) => !c.via).length} direct`),
+        kvRow('App version', h('span#core-version', '…')),
+        kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),
+        kvRow('Auto-refresh', state.autoRefresh ? `every ${d.refreshIntervalSec}s` : 'paused'),
+      ]),
+      // Advertise what exists. The number keys that used to jump between pages were
+      // removed — a stray digit moving the page out from under somebody was worse than
+      // the shortcut was worth — and this line kept offering them for eleven pages that
+      // never had them.
+      h('div', { style: { fontSize: '12px' } },
+        h('b', 'Keyboard: '), h('code.inline', 'r'), ' refresh · ',
+        h('code.inline', 'Ctrl/⌘+Enter'), ' run the request in the console')),
+    [
+      h('button.btn.sm', { onclick: () => saveTextAs('clusters.example.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
+      isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Force refresh all'),
+      h('button.btn.sm', { onclick: () => navigateTo('console') }, 'Open REST console'),
+    ].filter(Boolean));
+}
 
-    h('div', { style: { marginTop: '14px' } },
-      card('Clusters', `${clusters().length} enabled · ${disabledRows.length} disabled`,
-        table(['Name', 'URL', 'Credential', 'User', 'Log index pattern', 'Connection', 'Last success', ''], [...clusterRows, ...disabledRows],
-          { emptyText: 'No clusters yet — add one.' }),
-        [h('button.btn.sm.primary', { onclick: async () => { if (await editCluster(null)) { draw(); loadTrust(); } } }, '+ Add cluster')])),
-
-    h('div.grid.c2', { style: { marginTop: '14px' } },
-      card('Effective defaults', 'from the defaults block, with built-in fallbacks',
-        table([], Object.entries(d).map(([k, v]) => kvRow(k, String(v)))),
-        [h('button.btn.sm', { onclick: async () => { if (await editDefaults()) draw(); } }, 'Edit defaults…')]),
-
-      card('Diagnostics & shortcuts', '',
-        h('div', { style: { display: 'grid', gap: '10px' } },
-          table([], [
-            kvRow('Write protection', isReadOnly() ? 'read-only — GET/HEAD + search POSTs only' : 'DISABLED — writes permitted (readOnly: false)'),
-            kvRow('Enforced by the core', 'checking…'),
-            kvRow('Routes', `${clusters().filter((c) => c.via).length} via jump host · ${clusters().filter((c) => !c.via).length} direct`),
-            kvRow('App version', h('span#core-version', '…')),
-            kvRow('Last refresh', state.lastRefresh ? ago(state.lastRefresh) : 'never'),
-            kvRow('Auto-refresh', state.autoRefresh ? `every ${d.refreshIntervalSec}s` : 'paused'),
-          ]),
-          h('div', { style: { fontSize: '12px' } },
-            h('b', 'Keyboard: '), h('code.inline', '1'), '–', h('code.inline', '7'), ' switch pages · ',
-            h('code.inline', 'r'), ' refresh · ', h('code.inline', 'Ctrl/⌘+Enter'), ' run request in the console'),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-            h('button.btn.sm', { onclick: () => saveTextAs('clusters.example.yaml', EXAMPLE_YAML) }, 'Save example YAML…'),
-            isSnapshotMode() ? null : h('button.btn.sm', { onclick: () => refreshAll({ force: true }) }, 'Force refresh all'),
-            h('button.btn.sm', { onclick: () => navigateTo('console') }, 'Open REST console')))))
-  );
+function draw() {
+  const active = activeSection();
+  mount(host, sectionNav(), h('div', { style: { marginTop: '12px' } }, active ? active.build() : null));
+  // A section that needs a round trip asks for it here rather than on page entry, so
+  // opening Config no longer fires every request the page could ever need.
+  if (active && active.load) active.load();
 }
 
 /** The raw file entry behind a normalised cluster (matched by name, then url). */

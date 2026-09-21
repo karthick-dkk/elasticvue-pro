@@ -84,6 +84,14 @@ impl Edition {
     pub fn uses_api_tokens(self) -> bool {
         matches!(self, Edition::Hosted)
     }
+    /// Whether this build may run work on a timer. Only the hosted bridge is a daemon;
+    /// the desktop editions exist while somebody has the app open, so a schedule there
+    /// would be a promise kept only by accident. Separate from `uses_api_tokens` even
+    /// though both are currently Hosted-only: one is about a socket, this is about
+    /// still being alive at three in the morning.
+    pub fn schedules(self) -> bool {
+        matches!(self, Edition::Hosted)
+    }
 }
 
 /* ----------------------------------- roles ----------------------------------- */
@@ -182,6 +190,9 @@ pub fn required_role(msg_type: &str) -> Option<Role> {
 
         // Fleet facts with no index names, but they name hosts and jump hosts.
         "TUNNELS" | "PINS" | "REQUEST_STATS" => Some(Role::User),
+        // Listing the archive names object keys, which carry client and branch names —
+        // the same shape of fact as an index name, and gated the same way.
+        "S3_LIST" => Some(Role::User),
 
         // Everything below either writes, or hands back something secret.
         // CONFIG_READ returns the raw config, which carries cluster credentials.
@@ -198,6 +209,9 @@ pub fn required_role(msg_type: &str) -> Option<Role> {
         "KEY_UPLOAD" | "KEY_LIST" | "KEY_DELETE" => Some(Role::Admin),
         "CONFIG_HISTORY" | "CONFIG_RESTORE" => Some(Role::Admin),
         "TOKEN_LIST" | "TOKEN_CREATE" | "TOKEN_REVOKE" => Some(Role::Admin),
+        // Arming the scheduled measurement decides that this process will write
+        // to a cluster unattended. Nothing below admin goes near it.
+        "DELAY_SINK_GET" | "DELAY_SINK_SET" | "DELAY_SINK_RUN" => Some(Role::Admin),
 
         // Anything new is refused until somebody decides where it belongs.
         _ => Some(Role::Admin),
@@ -775,6 +789,10 @@ mod tests {
             "the desktop app has no socket to serve an API on"
         );
         assert!(Edition::Hosted.uses_accounts() && Edition::Hosted.uses_api_tokens());
+        // Only a daemon schedules. A portable copy carried to another machine must not
+        // start measuring clusters on its own.
+        assert!(Edition::Hosted.schedules());
+        assert!(!Edition::Portable.schedules() && !Edition::Installed.schedules());
     }
 
     #[test]

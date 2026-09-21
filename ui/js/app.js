@@ -62,8 +62,11 @@ const PAGES = [
   { id: 'alerts',    label: 'Alerts',         icon: '⚠', mod: pAlerts,    multi: true,  minRole: 'user' },
   { id: 'overview',  label: 'Clusters',       icon: '▦', mod: pOverview,  multi: true,  minRole: 'guest' },
   { id: 'indices',   label: 'Indices',        icon: '≡', mod: pIndices,   multi: false, minRole: 'user' },
-  { id: 'shards',    label: 'Nodes & shards', icon: '☷', mod: pShards,    multi: true,  minRole: 'user' },
-  { id: 'logs',      label: 'Live logs',      icon: '▶', mod: pLogs,      multi: false, minRole: 'user' },
+  { id: 'shards',    label: 'Nodes & shards', icon: '☷', mod: pShards,    multi: true,  minRole: 'user', defaultSingle: true },
+  // multi: the Log delay view asks every selected cluster at once. The live tail is
+  // still one cluster — it picks which, and says so, rather than the page silently
+  // collapsing the fleet selection on the way in.
+  { id: 'logs',      label: 'Live logs & Log delay', icon: '▶', mod: pLogs, multi: true,  minRole: 'user' },
   { id: 'console',   label: 'REST console',   icon: '⌫', mod: pConsole,   multi: false, minRole: 'user' },
   { id: 'snapshots', label: 'Snapshots & SLM',icon: '↻', mod: pSnapshots, multi: true,  minRole: 'user' },
   { id: 'volume',    label: 'Volume report',  icon: '▤', mod: pVolume,    multi: true,  minRole: 'user' },
@@ -100,9 +103,29 @@ function applyTheme(t) {
   else document.documentElement.setAttribute('data-theme', t);
   idb.setKV('theme', t);
 }
+/**
+ * The themes, in the order the button walks through them.
+ *
+ * One list, so the button's label, its cycle and the stylesheet cannot disagree about
+ * what exists — adding a fourth theme used to mean editing three places and finding the
+ * third one later.
+ */
+const THEMES = [
+  { id: 'system',    label: '\u25D2 System' },
+  { id: 'light',     label: '\u25CB Light' },
+  { id: 'dark',      label: '\u25D1 Dark' },
+  { id: 'dark-blue', label: '\u25D5 Dark blue' },
+  { id: 'warm',      label: '\u25D0 Warm' },
+];
+
+function themeLabel(id) {
+  return (THEMES.find((t) => t.id === id) || THEMES[0]).label;
+}
+
 function cycleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') || 'system';
-  applyTheme(cur === 'system' ? 'light' : cur === 'light' ? 'dark' : 'system');
+  const i = THEMES.findIndex((t) => t.id === cur);
+  applyTheme(THEMES[(i + 1) % THEMES.length].id);
   renderTopbar();
 }
 
@@ -280,6 +303,9 @@ function renderTopbar() {
     // page borrowed from it.
     state.selected = e.target.value;
     fleetView = e.target.value === 'all';
+    // Picking "All clusters" here is the deliberate choice a defaultSingle page waits
+    // for; picking one cluster withdraws it.
+    fleetChosen = e.target.value === 'all';
     go(currentPage);
   } });
   if (page.multi) sel.append(h('option', { value: 'all' }, `All clusters (${clusters().length})`));
@@ -288,8 +314,11 @@ function renderTopbar() {
   sel.value = state.selected;
 
   mount(bar,
+    // The product name, and nothing else. The config filename used to sit under it, which
+    // made the brand block report an implementation detail — and the same filename is
+    // already on the status strip, where ambient state belongs.
     h('div.brand', h('img', { src: 'icons/icon48.png', alt: '' }),
-      h('div', h('b', 'ElasticVue Pro'), h('span#cfg-name', ''))),
+      h('div', h('b', 'ElasticVue Pro'))),
     h('h1', page.label),
     h('label.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } }, sel),
     h('div.spacer'),
@@ -336,8 +365,8 @@ function renderTopbar() {
           onclick: () => refreshAll({ force: true, selected: true }),
           title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
         }, '↻ Refresh'),
-    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme}` },
-      theme === 'dark' ? '\u25D1 Dark' : theme === 'light' ? '\u25CB Light' : '\u25D2 System'),
+    h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme} \u2014 click for the next one${theme === 'warm' ? ' (warm emits the least blue light)' : ''}` },
+      themeLabel(theme)),
     // Only where accounts exist. The portable build has nobody to sign out.
     me
       ? h('button.btn.sm.ghost', {
@@ -406,8 +435,7 @@ function renderSideFoot() {
     // the credits must not sit among it competing for the same glance.
     h('span.strip-spacer'),
     aboutMini(coreInfo.version));
-  const nm = $('#cfg-name');
-  if (nm) nm.textContent = meta ? meta.name : '';
+
 }
 
 /* ---------------------------------- router ---------------------------------- */
@@ -422,12 +450,44 @@ function renderSideFoot() {
  */
 let fleetView = true;
 
+/**
+ * Whether "All clusters" was asked for, as opposed to inherited.
+ *
+ * `fleetView` cannot answer that: it starts true, so on the first visit it is
+ * indistinguishable from a deliberate choice. This is set only by the picker, which is
+ * the only place a person can express one.
+ */
+let fleetChosen = false;
+
 function resolveSelection(page) {
   if (!page.multi) {
     if (state.selected === 'all' && clusters()[0]) state.selected = clusters()[0].id;
-  } else if (fleetView && state.selected !== 'all') {
+    return;
+  }
+  // `defaultSingle`: the page offers every cluster but opens on one. Nodes & shards is
+  // this — a page of per-cluster tables, where the fleet view is one long scroll of
+  // repeats and is worth having only when somebody asks for it by name.
+  if (page.defaultSingle && state.selected === 'all' && !fleetChosen && clusters()[0]) {
+    state.selected = clusters()[0].id;
+    return;
+  }
+  if (!page.defaultSingle && fleetView && state.selected !== 'all') {
     state.selected = 'all';
   }
+}
+
+/**
+ * Moving to a different page starts at the top of it.
+ *
+ * The counterpart to mount() keeping the scroll position: re-rendering the page you are
+ * on must not move you, and arriving at a different page must not leave you halfway down
+ * it because the last one was long.
+ */
+function scrollPageTop() {
+  const page = document.scrollingElement || document.documentElement;
+  if (page) page.scrollTop = 0;
+  const main = document.querySelector('main.main');
+  if (main) main.scrollTop = 0;
 }
 
 export function go(id) {
@@ -435,6 +495,7 @@ export function go(id) {
   // different account, must not land on a tab this role does not have.
   const allowed = visiblePages();
   const page = allowed.find((p) => p.id === id) || allowed[0] || PAGES[0];
+  const changed = currentPage !== page.id;
   currentPage = page.id;
   location.hash = `#/${page.id}`;
   resolveSelection(page);
@@ -450,6 +511,10 @@ export function go(id) {
     console.error(e);
     mount(view, h('div.banner.err', h('div', h('div.ttl', 'Page failed to render'), h('div.mono', String(e && e.stack || e)))));
   }
+  // Only when the page actually changed. go() is also how a page redraws itself after a
+  // cluster is picked, and that must keep your position the way every other redraw now
+  // does.
+  if (changed) scrollPageTop();
 }
 
 /* ----------------------------------- boot ----------------------------------- */
@@ -575,6 +640,12 @@ window.addEventListener('hashchange', () => {
 
 document.addEventListener('keydown', (e) => {
   const t = e.target;
+  // Escape first, and before the typing guard: leaving a full-screen view is the one
+  // key that has to work while the cursor is in that view's own search box.
+  if (e.key === 'Escape') {
+    const cur = PAGES.find((x) => x.id === currentPage);
+    if (cur && cur.mod.onKey && cur.mod.onKey(e)) return;
+  }
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Number keys used to jump between pages. They are gone: a stray digit moving the

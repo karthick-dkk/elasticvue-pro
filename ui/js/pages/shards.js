@@ -12,11 +12,12 @@ import { h, mount } from '../lib/dom.js';
 import { bytes, num, pct, compact } from '../lib/fmt.js';
 import { state, clusters, activeClusters, client, refreshAll, fetchIndices,
          diskAccounting, setDangling, danglingFor } from '../core/state.js';
-import { card, statTile, table, empty, pill, connectionBanner } from './common.js';
+import { card, table, empty, pill, figure, connectionBanner } from './common.js';
+import { navigateTo } from '../core/intent.js';
 import { modal, field, select, val, confirmDialog } from '../ui/modal.js';
 import { toast } from '../ui/menu.js';
 import { ensureWrites, writeToggle, writesAllowed } from '../core/writes.js';
-import { honeycomb, STATUS } from '../lib/charts.js';
+import { splitGauge, STATUS } from '../lib/charts.js';
 import { parseRetention } from '../core/volume.js';
 
 let host = null;
@@ -118,61 +119,14 @@ function block(c) {
   const unassigned = all.filter((s) => s.state === 'UNASSIGNED');
   const nodes = d.nodes || [];
 
+  // No stat tiles. They said Nodes / Shards / Unassigned / Moving, which is precisely
+  // what the gauge and its legend say one card below — the same duplication that cost
+  // the honeycomb its place. The figures that were only on the tiles moved into the
+  // summary card instead.
   return h('div', { style: { display: 'grid', gap: '10px' } },
-    h('div.grid.c4',
-      statTile('Nodes', num(nodes.length), d.master ? `master ${d.master}` : 'no master elected'),
-      statTile('Shards', num(all.length), c.name),
-      statTile('Unassigned', num(unassigned.length),
-        unassigned.length ? 'not placed on any node' : 'every shard is placed'),
-      statTile('Moving', num(moving.length), moving.length ? 'relocating or initialising' : 'nothing in flight')),
-
-    combCard(c, all),
-    nodesCard(c, d),
-    loadCard(c),
-    accountingCard(c, d),
+    glanceCard(c, all, d, { nodes, moving, unassigned }),
+    nodesAndLoadCard(c, d),
     shardsCard(c, d, all, raw, started));
-}
-
-/**
- * Every shard as one cell, coloured by state.
- *
- * The table below is the right tool once you know which shard you want. This is for
- * before that: a few hundred rows is a scroll nobody does, and "are any of them unhappy,
- * and is it one index or all of them" is answered here in a glance. Clicking a cell
- * filters the table to that index, so the two halves work as one.
- */
-function combCard(c, all) {
-  if (all.length < 2) return null;
-  const colour = (st) => (st === 'STARTED' ? STATUS.good
-    : st === 'RELOCATING' || st === 'INITIALIZING' ? STATUS.warning
-    : st === 'UNASSIGNED' ? STATUS.critical : 'var(--surface-3)');
-
-  // Unhealthy first, so a handful of bad cells among hundreds are together and visible
-  // rather than scattered through the grid in index order.
-  const rank = (s) => (s.state === 'UNASSIGNED' ? 0 : s.state === 'STARTED' ? 2 : 1);
-  const items = [...all].sort((a, b) => rank(a) - rank(b) || a.index.localeCompare(b.index))
-    .map((s) => ({
-      key: `${s.index}/${s.shard}/${s.primary ? 'p' : 'r'}`,
-      label: `${s.index}[${s.shard}] ${s.primary ? 'primary' : 'replica'}`,
-      state: s.state.toLowerCase(),
-      color: colour(s.state),
-      detail: s.node ? `on ${s.node}${s.store ? ` · ${bytes(s.store)}` : ''}`
-                     : (s.reason ? s.reason.replace(/_/g, ' ').toLowerCase() : 'not placed'),
-    }));
-
-  const counts = all.reduce((m, s) => { m[s.state] = (m[s.state] || 0) + 1; return m; }, {});
-  const sub = Object.entries(counts).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `${num(v)} ${k.toLowerCase()}`).join(' · ');
-
-  return card('Shard states', sub,
-    honeycomb(items, {
-      legendFor: [
-        { label: 'started', color: STATUS.good },
-        { label: 'moving', color: STATUS.warning },
-        { label: 'unassigned', color: STATUS.critical },
-      ],
-      onSelect: (it) => { ui.index = String(it.key).split('/')[0]; draw(); },
-    }));
 }
 
 /** A task running longer than this is worth looking at rather than scrolling past. */
@@ -193,7 +147,12 @@ const SLOW_TASK_MS = 30000;
  */
 const PERPETUAL = /geoip-downloader|cluster:monitor\/tasks\/lists|health-node|persistent/i;
 
-function loadCard(c) {
+/**
+ * What the cluster is busy doing, as a body rather than a card — it shares a pane with
+ * the node table, because "which nodes are there" and "what are they doing" are one
+ * question asked twice and they were being answered a screen apart.
+ */
+function loadBody(c) {
   const got = load2.get(c.id);
   if (!got) return null;
   // Arrays or nothing. A cluster that does not have one of these endpoints answers with
@@ -232,16 +191,23 @@ function loadCard(c) {
     : queued ? { label: 'busy', cls: 'yellow' }
     : { label: 'idle', cls: 'green' };
 
-  return card('Cluster load',
-    `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
-    + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
-    h('div', { style: { display: 'grid', gap: '10px' } },
-      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+  return {
+    sub: `${num(real.length)} task(s) · ${num(active)} active · ${num(queued)} queued · `
+       + `${num(rejected)} rejected · ${num(pending.length)} pending state change(s)`,
+    node: h('div', { style: { display: 'grid', gap: '10px' } },
+      // The state and what it means share a line. An idle cluster is one fact, and it
+      // was taking two rows: a pill, then a sentence under it in the empty half.
+      h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center', flexWrap: 'wrap' } },
         pill(health.label, health.cls),
         rejected
           ? h('span.muted', { style: { fontSize: '11.5px' } },
               'a thread pool only rejects once its queue is full — this is dropped work, not slow work')
-          : null),
+          : null,
+        slow.length
+          ? null
+          : h('span.muted', { style: { fontSize: '12px' } },
+              real.length ? 'Nothing has been running long enough to be worth a look.'
+                          : 'No tasks in flight.')),
 
       slow.length
         ? h('div',
@@ -256,9 +222,7 @@ function loadCard(c) {
                 h('td.muted', { style: { fontSize: '11px', maxWidth: '340px', wordBreak: 'break-word' } },
                   t.description || ''))),
               { emptyText: '' }))
-        : h('div.muted', { style: { fontSize: '12px' } },
-            real.length ? 'Nothing has been running long enough to be worth a look.'
-                        : 'No tasks in flight.'),
+        : null,
 
       poolTrs.length
         ? h('div',
@@ -272,13 +236,13 @@ function loadCard(c) {
             h('div', h('div.ttl', `${num(pending.length)} cluster-state change(s) waiting on the master`),
               h('div.mono', { style: { fontSize: '11px' } },
                 pending.slice(0, 4).map((t) => `${t.source} (${t.time_in_queue || ''})`).join(' · '))))
-        : null));
+        : null),
+  };
 }
 
 /** Everything _cat/nodes knows, which is what "is this node healthy" is answered from. */
-function nodesCard(c, d) {
+function nodesBody(c, d) {
   const nodes = d.nodes || [];
-  if (!nodes.length) return card('Nodes', 'none reported', empty('The cluster did not return a node list.'));
   const alloc = (d.disk && d.disk.nodes) || [];
 
   const trs = nodes.map((n) => {
@@ -303,10 +267,130 @@ function nodesCard(c, d) {
       h('td.muted', { style: { fontSize: '11.5px' } }, n.uptime || ''));
   });
 
-  return card('Nodes', `${nodes.length} node(s)${d.master ? ` · master ${d.master}` : ' · no master'}`,
-    table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
-           { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
-      trs, { emptyText: 'No nodes returned' }));
+  return table(['Node', 'Roles', 'Version', { label: 'Heap', num: true }, { label: 'RAM', num: true },
+                { label: 'CPU', num: true }, { label: 'Load 1m/5m', num: true }, 'Disk', 'Uptime'],
+    trs, {
+      // A cluster with no nodes is not a thing. An empty list here means the call did
+      // not come back with one, so it says that rather than implying an empty cluster.
+      emptyText: empty('The cluster answered, but listed no nodes.', {
+        detail: h('span.mono', 'GET /_cat/nodes returned nothing'),
+        actions: [h('button.btn.sm.primary', { onclick: () => refreshAll({ force: true, selected: true }) }, 'Retry'),
+                  h('button.btn.sm', { onclick: () => navigateTo('settings') }, 'Check credentials')],
+      }),
+    });
+}
+
+/**
+ * Where the shards stand: one arc, split.
+ *
+ * Assigned and unassigned are not two readings to compare — they are one population
+ * divided, and the division is the whole question. Two separate gauges would show two
+ * percentages of a denominator the reader cannot see; one arc shows the split and the
+ * counts underneath say how many, which is what somebody acts on. "0 unassigned" is
+ * listed rather than dropped: it is the reassurance the page is opened for.
+ *
+ * Relocating and initialising are drawn separately from settled shards. They are
+ * assigned — a cluster mid-rebalance is not broken — but lumping them in would hide the
+ * one thing that tells you to wait a minute before worrying.
+ */
+function shardMixBody(c, all, d) {
+  const h2 = d.health || {};
+  const state = (x) => String(x.state || '').toUpperCase();
+  const started = all.filter((x) => state(x) === 'STARTED').length;
+  const moving = all.filter((x) => ['RELOCATING', 'INITIALIZING'].includes(state(x))).length;
+  const unassigned = all.filter((x) => state(x) === 'UNASSIGNED').length;
+  // _cat/shards is the detail; _cluster/health is the cluster's own count. Prefer the
+  // rows we actually have, and fall back to health when the listing was refused.
+  const total = all.length || (Number(h2.active_shards) || 0) + (Number(h2.unassigned_shards) || 0);
+
+  if (!total) {
+    return { sub: 'nothing reported',
+             node: empty('No shard listing and no health count — unknown, not zero.') };
+  }
+
+  const segments = [
+    { key: 'started', label: 'assigned', value: started, color: 'var(--good)' },
+    { key: 'moving', label: 'moving', value: moving, color: 'var(--warning)' },
+    { key: 'unassigned', label: 'unassigned', value: unassigned, color: 'var(--critical)' },
+  ];
+  const sub = unassigned
+    ? `${num(unassigned)} of ${num(total)} not placed`
+    : moving ? `all placed · ${num(moving)} in flight` : 'every shard is placed';
+
+  return {
+    sub,
+    node: h('div', { style: { display: 'grid', gap: '9px', justifyItems: 'center' } },
+      splitGauge(segments, {
+        total, size: 140, centreLabel: 'shards total', format: (v) => num(v),
+        // Stacked: three items wrapping two-then-one in a narrow column reads as a
+        // grouping that is not there.
+        legendColumn: true,
+      })),
+  };
+}
+
+/**
+ * What this cluster is, in one band: the shard split on the left, the figures on the
+ * right.
+ *
+ * This replaced two cards side by side, then one card with two columns, and both had the
+ * same fault — the gauge half is tall and the figures half was short, so whichever ran
+ * out first left a slab of empty page. The fix was not a better column ratio, it was
+ * putting enough in the right half to match: everything the stat tiles used to carry is
+ * there now, in a grid that fills the height rather than a row that stops after four.
+ *
+ * Anything that needs a paragraph — a dangling index, indices past retention — runs full
+ * width underneath both, because a paragraph in a 240px column is a column of syllables.
+ */
+function glanceCard(c, all, d, counts) {
+  const mix = shardMixBody(c, all, d);
+  const acct = accountingBody(c, d);
+  const indices = state.indices.get(c.id) || [];
+
+  const figures = h('div', {
+    style: { display: 'grid', gap: '14px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' },
+  },
+    figure('Nodes', num(counts.nodes.length), d.master ? `master ${d.master}` : 'no master elected'),
+    figure('Indices', num(indices.length), `${num(all.length)} shards in total`),
+    ...acct.figures);
+
+  return card('Cluster at a glance', `${c.name} · ${mix.sub} · ${acct.sub}`,
+    h('div', { style: { display: 'grid', gap: '12px' } },
+      h('div', { style: { display: 'grid', gap: '18px', gridTemplateColumns: 'minmax(190px, 220px) 1fr', alignItems: 'start' } },
+        mix.node,
+        h('div', { style: { borderLeft: '1px solid var(--border)', paddingLeft: '18px' } }, figures)),
+      unassigned(all)
+        ? h('div.muted', { style: { fontSize: '11.5px' } },
+            'An unassigned shard holds no data that can be read. The table below says why each one is unplaced.')
+        : null,
+      ...acct.notes));
+}
+
+/** How many shards are not placed — asked by the glance card for its footnote. */
+function unassigned(all) {
+  return all.filter((x) => String(x.state || '').toUpperCase() === 'UNASSIGNED').length;
+}
+
+/**
+ * The node table and the cluster's workload, in one pane at the top of the page.
+ *
+ * They were two cards, and briefly two of three columns, which cut a nine-column table
+ * down to a third of the window — the widest table on the page in the narrowest space it
+ * has ever had. It gets the full width back, and the load summary sits with it because
+ * you read them together: a node at 96% RAM means one thing when the cluster is idle and
+ * another when it is rejecting work.
+ */
+function nodesAndLoadCard(c, d) {
+  const nodes = d.nodes || [];
+  const load = loadBody(c);
+  const sub = `${nodes.length} node(s)${d.master ? ` · master ${d.master}` : ' · no master'}`
+    + (load ? ` · ${load.sub}` : '');
+  return card('Nodes & cluster load', sub,
+    h('div', { style: { display: 'grid', gap: '12px' } },
+      nodes.length ? nodesBody(c, d) : empty('The cluster did not return a node list.'),
+      load
+        ? h('div', { style: { borderTop: '1px solid var(--border)', paddingTop: '11px' } }, load.node)
+        : null));
 }
 
 function heapCell(p, n) {
@@ -347,7 +431,7 @@ function roleTitle(letters) {
  * Shown only when they disagree materially. Agreeing is the normal case and a card saying
  * "these two numbers match" every time is a card nobody reads.
  */
-function accountingCard(c, d) {
+function accountingBody(c, d) {
   const acct = diskAccounting(d, state.indices.get(c.id));
   const dang = danglingFor(c.id);
   const stale = staleIndices(c, state.indices.get(c.id));
@@ -355,16 +439,21 @@ function accountingCard(c, d) {
   // The two figures are always worth showing — "how much do the indices hold against how
   // much is on disk" is asked whether or not they disagree. The explanation below only
   // appears when they do.
-  const figures = h('div', { style: { display: 'flex', gap: '20px', flexWrap: 'wrap' } },
+  // Handed back one by one rather than pre-wrapped, so the caller can lay them out with
+  // its own figures in a single grid. A pre-built row of four could only ever be a row
+  // of four, which is what left the right half of the card short.
+  const figures = [
     figure('Indices hold', acct.known ? bytes(acct.accounted) : '–',
       acct.known ? `${num((state.indices.get(c.id) || []).length)} indices` : 'index list not read yet'),
     figure('Elasticsearch holds', d.disk ? bytes(d.disk.indicesBytes || 0) : '–', 'on the data path'),
     figure('Disk used', d.disk ? bytes(d.disk.used || 0) : '–',
       d.disk && isFinite(d.disk.percent) ? `${d.disk.percent.toFixed(1)}% of ${bytes(d.disk.total)}` : ''),
     figure('Unaccounted', acct.known ? bytes(Math.max(0, acct.gap)) : 'unknown',
-      acct.known ? (acct.material ? 'worth a look' : 'within rounding') : 'needs the index list'));
+      acct.known ? (acct.material ? 'worth a look' : 'within rounding') : 'needs the index list'),
+  ];
 
-  const body = [figures];
+  // Everything below is a paragraph or a table, and runs full width under both columns.
+  const body = [];
 
   if (acct.material) {
     body.push(h('div.banner.warn', { style: { margin: 0 } },
@@ -405,15 +494,10 @@ function accountingCard(c, d) {
   const sub = acct.material ? `${bytes(acct.gap)} unexplained`
     : stale.list.length ? `${num(stale.list.length)} indices past retention`
     : 'indices and disk agree';
-  return card('Storage accounting', sub, h('div', { style: { display: 'grid', gap: '10px' } }, ...body));
+  return { sub, figures, notes: body };
 }
 
-function figure(label, value, sub) {
-  return h('div', { style: { minWidth: '140px' } },
-    h('div.muted', { style: { fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '.03em' } }, label),
-    h('div', { style: { fontSize: '17px', fontWeight: 660 } }, value),
-    sub ? h('div.muted', { style: { fontSize: '11px' } }, sub) : null);
-}
+
 
 /**
  * Indices whose data is older than the retention this cluster promises.

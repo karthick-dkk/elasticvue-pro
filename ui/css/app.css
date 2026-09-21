@@ -16,8 +16,13 @@
   --text-muted:     #7a7973;
   --text-invert:    #ffffff;
 
-  --accent:      #2a78d6;
+  /* Darkened from #2a78d6, which read 4.30:1 as link text on a card and 4.42:1
+     behind a white button label — both under AA. Same blue, one step down. */
+  --accent:      #1d63b4;
   --accent-soft: #e8f0fd;
+  /* What a label sitting ON the accent is coloured. Themed, because whether
+     white or near-black wins depends entirely on how light the accent is. */
+  --on-accent:   #ffffff;
 
   /* categorical (light steps) */
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
@@ -58,6 +63,7 @@
     --text-invert:    #0b0b0b;
     --accent:      #3987e5;
     --accent-soft: #16283f;
+  --on-accent: #0b0b0b;
     --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
     --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
@@ -81,6 +87,7 @@
   --text-invert:    #0b0b0b;
   --accent:      #3987e5;
   --accent-soft: #16283f;
+  --on-accent: #0b0b0b;
   --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
   --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   --seq-100: #184f95; --seq-250: #256abf; --seq-400: #3987e5; --seq-550: #86b6ef; --seq-700: #cde2fb;
@@ -88,6 +95,92 @@
   --good-ink: var(--good); --warning-ink: #f5c451; --serious-ink: var(--serious); --critical-ink: #ef6a6a;
   --grid: #2b2b29;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+}
+
+/* Dark blue — for long sessions.
+   Two things make a dark theme tiring rather than restful, and this avoids both: a pure
+   black ground, which maximises the luminance step to any lit pixel, and pure white
+   text, which haloes against it. So the ground is a deep navy and the brightest text
+   stops short of white. The accent is desaturated for the same reason — a saturated blue
+   on navy vibrates at the edges.
+
+   Note on blue light: this is a blue-TINTED theme, which is not the same as a
+   blue-REDUCED one. If the goal is less blue emission after dark, a warm/amber theme is
+   the thing that does it, and the OS night-shift setting does it better than any palette
+   here can. What this buys is lower overall luminance and softer contrast. */
+:root[data-theme="dark-blue"] {
+  color-scheme: dark;
+  --surface-0: #0c1322;
+  --surface-1: #111a2c;
+  --surface-2: #18243c;
+  --surface-3: #212f4c;
+  --border:    #25334e;
+  --border-strong: #3c4f74;
+  --text-primary:   #dde5f2;
+  --text-secondary: #aab8cf;
+  --text-muted:     #8090a8;
+  --text-invert:    #0a111f;
+  --accent:      #5c9ef6;
+  --accent-soft: #14294a;
+  --on-accent: #0a111f;
+  --series-1: #5c9ef6; --series-2: #e3794a; --series-3: #35b58c; --series-4: #d9a43c;
+  --series-5: #dd7aa6; --series-6: #46b04a; --series-7: #9b8ef0; --series-8: #ea7070;
+  --seq-100: #17325c; --seq-250: #24518f; --seq-400: #3d7fd4; --seq-550: #79aaea; --seq-700: #c6ddf8;
+  --good-bg: #10281f; --warning-bg: #322a12; --critical-bg: #331a20; --serious-bg: #33241a;
+  --good-ink: #52c78a; --warning-ink: #e8bf5f; --serious-ink: #ef9a72; --critical-ink: #f07b83;
+  --grid: #1d2a42;
+  --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.4);
+}
+
+/* Warm — the low-blue one.
+   Dark blue is a blue-TINTED theme; this is the blue-REDUCED one. Every surface and
+   every text colour is pulled toward amber, and the accent is amber rather than blue,
+   because a blue accent is the single largest lit area on most screens here and would
+   undo the point. Summed across the surfaces and body text, this emits roughly a third
+   less blue than the dark theme and forty percent less than dark blue.
+
+   It is still not a substitute for the OS night-shift setting, which filters the whole
+   display including images and other apps. What a palette can do is not fight it. */
+:root[data-theme="warm"] {
+  color-scheme: dark;
+  --surface-0: #16120c;
+  --surface-1: #1e1811;
+  --surface-2: #282017;
+  --surface-3: #342a1e;
+  --border:    #372d20;
+  --border-strong: #54452f;
+  --text-primary:   #f2e6d2;
+  --text-secondary: #cbb99c;
+  --text-muted:     #9d8c73;
+  --text-invert:    #16120c;
+  --accent:      #e3a44e;
+  --accent-soft: #3a2a12;
+  --on-accent:   #16120c;
+  /* Categorical steps, kept apart by hue without reaching for blue. */
+  --series-1: #e3a44e; --series-2: #e07a4a; --series-3: #8fbf6a; --series-4: #d9b64a;
+  --series-5: #dd8f8f; --series-6: #7fae5a; --series-7: #c08fa8; --series-8: #ea8570;
+  /* The sequential ramp is amber here rather than blue — it is a ramp, not a brand. */
+  --seq-100: #3d2e14; --seq-250: #6b5220; --seq-400: #a67c2e; --seq-550: #d1a552; --seq-700: #f0d49a;
+  --good-bg: #14240f; --warning-bg: #2e2410; --critical-bg: #2e1813; --serious-bg: #2e2014;
+  --good-ink: #6fbf73; --warning-ink: #e8c168; --serious-ink: #eda179; --critical-ink: #f08a7a;
+  --grid: #2b2318;
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.42);
+}
+
+/* The console's resize grip. Wide enough to grab, quiet enough to ignore. */
+.split-handle {
+  align-self: stretch; border-radius: 3px; cursor: col-resize; background: transparent;
+  border-left: 1px solid var(--border); border-right: 1px solid transparent;
+}
+.split-handle:hover, .split-handle:active { background: var(--accent-soft); border-left-color: var(--accent); }
+@media (max-width: 900px) { .split-handle { display: none; } }
+
+/* Search matches in the REST console. Every hit is marked; the one you are on is marked
+   differently, because "which of these am I on" must be answerable without scrolling. */
+.json mark, pre mark { background: color-mix(in srgb, var(--warning) 45%, transparent); color: inherit; border-radius: 2px; }
+.json mark.on, pre mark.on {
+  background: var(--accent); color: var(--on-accent);
+  outline: 1px solid var(--accent); border-radius: 2px;
 }
 
 * { box-sizing: border-box; }
@@ -143,6 +236,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-soft);
 }
 .nav .ico { opacity: .9; }
+/* ------------------------------ in-page section tabs ------------------------------ */
+/* A page with several unrelated jobs gets its own tab bar, in the window's own idiom so
+   it reads as navigation. Slightly smaller than the top tabs, and it sits on a rule, so
+   it is clearly subordinate to them rather than a second row of equals. */
+.subnav {
+  display: flex; align-items: stretch; gap: 2px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+}
+.subnav button {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 6px 10px 7px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 12px;
+  font-family: inherit; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.subnav button:hover { background: var(--surface-2); color: var(--text-primary); }
+.subnav button[aria-current="page"] {
+  color: var(--accent); font-weight: 640; border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+.subnav .ico { opacity: .9; }
+
 /* A vertical rule before Config, where the divider used to be. */
 .nav-sep { width: 1px; background: var(--border); margin: 8px 7px; flex: none; }
 
@@ -214,7 +328,7 @@ table.tbl tbody tr:focus-visible,
   outline-offset: 1px;
 }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.danger { color: var(--critical); border-color: var(--critical); background: transparent; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }
@@ -259,6 +373,13 @@ label.field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; 
 .grid.c2 { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
 .grid.c3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .grid.c4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+/* A fixed-width companion beside something that wants the rest of the row: a chart that
+   is 150px wide however much space it is given, next to a card that always has more to
+   say. auto-fit would give each half the row and leave the chart swimming in its own
+   column with dead space under its shorter neighbour. Stacks when there is no room to
+   put them side by side. */
+.grid.aside { grid-template-columns: minmax(250px, 330px) 1fr; }
+@media (max-width: 860px) { .grid.aside { grid-template-columns: 1fr; } }
 
 /* stat tile: the hero number wears text ink, not a series color */
 .stat { padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); }
@@ -298,6 +419,13 @@ table.tbl tbody tr:hover td { background: var(--surface-2); }
 table.tbl td.num, table.tbl th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.tbl td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 .tbl-empty { padding: 26px; text-align: center; color: var(--text-muted); }
+/* An empty state that has something to say: the reason reads as text rather than as a
+   muted aside, the evidence stays quiet under it, and the actions sit where a button is
+   expected. Less padding than the bare form — there is content here to fill it. */
+.tbl-empty.rich { padding: 20px 16px; display: grid; gap: 7px; justify-items: center; }
+.tbl-empty.rich .why { color: var(--text-secondary); font-size: 12.5px; max-width: 54ch; }
+.tbl-empty.rich .detail { font-size: 11px; color: var(--text-muted); max-width: 60ch; word-break: break-word; }
+.tbl-empty.rich .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 2px; }
 
 /* ---------------------------------- misc ----------------------------------- */
 .muted { color: var(--text-muted); }

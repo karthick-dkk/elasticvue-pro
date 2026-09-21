@@ -14,6 +14,7 @@
 import http from 'node:http';
 
 const port = Number(process.argv[2]) || 9299;
+const bind = process.env.MOCK_BIND || '127.0.0.1';
 const DAY = 86400000;
 
 const index = (name, size, status = 'open', health = 'green') => ({
@@ -41,6 +42,59 @@ const SNAPSHOTS = Array.from({ length: 23 }, (_, i) => {
     indices: '5', successful_shards: '10', failed_shards: i === 3 ? '1' : '0', total_shards: '10',
   };
 });
+
+/**
+ * The fixture's devices: one per status the classifier can produce, including the two
+ * that are easy to get wrong — a negative delay (the device's clock is ahead) and a
+ * delay sitting exactly on a whole hour, which is what a timezone misconfiguration
+ * looks like.
+ *
+ * [device, delayMinutes, logType, tag]
+ */
+const DEVICES = [
+  ['fw-edge-01',     2,    'firewall', 'acme'],
+  ['fw-core-02',     41,   'firewall', 'acme'],
+  ['proxy-03',       95,   'proxy',    'acme'],
+  ['vpn-04',         -37,  'vpn',      'beta'],
+  ['switch-05',      330,  'syslog',   'beta'],   // 5h30 — not a whole hour
+  ['router-06',      300,  'syslog',   'beta'],   // exactly 5h — timezone shape
+];
+
+/**
+ * The field/value pairs a single-device query is looking for, or null if this is not
+ * one.
+ *
+ * The field matters. A real cluster searching `src_ip` for a hostname finds nothing, so
+ * a fixture that matches on the value alone would let a page look a device up in the
+ * wrong field and still look correct here — which is the class of bug this fixture has
+ * had before.
+ */
+function termClauses(body) {
+  const must = (((body.query || {}).bool || {}).must) || [];
+  const out = [];
+  for (const m of must) {
+    for (const c of ((m.bool || {}).should) || []) {
+      const [field, value] = Object.entries(c.term || {})[0] || [];
+      if (typeof value === 'string' && value) out.push({ field: String(field).replace(/\.keyword$/, ''), value });
+    }
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * A `_cat` answer carries only the columns that were asked for.
+ *
+ * The fixture used to hand back every field it knew regardless of `h=`, which let a page
+ * read a column it had never requested and still look correct here. A real cluster
+ * returns the projection, so this does too.
+ */
+function catProject(url, rows) {
+  const q = url.split('?')[1] || '';
+  const h = new URLSearchParams(q).get('h');
+  if (!h) return rows;
+  const want = h.split(',').map((x) => x.trim()).filter(Boolean);
+  return rows.map((r) => Object.fromEntries(want.filter((k) => k in r).map((k) => [k, r[k]])));
+}
 
 const routes = [
   [(u) => u === '/', () => ({ cluster_name: 'mock', cluster_uuid: 'mock-uuid',
@@ -75,19 +129,33 @@ const routes = [
   // three nodes at 91/55/21%, nodes said two at 80/70% — so the Nodes page contradicted
   // itself on one screen and every QA run had to re-establish that the fixture, not the
   // app, was wrong.
-  [(u) => u.startsWith('/_cat/nodes'), () => ([
-    { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', 'node.role': 'dim', master: '*',
+  [(u) => u.startsWith('/_cat/nodes'), (hit) => catProject(hit.url, [
+    { name: 'node-1', ip: '10.0.0.1', version: '8.13.4', jdk: '17.0.9', 'node.role': 'dim', master: '*',
       'heap.percent': '61', 'ram.percent': '70', cpu: '12', load_1m: '1.2',
       'disk.used': '91000000000', 'disk.avail': '9000000000', 'disk.total': '100000000000',
       'disk.used_percent': '91', uptime: '10d' },
-    { name: 'node-2', ip: '10.0.0.2', version: '8.13.4', 'node.role': 'dim', master: '-',
+    { name: 'node-2', ip: '10.0.0.2', version: '8.13.4', jdk: '17.0.9', 'node.role': 'dim', master: '-',
       'heap.percent': '55', 'ram.percent': '66', cpu: '9', load_1m: '0.8',
       'disk.used': '55000000000', 'disk.avail': '45000000000', 'disk.total': '100000000000',
       'disk.used_percent': '55', uptime: '10d' },
-    { name: 'node-3', ip: '10.0.0.3', version: '8.13.4', 'node.role': 'dim', master: '-',
+    { name: 'node-3', ip: '10.0.0.3', version: '8.13.4', jdk: '21.0.2', 'node.role': 'dim', master: '-',
       'heap.percent': '38', 'ram.percent': '52', cpu: '4', load_1m: '0.3',
       'disk.used': '21000000000', 'disk.avail': '79000000000', 'disk.total': '100000000000',
       'disk.used_percent': '21', uptime: '10d' }])],
+  // _field_caps: the log-delay preflight asks this before it aggregates. Only the names
+  // it was asked about AND that this fixture "has" come back — real _field_caps omits
+  // what it cannot find rather than returning it empty, and the preflight reads absence
+  // from the map, so a fixture that echoed every requested name would make the refusal
+  // path untestable.
+  [(u) => u.includes('/_field_caps'), ({ url }) => {
+    const asked = new URLSearchParams(url.split('?')[1] || '').get('fields') || '';
+    const fields = {};
+    for (const name of asked.split(',').map((x) => x.trim()).filter(Boolean)) {
+      const type = FIELD_TYPES[name];
+      if (type) fields[name] = { [type]: { type, searchable: true, aggregatable: type !== 'text' } };
+    }
+    return { indices: ['logstash-acme-2026.09.09'], fields };
+  }],
   [(u) => u.startsWith('/_cat/indices'), () => INDICES],
   [(u) => u.startsWith('/_cat/shards'), () => ([
     { index: 'logstash-acme-2026.09.09', shard: '0', prirep: 'p', state: 'STARTED', node: 'node-1', store: '2500000000' },
@@ -147,9 +215,87 @@ const routes = [
     settings: { 'index.number_of_replicas': '1', 'index.refresh_interval': '1s' } } })],
   // Field-volume aggregation: terms split by day, plus the day totals. One value spikes
   // on the latest complete day so the 40% rule has something to catch.
+  // _bulk: echo back the shape the sink checks — item count and an errors flag.
+  [(u) => u.includes('/_bulk'), ({ body }) => {
+    const lines = String(body || '').split('\n').filter(Boolean);
+    const n = Math.floor(lines.length / 2);
+    return { took: 4, errors: false,
+             items: Array.from({ length: n }, () => ({ index: { status: 201, result: 'created' } })) };
+  }],
   [(u) => u.includes('/_search'), (hit) => {
     let body = {};
     try { body = JSON.parse(hit.body || '{}'); } catch { /* fall through to the hit list */ }
+
+    // The close-up: the newest documents for one device, looked up by hostname or by
+    // address. Answered from the same DEVICES table the aggregation uses, so the fixture
+    // cannot tell one story per device in the fleet table and a different one here.
+    const clauses = termClauses(body);
+    if (clauses) {
+      // src_hostname holds the name; src_ip holds the address. Asking the wrong field
+      // for the wrong kind of value matches nothing, exactly as a real cluster would.
+      const idx = DEVICES.findIndex(([name], i) => clauses.some(({ field, value }) =>
+        (field === 'src_hostname' && value === name) || (field === 'src_ip' && value === `10.0.0.${i + 1}`)));
+      if (idx < 0) {
+        return { took: 2, timed_out: false, hits: { total: { value: 0, relation: 'eq' }, hits: [] } };
+      }
+      const [device, mins, logType, tag] = DEVICES[idx];
+      const size = Math.min(Number(body.size) || 15, 50);
+      const now = Date.now();
+      const hits = Array.from({ length: size }, (_, n) => {
+        const arrival = now - 60000 - n * 60000;
+        // A little wobble, deterministic so a re-run says the same thing. The newest
+        // document keeps the exact delay the fleet table reported for this device.
+        const wobble = n === 0 ? 0 : ((n * 7) % 5) - 2;
+        const event = arrival - (mins + wobble) * 60000;
+        const src = {
+          '@timestamp': new Date(arrival).toISOString(),
+          ingested_time: new Date(event).toISOString(),
+          src_hostname: device,
+          src_ip: `10.0.0.${idx + 1}`,
+          tag1: tag, fwdtag: `fwd-${tag}`, ClientID: tag.toUpperCase(),
+          branch: tag === 'acme' ? 'HQ' : 'DR', log_type: logType,
+        };
+        // One parser miss, on the oldest document of one device: the UI must list it
+        // rather than drop it, and must not count it as a zero delay.
+        if (device === 'proxy-03' && n === size - 1) delete src.ingested_time;
+        return { _index: `logstash-${tag}-2026.09.09`, _id: `${device}-${n}`, _source: src };
+      });
+      return { took: 4, timed_out: false,
+               hits: { total: { value: 100 + Math.round(Math.abs(mins)), relation: 'eq' }, hits } };
+    }
+    // Log delay: terms on the device field with a top_hits sub-agg per bucket. Devices
+    // are shaped to cover every status the classifier can produce, including the two that
+    // are easy to get wrong — a negative delay (device clock ahead) and a delay sitting
+    // exactly on a whole-hour boundary, which is what timezone misconfiguration looks like.
+    if (body.aggs && body.aggs.devices) {
+      const now = Date.now();
+      const iso = (ms) => new Date(ms).toISOString();
+      const buckets = DEVICES.map(([device, mins, logType, tag]) => {
+        const arrival = now - 60000;
+        const event = arrival - mins * 60000;
+        return {
+          key: device,
+          doc_count: 100 + Math.round(Math.abs(mins)),
+          latest: { hits: { total: { value: 1 }, hits: [{
+            _index: 'logstash-acme-2026.09.09',
+            _source: {
+              '@timestamp': iso(arrival),
+              ingested_time: iso(event),
+              src_hostname: device,
+              src_ip: `10.0.0.${DEVICES.findIndex((d) => d[0] === device) + 1}`,
+              tag1: tag,
+              fwdtag: `fwd-${tag}`,
+              ClientID: tag.toUpperCase(),
+              branch: tag === 'acme' ? 'HQ' : 'DR',
+              log_type: logType,
+            },
+          }] } },
+        };
+      });
+      return { took: 12, timed_out: false, hits: { total: { value: 0 }, hits: [] },
+               aggregations: { devices: { buckets, sum_other_doc_count: 0 } } };
+    }
+
     if (body.aggs && body.aggs.terms) {
       const DAYS = 14;
       // UTC midnight, as a real date_histogram buckets by default.
@@ -184,16 +330,40 @@ const routes = [
   }],
 ];
 
+/**
+ * What this fixture pretends to have mapped.
+ *
+ * Deliberately a parsed-log shape rather than the Filebeat ECS the dev cluster ships, so
+ * the delay preflight has something it can say yes to. `parser_tag` is left out on
+ * purpose: a metadata field that is absent is a real case and the page reports it
+ * without refusing the whole analysis.
+ */
+const FIELD_TYPES = {
+  '@timestamp': 'date',
+  ingested_time: 'date',
+  'src_hostname.keyword': 'keyword',
+  src_ip: 'ip',
+  'tag1.keyword': 'keyword',
+  'fwdtag.keyword': 'keyword',
+  ClientID: 'keyword',
+  'branch.keyword': 'keyword',
+  'log_type.keyword': 'keyword',
+};
+
 http.createServer((req, res) => {
   let body = '';
   req.on('data', (d) => (body += d));
   req.on('end', () => {
     const url = req.url;
     res.setHeader('content-type', 'application/json');
-    if (req.method !== 'GET' && req.method !== 'HEAD' && !url.includes('_search')) {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !url.includes('_search') && !url.includes('_bulk')) {
       return res.end(JSON.stringify({ acknowledged: true }));   // fixture: writes are no-ops
     }
     const hit = routes.find(([match]) => match(url));
     res.end(JSON.stringify(hit ? hit[1]({ body, url }) : { acknowledged: true, url }));
   });
-}).listen(port, '127.0.0.1', () => console.log(`mock elasticsearch on http://127.0.0.1:${port}`));
+// Loopback by default, and that default is deliberate: a fixture that answers anything
+// on every interface is one an unrelated thing on the network can find and believe. Set
+// MOCK_BIND=0.0.0.0 only to let a container reach it — which is what verifying the
+// hosted stack against it needs, and nothing else should.
+}).listen(port, bind, () => console.log(`mock elasticsearch on http://${bind}:${port}`));

@@ -102,6 +102,22 @@ export function toCsv(rows, headers) {
   return [cols.map(csvEscape).join(','), ...rows.map((r) => cols.map((c) => csvEscape(r[c])).join(','))].join('\n');
 }
 
+/**
+ * Save bytes rather than text.
+ *
+ * download() takes a string and hands it to FILE_WRITE on the desktop, which is a text
+ * channel — a spreadsheet through it would arrive corrupt. Binary goes through the blob
+ * path, which is what the hosted deployment uses for everything anyway.
+ */
+export function downloadBytes(name, bytes, mime = 'application/octet-stream') {
+  const blob = new Blob([bytes], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 export function download(name, text, mime = 'text/plain') {
   const T = globalThis.__TAURI__;
   if (T && T.dialog && T.core) {

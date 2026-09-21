@@ -156,7 +156,7 @@ await go('shards');
 {
   const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
   ok(titles.some((t) => t.startsWith('Shards —')), `shards: no shard table card, saw ${titles.join(' | ')}`);
-  ok(titles.includes('Nodes'), `shards: no node strip, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Nodes & cluster load'), `shards: no node pane, saw ${titles.join(' | ')}`);
 
   const heads = [...doc.querySelectorAll('table.tbl thead th')].map((x) => x.textContent.trim());
   for (const col of ['Index', 'Shard', 'Type', 'State', 'Node', 'Store', 'Unassigned reason']) {
@@ -186,45 +186,59 @@ await go('shards');
     `shards: expected a Move button on each of the 2 started shards per cluster (${2 * shown}), found ${moves}`);
 
   // The node half, which this page lost when it stopped being "Nodes & shards".
-  ok(titles.includes('Nodes'), `shards: no Nodes card, saw ${titles.join(' | ')}`);
+  ok(titles.includes('Nodes & cluster load'), `shards: no Nodes pane, saw ${titles.join(' | ')}`);
   for (const col of ['Node', 'Roles', 'Version', 'Heap', 'RAM', 'CPU', 'Load 1m/5m', 'Disk', 'Uptime']) {
     ok(heads.includes(col), `shards: the node table has no "${col}" column, saw ${heads.join(', ')}`);
   }
   ok(/master/i.test(doc.body.textContent), 'shards: the master node is not marked');
 
-  // The honeycomb: one cell per shard, which is the point — a table of several hundred
-  // rows answers "what are the values", not "how many are wrong".
-  ok(titles.includes('Shard states'), `shards: no honeycomb card, saw ${titles.join(' | ')}`);
-  const cells = doc.querySelectorAll('polygon').length;
-  ok(cells === shardRows, `shards: ${cells} honeycomb cells for ${shardRows} shards — should be one each`);
-  const svgs = [...doc.querySelectorAll('svg')];
-  ok(svgs.length >= 1 && /^0 0 \d/.test(svgs[0].getAttribute('viewBox') || ''),
-    'shards: the honeycomb has no usable viewBox');
-  // It shrinks to fit rather than running off the page.
-  const vh = Number((svgs[0].getAttribute('viewBox') || '0 0 0 0').split(' ')[3]);
-  ok(vh > 0 && vh <= 300, `shards: the honeycomb is ${vh}px tall — it should fit above the fold`);
+  // The honeycomb is gone: several hundred hexagons answered "how many are wrong" at a
+  // glance, and the split gauge in Cluster at a glance answers the same question in a tenth
+  // of the height. Two pictures of one fact is one too many.
+  ok(!titles.includes('Shard states'), `shards: the honeycomb card is still here — ${titles.join(' | ')}`);
+  ok(doc.querySelectorAll('polygon').length === 0, 'shards: honeycomb cells are still being drawn');
 
-  // Clicking a cell filters the table to that index, so the two halves are one tool.
-  const shardRowsNow = () => [...doc.querySelectorAll('section.card')]
-    .filter((sec) => (sec.querySelector('header h2') || {}).textContent?.startsWith('Shards —'))
-    .reduce((n, sec) => n + sec.querySelectorAll('table.tbl tbody tr').length, 0);
-  const before = shardRowsNow();
-  doc.querySelector('polygon').dispatchEvent(new window.Event('click', { bubbles: true }));
-  await settleFor(250);
-  const after = shardRowsNow();
-  ok(after < before, `shards: clicking a honeycomb cell did not filter the table (${before} → ${after})`);
+  // Placement and storage share one card, because their shapes do not match: the gauge
+  // half is tall and fixed, the storage half is four short figures, and side by side as
+  // separate cards whichever was shorter left a block of empty page under it.
+  ok(titles.includes('Cluster at a glance'), `shards: no single glance card — ${titles.join(' | ')}`);
+  ok(!titles.includes('Shard placement') && !titles.includes('Storage accounting'),
+    `shards: the old separate cards survive — ${titles.join(' | ')}`);
+  // The stat tiles said Nodes / Shards / Unassigned / Moving, which the gauge and its
+  // legend say in the same card. Two pictures of one fact; the tiles were the redundant
+  // half, and what only they carried moved into the glance card's figures.
+  ok(!doc.querySelector('.stat'), 'shards: the stat tiles are still here, duplicating the gauge');
+  {
+    const glance = [...doc.querySelectorAll('section.card')]
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
+    for (const label of ['Nodes', 'Indices', 'Indices hold', 'Disk used']) {
+      ok(glance && glance.textContent.includes(label),
+        `glance card: "${label}" is missing — the tiles' figures must survive their removal`);
+    }
+  }
+  {
+    const merged = [...doc.querySelectorAll('section.card')]
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
+    ok(merged && merged.querySelectorAll('svg').length === 1,
+      'glance card: expected exactly one chart — the split gauge');
+    ok(merged && /Indices hold/i.test(merged.textContent),
+      'glance card: the storage figures are missing from the merged card');
+    const marks = merged ? [...merged.querySelectorAll('div[title]')].map((d) => d.getAttribute('title')) : [];
+    for (const want of ['assigned', 'moving', 'unassigned']) {
+      ok(marks.some((t) => t.startsWith(`${want}:`)), `glance card: "${want}" is not marked — ${marks.join(' | ')}`);
+    }
+  }
 
   // Storage accounting is shown whether or not the figures disagree — the two numbers are
   // asked for either way.
-  ok(titles.includes('Storage accounting'), `shards: no storage accounting card, saw ${titles.join(' | ')}`);
   const acct = [...doc.querySelectorAll('section.card')]
-    .find((sec) => /Storage accounting/.test((sec.querySelector('header h2') || {}).textContent || ''));
+    .find((sec) => /Cluster at a glance/.test((sec.querySelector('header h2') || {}).textContent || ''));
+  ok(!!acct, `shards: no glance card, saw ${titles.join(' | ')}`);
   for (const label of ['Indices hold', 'Elasticsearch holds', 'Disk used', 'Unaccounted']) {
     ok(acct && acct.textContent.includes(label), `shards: accounting is missing "${label}"`);
   }
 
-  // Clear the filter the honeycomb click just applied — it landed on the unassigned
-  // shard's index, which by definition has nothing movable on it.
+  // Clear any name filter before counting movable shards.
   const idxFilter = [...doc.querySelectorAll('input[type=search]')]
     .find((x) => x.placeholder === 'filter by name');
   if (idxFilter) {
@@ -363,6 +377,769 @@ await go('volume');
     await settleFor(200);
     ok(!!panel('Capacity by cluster'), 'volume: the summary view did not render');
   }
+}
+
+/* --------------------- alert triggers are listed and switchable --------------------- */
+
+/** The Config page is tabbed; open one by its label. */
+async function openSettingsTab(label) {
+  const nav = doc.querySelector('nav.subnav');
+  const btn = nav && [...nav.querySelectorAll('button')].find((b) => b.textContent.includes(label));
+  if (btn) { btn.click(); await settleFor(300); }
+  return !!btn;
+}
+
+await go('settings');
+{
+  // The bar is the page's table of contents: every job it does, visible without
+  // scrolling, exactly one of them open.
+  const nav = doc.querySelector('nav.subnav');
+  ok(!!nav, 'settings: no section tab bar');
+  if (nav) {
+    const tabs = [...nav.querySelectorAll('button')];
+    ok(tabs.length >= 7, `settings: ${tabs.length} section tabs, expected the page's several jobs`);
+    const current = tabs.filter((b) => b.getAttribute('aria-current') === 'page');
+    ok(current.length === 1, `settings: ${current.length} tabs marked current, expected exactly 1`);
+    // One section at a time — the whole point of the bar.
+    const cards = [...doc.querySelectorAll('section.card')].length;
+    ok(cards === 1, `settings: ${cards} cards on screen, expected the one open section`);
+    // Switching moves the marker and changes what is shown.
+    const other = tabs.find((b) => b.getAttribute('aria-current') !== 'page');
+    const otherLabel = other.textContent;
+    const wasTitle = (doc.querySelector('section.card header h2') || {}).textContent;
+    other.click();
+    await settleFor(300);
+    const nowTitle = (doc.querySelector('section.card header h2') || {}).textContent;
+    ok(nowTitle !== wasTitle, `settings: switching tab left "${wasTitle}" on screen`);
+    // The bar is redrawn, so find the tab again by its label: the marker has to be on
+    // the one that was pressed, not merely on exactly one of them.
+    const after = [...doc.querySelectorAll('nav.subnav button')];
+    const pressed = after.find((b) => b.textContent === otherLabel);
+    ok(pressed && pressed.getAttribute('aria-current') === 'page',
+      `settings: the current marker did not move to "${otherLabel}"`);
+    ok(after.filter((b) => b.getAttribute('aria-current') === 'page').length === 1,
+      'settings: more than one tab marked current');
+  }
+
+  ok(await openSettingsTab('Alert triggers'), 'settings: no Alert triggers tab');
+  const titles = [...doc.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('Alert triggers'), `settings: no alert triggers card, saw ${titles.join(' | ')}`);
+
+  const ar = await load('core/alert-rules.js');
+  const card = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Alert triggers');
+  const rows = card ? card.querySelectorAll('table.tbl tbody tr').length : 0;
+  ok(rows === ar.ALERT_RULES.length,
+    `settings: ${rows} trigger rows for ${ar.ALERT_RULES.length} rules — the table must be the registry`);
+
+  // Every rule has a switch, and the ones with thresholds expose them as numbers.
+  const boxes = card ? card.querySelectorAll('input[type=checkbox]').length : 0;
+  ok(boxes === ar.ALERT_RULES.length, `settings: ${boxes} switches for ${ar.ALERT_RULES.length} rules`);
+  const nums = card ? card.querySelectorAll('input[type=number]').length : 0;
+  const expected = ar.ALERT_RULES.reduce((n, r) => n + (r.thresholds || []).length, 0);
+  ok(nums === expected, `settings: ${nums} threshold inputs, expected ${expected}`);
+
+  // It points at the one rule editor rather than being a second one.
+  ok(card && /Automation/.test(card.textContent),
+    'settings: the triggers card should send new-rule authoring to Automation');
+}
+
+/* --------- nodes & shards opens on one cluster, and honours an explicit "all" --------- */
+
+{
+  const st = await load('core/state.js');
+  // Arrive from a fleet-wide page. The selection is "all" and was never asked for, so
+  // the shards page opens on a single cluster rather than a long scroll of repeats.
+  st.state.selected = 'all';
+  await go('overview');
+  await go('shards');
+  ok(st.state.selected !== 'all',
+    'shards: opened on the whole fleet without anyone asking for it');
+  const one = [...doc.querySelectorAll('section.card header h2')]
+    .filter((x) => x.textContent.startsWith('Shards —')).length;
+  ok(one === 1, `shards: ${one} shard tables on entry, expected the one selected cluster`);
+
+  // Now ask for the fleet by name. It is offered — the page is multi — and the choice
+  // sticks, including after leaving and coming back.
+  const sel = doc.getElementById('cluster-select');
+  ok(sel && [...sel.options].some((o) => o.value === 'all'),
+    'shards: "All clusters" is not offered, so the choice cannot be made');
+  if (sel) {
+    sel.value = 'all';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await settleFor(500);
+    const many = [...doc.querySelectorAll('section.card header h2')]
+      .filter((x) => x.textContent.startsWith('Shards —')).length;
+    ok(many === config.clusters.length,
+      `shards: asked for all ${config.clusters.length} clusters, drew ${many}`);
+
+    await go('overview');
+    await go('shards');
+    await settleFor(400);
+    const still = [...doc.querySelectorAll('section.card header h2')]
+      .filter((x) => x.textContent.startsWith('Shards —')).length;
+    ok(still === config.clusters.length,
+      `shards: the explicit fleet choice was forgotten on the way back (${still} tables)`);
+
+    // Leave the fleet selected: later cases drive the fleet-wide log delay view, and a
+    // single-cluster selection here would silently narrow them.
+    sel.value = 'all';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await settleFor(400);
+  }
+}
+
+/* --------------- ULM: manual only, and honest about not being set up --------------- */
+
+await go('logs');
+{
+  const stateMod0 = await load('core/state.js');
+  // A cluster with no bucket, chosen explicitly: ULM prefers one that has an archive, so
+  // the unconfigured state only shows when the selection offers nothing else. Set after
+  // go(), because go() re-resolves the selection and would put the fleet straight back.
+  const noBucket = stateMod0.clusters().find((c) => !c.s3);
+  ok(!!noBucket, 'fixture: every cluster has a bucket, so the unconfigured state cannot be reached');
+  if (noBucket) stateMod0.state.selected = noBucket.id;
+
+  const pane = doc.getElementById('view');
+  const toUlm = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'ULM');
+  ok(!!toUlm, 'logs: no ULM view');
+  if (toUlm) {
+    toUlm.click();
+    await settleFor(500);
+
+    // The fixture's clusters have no s3 block, so this is the path a real operator hits
+    // first. It has to name what is missing and where to add it — not read as an error.
+    const text = pane.textContent;
+    ok(/no archive configured/i.test(text),
+      `ULM: an unconfigured cluster should say so — saw ${text.slice(0, 140)}`);
+    ok(/s3/.test(text), 'ULM: the empty state should name the config block to add');
+    ok([...pane.querySelectorAll('button')].some((b) => /Open Config/.test(b.textContent)),
+      'ULM: no way to get to the place the block is added');
+
+    // And nothing was fetched on the way in. This page is manual by design: listing a
+    // bucket is the expensive call, and an open tab must not run up a bill.
+    ok(!/pulled/.test(text), 'ULM: something was pulled without being asked');
+  }
+
+  // A cluster that does have a bucket: the manual-only guarantee is only meaningful
+  // here, and so is the error path when the bucket cannot be reached.
+  {
+    const stateMod = await load('core/state.js');
+    const withBucket = stateMod.clusters().find((c) => c.s3);
+    ok(!!withBucket, 'fixture: no cluster carries an s3 block, so ULM cannot be driven');
+    if (withBucket) {
+      let listCalls = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        if (body.type === 'S3_LIST') listCalls += 1;
+        return realFetch(input, init);
+      };
+
+      stateMod.state.selected = withBucket.id;
+      const p2 = doc.getElementById('view');
+      [...p2.querySelectorAll('button')].find((b) => b.textContent === 'ULM').click();
+      await settleFor(600);
+
+      ok(listCalls === 0,
+        `ULM: ${listCalls} listing call(s) were made just by opening the page — it must not fetch on its own`);
+      ok(/Nothing pulled yet/i.test(p2.textContent),
+        `ULM: a configured bucket should invite a pull — saw ${p2.textContent.slice(0, 140)}`);
+      ok(/mock-lab-archive/.test(p2.textContent), 'ULM: the bucket is not named on screen');
+
+      const pull = doc.getElementById('ulm-pull');
+      ok(!!pull, 'ULM: no Pull Now button');
+      const report = doc.getElementById('ulm-report');
+      ok(report && report.disabled, 'ULM: the report should wait until something has been pulled');
+
+      if (pull) {
+        pull.click();
+        await settleFor(1200);
+        ok(listCalls > 0, 'ULM: pressing Pull Now made no listing call');
+        // No credentials in the fixture, so this must fail and say why rather than
+        // showing an empty archive — "nothing there" and "could not look" are the two
+        // answers this whole page exists to keep apart.
+        ok(/could not be listed/i.test(p2.textContent),
+          `ULM: a failed pull should say so — saw ${p2.textContent.slice(0, 200)}`);
+        ok(!/0 day\(s\)/.test(p2.textContent),
+          'ULM: a failed pull must not render as an empty archive');
+      }
+      globalThis.fetch = realFetch;
+    }
+
+    // Back to the tail, so later cases see the view they expect.
+    const back = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Live tail');
+    if (back) { back.click(); await settleFor(400); }
+  }
+}
+
+/* ------------- the nodes page: one pane on top, one arc for the shards ------------- */
+
+await go('shards');
+{
+  const pane = doc.getElementById('view');
+  const titles = [...pane.querySelectorAll('section.card header h2')].map((x) => x.textContent);
+  ok(titles.includes('Nodes & cluster load'),
+    `shards: nodes and load are not one pane, saw ${titles.join(' | ')}`);
+  ok(!titles.includes('Nodes') && !titles.includes('Cluster load'),
+    `shards: the old separate cards are still there: ${titles.join(' | ')}`);
+
+  // The merged pane comes first: it is what the page is for.
+  const cards = [...pane.querySelectorAll('section.card')];
+  const merged = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Nodes & cluster load');
+  ok(merged && cards.indexOf(merged) <= 1,
+    `shards: the nodes pane is at position ${merged ? cards.indexOf(merged) : -1}, expected the top`);
+  // And it holds both halves — the node table and what the cluster is busy doing.
+  ok(merged && /Uptime/.test(merged.textContent), 'shards: the merged pane lost the node table');
+
+  const mix = cards.find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster at a glance');
+  ok(!!mix, `shards: no glance card, saw ${titles.join(' | ')}`);
+  if (mix) {
+    // One arc split, not three gauges: a single svg carrying the track plus a segment
+    // per non-zero part.
+    const svgs = mix.querySelectorAll('svg');
+    ok(svgs.length === 1, `shard gauge: ${svgs.length} charts, expected one split arc`);
+    // Every part is marked with its own count, including the zeroes.
+    const marks = [...mix.querySelectorAll('div[title]')].map((d) => d.getAttribute('title'));
+    for (const want of ['assigned', 'moving', 'unassigned']) {
+      ok(marks.some((t) => t.startsWith(`${want}:`)), `shard gauge: "${want}" is not marked — ${marks.join(' | ')}`);
+    }
+    ok(/shards total/.test(mix.textContent), 'shard gauge: the centre should name what the total counts');
+  }
+}
+
+/* ------------- the scheduled measurement is offered only where it can run ------------- */
+
+// The dev bridge runs on loopback, which is the portable edition, so the core answers
+// `supported: false` and the card is correctly absent. That is the first half of the
+// claim; the second half — that it appears, and that saving sends what the admin typed —
+// needs a hosted answer, which is stubbed here rather than by standing up a second
+// bridge on a routable address.
+await go('settings');
+{
+  const labels = [...doc.querySelectorAll('nav.subnav button')].map((b) => b.textContent);
+  ok(!labels.some((l) => /Scheduled log delay/.test(l)),
+    `settings: the scheduler tab appeared on a loopback (portable) bridge, where it cannot run: ${labels.join(' | ')}`);
+}
+
+{
+  const realFetch = globalThis.fetch;
+  let lastSet = null;
+  const stub = {
+    supported: true,
+    config: { enabled: false, sinkClusterId: '', clusters: [], everyHours: 2,
+              indexPrefix: 'espro-log-delay', indexPattern: 'logstash-*',
+              deviceField: 'src_hostname.keyword', arrivalField: '@timestamp',
+              eventTimeFields: ['ingested_time', 'event_created'], maxDevices: 2000 },
+    state: { runs: 0, lastOk: false, lastMeasured: 0, lastFailed: 0, consecutiveFailures: 0 },
+    blocked: null,
+  };
+  globalThis.fetch = async (input, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(body.type || '').startsWith('DELAY_SINK')) {
+      // transport.js only ever calls .json() on the answer, and jsdom has no Response.
+      if (body.type === 'DELAY_SINK_SET') {
+        lastSet = body.config;
+        return { ok: true, json: async () => ({ ok: true, ...stub, config: body.config }) };
+      }
+      return { ok: true, json: async () => ({ ok: true, ...stub }) };
+    }
+    return realFetch(input, init);
+  };
+
+  await go('overview');
+  await go('settings');
+  await settleFor(400);
+
+  ok(await openSettingsTab('Scheduled log delay'),
+    'settings: no scheduler tab on a hosted core');
+  const card = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Scheduled log delay');
+  ok(!!card, 'settings: no scheduled log delay card on a hosted core');
+
+  if (card) {
+    // Every cluster is offered as the destination, and every cluster can be measured.
+    const options = [...card.querySelectorAll('#sink-target option')].length;
+    ok(options === config.clusters.length + 1,
+      `settings: ${options} sink options for ${config.clusters.length} clusters (plus the empty one)`);
+    ok(card.querySelectorAll('input[id^="sink-pick-"]').length === config.clusters.length,
+      'settings: the clusters to measure are not one box per cluster');
+    ok(/Log delay/.test(card.textContent),
+      'settings: the card should say where the thresholds are applied');
+
+    // Arming it without naming a destination must not reach the core at all.
+    card.querySelector('#sink-enabled').checked = true;
+    [...card.querySelectorAll('input[id^="sink-pick-"]')].forEach((b) => { b.checked = false; });
+    [...card.querySelectorAll('button')].find((b) => b.textContent === 'Save').click();
+    await settleFor(120);
+    ok(lastSet === null, 'settings: saving with no cluster picked was sent to the core anyway');
+
+    // With a destination and a cluster that is not the destination, what is sent is what
+    // was on the screen. (Measuring only the sink is refused too; the card says so.)
+    const target = card.querySelector('#sink-target');
+    const dest = config.clusters[config.clusters.length - 1].id;
+    target.value = dest;
+    const first = card.querySelector(`#sink-pick-${config.clusters[0].id}`);
+    if (first) first.checked = true;
+    card.querySelector('#sink-everyHours').value = '6';
+    [...card.querySelectorAll('button')].find((b) => b.textContent === 'Save').click();
+    await settleFor(200);
+    ok(lastSet !== null, 'settings: a complete setting was not sent to the core');
+    if (lastSet) {
+      ok(lastSet.enabled === true, 'settings: the armed switch did not travel');
+      ok(lastSet.everyHours === 6, `settings: the interval travelled as ${lastSet.everyHours}, not 6`);
+      ok(lastSet.sinkClusterId === dest,
+        `settings: the destination travelled as ${lastSet.sinkClusterId}, expected ${dest}`);
+      ok(!lastSet.clusters.includes(dest) || lastSet.clusters.length > 1,
+        'settings: the cluster being written to was the only one measured');
+      ok(lastSet.eventTimeFields.length === 2,
+        `settings: the event time fields travelled as ${JSON.stringify(lastSet.eventTimeFields)}`);
+    }
+  }
+  globalThis.fetch = realFetch;
+}
+
+/* ------------- the cluster summary names the JVM and opens a row ------------- */
+
+await go('overview');
+{
+  const summary = [...doc.querySelectorAll('section.card')]
+    .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster summary');
+  ok(!!summary, 'overview: no cluster summary card');
+  if (summary) {
+    const heads = [...summary.querySelectorAll('thead tr:last-child th')]
+      .map((th) => th.textContent.replace(/[▲▼]/g, '').replace(/i$/, '').trim());
+    ok(heads.includes('JDK'), `overview: no JDK column, saw ${heads.join(' | ')}`);
+
+    // The fixture runs two nodes on 17.0.9 and one on 21.0.2 — a half-finished upgrade,
+    // which must read as mixed rather than as whichever node answered first.
+    const jdkAt = heads.indexOf('JDK');
+    const firstRow = summary.querySelector('tbody tr');
+    const jdkCell = firstRow && firstRow.children[jdkAt];
+    ok(jdkCell && /mixed/.test(jdkCell.textContent),
+      `overview: JDK cell reads "${jdkCell && jdkCell.textContent}", expected mixed for a cluster on two JVMs`);
+    ok(jdkCell && /17\.0\.9/.test(jdkCell.getAttribute('title') || ''),
+      'overview: the JDK cell should carry the per-version breakdown');
+
+    // The row expander is a button people can find, and it says which way it goes.
+    const expand = [...firstRow.querySelectorAll('button')].find((b) => /Details/.test(b.textContent));
+    ok(!!expand, 'overview: no Details button on a summary row');
+    if (expand) {
+      ok(expand.getAttribute('aria-expanded') === 'false', 'overview: a collapsed row should say so');
+      ok(!expand.className.includes('ghost'),
+        'overview: the row expander should look like a button, not a label');
+      const before = summary.querySelectorAll('tbody tr').length;
+      expand.click();
+      await settleFor(300);
+      const after = [...doc.querySelectorAll('section.card')]
+        .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Cluster summary');
+      ok(after.querySelectorAll('tbody tr').length > before,
+        'overview: pressing Details did not open the detail row');
+      const now = [...after.querySelector('tbody tr').querySelectorAll('button')]
+        .find((b) => /Hide details/.test(b.textContent));
+      ok(!!now, 'overview: an open row should offer to close');
+      ok(now && now.getAttribute('aria-expanded') === 'true', 'overview: an open row should say it is open');
+      now.click();
+      await settleFor(250);
+    }
+  }
+}
+
+/* ---------------- the console: a bigger result, searchable, editable ---------------- */
+
+await go('console');
+{
+  const pane = doc.getElementById('view');
+  const run = doc.getElementById('c-run');
+  ok(!!run, 'console: no Run button');
+  run.click();
+  await settleFor(900);
+
+  // The response gets the larger share: a request body is a few lines, a response is
+  // hundreds, and an even split gave half the window to whitespace.
+  const cols = doc.getElementById('c-columns');
+  ok(!!cols, 'console: the two panes are not a resizable split');
+  if (cols) {
+    const tpl = cols.style.gridTemplateColumns;
+    const nums = (tpl.match(/([\d.]+)fr/g) || []).map((x) => parseFloat(x));
+    ok(nums.length === 2, `console: expected two proportional columns, got "${tpl}"`);
+    ok(nums[1] > nums[0], `console: the result column (${nums[1]}) is not bigger than the query (${nums[0]})`);
+    ok(Math.abs(nums[0] - 35) < 0.5 && Math.abs(nums[1] - 65) < 0.5,
+      `console: expected a 35/65 split, got ${nums[0]}/${nums[1]}`);
+    ok(!!cols.querySelector('.split-handle'), 'console: no handle to resize the split');
+  }
+
+  // Search inside the response.
+  const find = doc.getElementById('c-find');
+  ok(!!find, 'console: no search box on the results');
+  if (find) {
+    // A term the fixture's health response actually contains — "cluster" is not in it,
+    // which is how the first version of this case failed for its own reasons.
+    find.value = 'shards';
+    find.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(300);
+    const marks = doc.querySelectorAll('#c-response mark').length;
+    ok(marks > 0, `console: searching marked nothing — response was ${doc.getElementById('c-response').textContent.slice(0, 80)}`);
+    ok(/\d+ of \d+/.test(doc.getElementById('c-response').textContent),
+      'console: the search does not say which match you are on, out of how many');
+
+    // A response is cluster data. Marking matches must not turn it into markup.
+    const nonsense = doc.getElementById('c-find');
+    nonsense.value = 'zzzznotpresentzzzz';
+    nonsense.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(250);
+    ok(/no hits/.test(doc.getElementById('c-response').textContent),
+      'console: a search with no matches should say so');
+    nonsense.value = '';
+    nonsense.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(200);
+  }
+
+  // Editable where it sits: no button, no mode.
+  ok(![...pane.querySelectorAll('button')].some((b) => b.textContent === 'Edit'),
+    'console: there is still an Edit button — the response should just be editable');
+  {
+    const out = doc.getElementById('c-out');
+    ok(!!out, 'console: the response is not an editable region');
+    ok(out && (out.contentEditable === 'true' || out.contentEditable === 'plaintext-only'),
+      `console: the response is not editable (contentEditable=${out && out.contentEditable})`);
+    ok(out && out.textContent.length > 0, 'console: the editable region is empty');
+    ok(out && out.spellcheck === false, 'console: spellcheck should be off on a response body');
+  }
+
+  // Next/previous match, and a distinct mark for the one you are on.
+  {
+    const f = doc.getElementById('c-find');
+    f.value = 'shards';
+    f.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(300);
+    const total = doc.querySelectorAll('#c-response mark').length;
+    ok(total > 1, `console: need several matches to test stepping, found ${total}`);
+    ok(doc.querySelectorAll('#c-response mark.on').length === 1,
+      'console: exactly one match should be marked as current');
+    ok(/1 of \d/.test(doc.getElementById('c-response').textContent),
+      'console: the find bar does not say which match you are on');
+
+    const next = [...pane.querySelectorAll('button')].find((b) => b.title && /Next match/.test(b.title));
+    const prev = [...pane.querySelectorAll('button')].find((b) => b.title && /Previous match/.test(b.title));
+    ok(!!next && !!prev, 'console: no next/previous match buttons');
+    if (next && prev) {
+      next.click();
+      await settleFor(250);
+      ok(/2 of \d/.test(doc.getElementById('c-response').textContent),
+        'console: Next did not move to the second match');
+      prev.click(); await settleFor(200);
+      prev.click(); await settleFor(250);
+      // Wrapping backwards from the first lands on the last, as every find bar does.
+      ok(new RegExp(`${total} of ${total}`).test(doc.getElementById('c-response').textContent),
+        'console: Previous did not wrap to the last match');
+    }
+    f.value = '';
+    f.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await settleFor(200);
+  }
+
+  // Full screen, and Escape out of it.
+  const full = doc.getElementById('c-full');
+  ok(!!full, 'console: no full-screen control on the results');
+  if (full) {
+    full.click();
+    await settleFor(300);
+    ok(!doc.getElementById('c-columns'), 'console: full screen still shows the query column');
+    ok(!doc.getElementById('c-run'), 'console: full screen still shows the request bar');
+    ok(!!doc.getElementById('c-response'), 'console: full screen lost the response');
+    doc.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settleFor(350);
+    ok(!!doc.getElementById('c-columns'), 'console: Escape did not leave full screen');
+  }
+}
+
+/* ----------------- the brand is the product, not the filename ----------------- */
+
+{
+  const brand = doc.querySelector('.brand');
+  ok(!!brand, 'no brand block in the topbar');
+  ok(!doc.getElementById('cfg-name'), 'the config filename is back in the brand block');
+  ok(brand && !/\.json|\.ya?ml/i.test(brand.textContent),
+    `the brand names a config file: "${brand && brand.textContent.trim()}"`);
+  ok(brand && /ElasticVue Pro/.test(brand.textContent), 'the brand should still name the product');
+}
+
+/* ------------------- log delay: can this cluster be analysed? ------------------- */
+
+await go('logs');
+{
+  const ld = await load('core/log-delay.js');
+
+  // The rule that makes a preflight worth having: the aggregation runs on .keyword, so
+  // checking the base name would pass and the query that follows would return nothing.
+  ok(ld.aggregatableName('src_hostname') === 'src_hostname.keyword', 'text field should gain .keyword');
+  ok(ld.aggregatableName('tag1.keyword') === 'tag1.keyword', 'an already-keyword name must not be doubled');
+  ok(ld.aggregatableName('src_ip') === 'src_ip', 'an ip-like field must not gain .keyword');
+  ok(ld.aggregatableName('ClientID') === 'ClientID', 'ClientID is mapped keyword directly');
+  ok(ld.aggregatableName('') === '', 'an empty field name stays empty');
+
+  // decide() is the part with the rules in it, exercised without a cluster.
+  const fields = ld.resolveFields({ timeField: '@timestamp' });
+  const caps = (names) => ({ fields: Object.fromEntries(names.map((n) => [n, { keyword: {} }])) });
+
+  let d = ld.decide(fields, caps(['src_hostname.keyword', 'ingested_time', '@timestamp']));
+  ok(d.ok === true, `all three present should be analysable: ${JSON.stringify(d.missing)}`);
+  ok(d.resolved.eventTime === 'ingested_time', `first available event-time wins: ${d.resolved.eventTime}`);
+
+  d = ld.decide(fields, caps(['src_hostname.keyword', 'event_created', '@timestamp']));
+  ok(d.ok === true && d.resolved.eventTime === 'event_created',
+    'a later event-time candidate should be accepted');
+
+  d = ld.decide(fields, caps(['ingested_time', '@timestamp']));
+  ok(d.ok === false && d.missing.includes('src_hostname.keyword'),
+    `a missing device field must refuse and name it: ${JSON.stringify(d.missing)}`);
+
+  d = ld.decide(fields, caps(['src_hostname.keyword', '@timestamp']));
+  ok(d.ok === false && d.missing.length === 3,
+    `no event-time candidate should name all three: ${JSON.stringify(d.missing)}`);
+
+  d = ld.decide(fields, caps([]));
+  ok(d.ok === false, 'an empty cluster must never be analysable');
+  ok(d.resolved.device === null && d.resolved.eventTime === null,
+    'nothing resolved when nothing is present');
+
+  // Metadata absence narrows the result; it must not refuse the analysis.
+  const withMeta = ld.resolveFields({ delayFields: { device: 'src_hostname', eventTime: ['ingested_time'], metadata: ['tag1', 'parser_tag'] } });
+  d = ld.decide(withMeta, caps(['src_hostname.keyword', 'ingested_time', '@timestamp', 'tag1.keyword']));
+  ok(d.ok === true, 'a missing context field must not refuse the analysis');
+  ok(d.metadataMissing.includes('parser_tag.keyword'), `absent context should be named: ${JSON.stringify(d.metadataMissing)}`);
+  ok(d.resolved.metadata.includes('tag1.keyword'), 'present context should be resolved');
+
+  // End to end against the mock, which maps a parsed-log shape.
+  const st = await load('core/state.js');
+  const target = config.clusters[0];
+  const live = await ld.preflight(st.client(target.id), { ...target, logIndexPattern: 'logstash-*' });
+  ok(live.unknown === false, `the mock should answer _field_caps: ${live.error}`);
+  ok(live.ok === true, `the mock should be analysable, missing: ${JSON.stringify(live.missing)}`);
+  ok(live.resolved.device === 'src_hostname.keyword', `resolved device: ${live.resolved.device}`);
+
+  // A cluster that cannot be asked is unknown, never "no fields". Two ways to fail to
+  // ask, and both must land on unknown: no client at all, and a client that throws.
+  const dead = await ld.preflight(null, target);
+  ok(dead.unknown === true && dead.ok === false, 'no client should be unknown, not a refusal');
+
+  // End to end: switch to the delay view, check the fleet, fetch, read the table.
+  {
+    // The page must arrive on the fleet selection rather than collapsing it. It used to
+    // be marked single-cluster, which silently reduced "all" to the first cluster on the
+    // way in — and would have made the fan-out below fan out to exactly one.
+    const stateMod = await load('core/state.js');
+    ok(stateMod.state.selected === 'all',
+      `logs: opening the page left the selection on "${stateMod.state.selected}", not the fleet`);
+    const fleet = stateMod.activeClusters().length;
+    ok(fleet === config.clusters.length,
+      `logs: ${fleet} active clusters, expected ${config.clusters.length}`);
+
+    const pane = doc.getElementById('view');
+
+    // The other half of making the page fleet-wide: a tail is one cluster's stream, so
+    // with several selected it must say which one it is following and let that be
+    // changed — without narrowing the fleet the delay view measures.
+    const tailPick = [...pane.querySelectorAll('label.field')]
+      .find((l) => /Tailing/.test(l.textContent));
+    ok(!!tailPick, 'logs: no tail cluster picker with several clusters selected');
+    if (tailPick) {
+      const opts = [...tailPick.querySelectorAll('option')].map((o) => o.value);
+      ok(opts.length === config.clusters.length,
+        `tail picker: ${opts.length} options for ${config.clusters.length} clusters`);
+      ok(!opts.includes('all'), 'a tail cannot follow every cluster at once');
+      const sel2 = tailPick.querySelector('select');
+      const other = opts.find((o) => o !== sel2.value);
+      sel2.value = other;
+      sel2.dispatchEvent(new window.Event('change', { bubbles: true }));
+      await settleFor(400);
+      ok(stateMod.state.selected === 'all',
+        'changing which cluster is tailed must not narrow the fleet selection');
+      // The picker is redrawn from whichever cluster the tail actually resolved to, so
+      // a tail that ignored the choice snaps the control back to the first cluster.
+      // Both fixture clusters share a URL, so the documents cannot tell them apart —
+      // this is the only observable proof the choice was honoured.
+      const after = [...pane.querySelectorAll('label.field')]
+        .find((l) => /Tailing/.test(l.textContent));
+      const now = after && after.querySelector('select').value;
+      ok(now === other, `the tail did not follow the picked cluster: shows "${now}", picked "${other}"`);
+    }
+
+    const toDelay = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Log delay');
+    ok(!!toDelay, 'logs: no "Log delay" view button');
+    toDelay.click();
+    await settleFor(1200);
+
+    // Coverage is per cluster, and every configured cluster is accounted for — a cluster
+    // that is simply missing from this table is the failure the fan-out must not have.
+    const coverage = [...pane.querySelectorAll('section.card')]
+      .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Log delay coverage');
+    ok(!!coverage, `logs: no coverage card — the view said: ${pane.textContent.slice(0, 160)}`);
+    if (coverage) {
+      const covRows = [...coverage.querySelectorAll('table.tbl tbody tr')];
+      ok(covRows.length === config.clusters.length,
+        `coverage: ${covRows.length} rows for ${config.clusters.length} clusters`);
+      for (const c of config.clusters) {
+        ok(coverage.textContent.includes(c.name), `coverage: ${c.name} is not listed`);
+      }
+    }
+
+    // The report sits in the toolbar, not inside the results card: a fleet where nothing
+    // can be analysed is exactly the case somebody needs to hand to someone else, and it
+    // was unreachable until a fetch had succeeded.
+    {
+      const reportBtn = doc.getElementById('delay-report');
+      ok(!!reportBtn, 'delay view: no Report button in the toolbar');
+      ok(!!doc.getElementById('delay-schedule'), 'delay view: no way to schedule the report');
+      ok(reportBtn && !reportBtn.disabled,
+        'delay view: the report should be available once the fleet has been checked, before any fetch');
+      files.length = 0;
+      reportBtn.click();
+      await settleFor(500);
+      ok(files.some((f) => /^log-delay-.*\.xlsx$/.test(f.name)),
+        `delay view: Report produced ${files.map((f) => f.name).join(', ') || 'no download'}`);
+    }
+
+    const fetchBtn = [...pane.querySelectorAll('button')].find((b) => /^Fetch details \(/.test(b.textContent));
+    ok(!!fetchBtn, `logs: no Fetch button — the view said: ${pane.textContent.slice(0, 160)}`);
+    if (fetchBtn) {
+      fetchBtn.click();
+      await settleFor(2000);
+      const devices = [...pane.querySelectorAll('section.card')]
+        .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Devices across the fleet');
+      ok(!!devices, 'logs: no fleet devices card after fetching');
+      const trs = devices ? [...devices.querySelectorAll('table.tbl tbody tr')] : [];
+      // Six devices in the fixture, once per cluster that could be analysed.
+      const measurable = config.clusters.length;
+      ok(trs.length === 6 * measurable,
+        `delay table: ${trs.length} rows, expected 6 devices x ${measurable} cluster(s)`);
+      ok(trs.every((tr) => tr.children[0].textContent.trim()),
+        'every device row must name the cluster it came from');
+
+      // Keyed by device only, so the two clusters' copies collapse — what is asserted
+      // below is the classification, which must not depend on which cluster it came from.
+      const byDevice = Object.fromEntries(trs.map((tr) => {
+        const c = [...tr.children].map((td) => td.textContent.trim());
+        return [c[1], { status: c[2], delay: c[3], pattern: c[4], means: c[7] }];
+      }));
+      ok(byDevice['fw-edge-01'] && byDevice['fw-edge-01'].status === 'ok', `2 min should be ok: ${JSON.stringify(byDevice['fw-edge-01'])}`);
+      ok(byDevice['fw-core-02'] && byDevice['fw-core-02'].status === 'delayed', '41 min should be delayed');
+      ok(byDevice['proxy-03'] && byDevice['proxy-03'].status === 'critical', '95 min should be critical');
+      ok(byDevice['vpn-04'] && byDevice['vpn-04'].status === 'clock ahead',
+        `-37 min must be clock ahead, not critical: ${JSON.stringify(byDevice['vpn-04'])}`);
+      ok(byDevice['vpn-04'] && byDevice['vpn-04'].delay.startsWith('-'), 'a negative delay must render negative');
+
+      // The discrimination that justifies the pattern code at all.
+      ok(byDevice['router-06'] && byDevice['router-06'].pattern === 'timezone',
+        `exactly 5h should read as a timezone offset: ${JSON.stringify(byDevice['router-06'])}`);
+      ok(byDevice['switch-05'] && byDevice['switch-05'].pattern !== 'timezone',
+        `5h30 is a queue, not an offset: ${JSON.stringify(byDevice['switch-05'])}`);
+
+      // Worst first — a critical device at the bottom of the list is a device nobody sees.
+      const first = [...trs[0].children][2].textContent.trim();
+      ok(first === 'critical', `the first row should be the worst, was "${first}"`);
+
+      // Filtering to unhealthy drops the healthy one and keeps the clock-ahead one.
+      const showSel = [...pane.querySelectorAll('select')].find((x) => [...x.options].some((o) => o.value === 'unhealthy'));
+      ok(!!showSel, 'delay view: no unhealthy filter');
+      if (showSel) {
+        showSel.value = 'unhealthy';
+        showSel.dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settleFor(250);
+        const card2 = [...pane.querySelectorAll('section.card')]
+          .find((sec) => (sec.querySelector('header h2') || {}).textContent === 'Devices across the fleet');
+        const after = [...card2.querySelectorAll('table.tbl tbody tr')].map((tr) => tr.children[1].textContent.trim());
+        ok(!after.includes('fw-edge-01'), `the healthy device should be filtered out: ${after.join(', ')}`);
+        ok(after.includes('vpn-04'), 'a clock-ahead device counts as unhealthy');
+        showSel.value = 'all';
+        showSel.dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settleFor(200);
+      }
+
+      /* ------------------- one device, watched live ------------------- */
+
+      const watchRow = [...pane.querySelectorAll('table.tbl tbody tr')]
+        .find((tr) => tr.children[1] && tr.children[1].textContent.trim() === 'fw-core-02');
+      const watchBtn = watchRow && [...watchRow.querySelectorAll('button')].find((b) => b.textContent === 'Watch');
+      ok(!!watchBtn, 'delay table: no Watch button on a device row');
+      if (watchBtn) {
+        watchBtn.click();
+        await settleFor(900);
+        const live = [...pane.querySelectorAll('section.card')]
+          .find((sec) => /fw-core-02/.test((sec.querySelector('header h2') || {}).textContent || ''));
+        ok(!!live, `logs: no close-up card after pressing Watch — saw ${pane.textContent.slice(0, 160)}`);
+        if (live) {
+          ok(/matched as a hostname/.test(live.textContent),
+            'the close-up should say how the device was looked up');
+          const docRows = [...live.querySelectorAll('table.tbl tbody tr')]
+            .filter((tr) => tr.children.length === 5);
+          ok(docRows.length === 15, `close-up: ${docRows.length} document rows, expected 15`);
+          // The newest document carries the exact delay the fleet table reported, so the
+          // two views cannot disagree about what this device is doing.
+          const newest = docRows.length ? docRows[0].children[2].textContent.trim() : '(no rows)';
+          ok(newest === '41 min', `close-up: newest delay reads "${newest}", expected 41 min`);
+          ok(/delayed/.test(live.textContent), 'the close-up should carry the status');
+
+          // Pausing must stop it repeating; the button says which state it is in.
+          const pause = [...live.querySelectorAll('button')].find((b) => /Pause/.test(b.textContent));
+          ok(!!pause, 'close-up: no pause control on a view that polls');
+          if (pause) {
+            pause.click();
+            await settleFor(150);
+            const resumed = [...pane.querySelectorAll('button')].find((b) => /Resume/.test(b.textContent));
+            ok(!!resumed, 'close-up: pausing did not offer to resume');
+          }
+        }
+
+        // A device with a parser miss: the unreadable document is listed as evidence and
+        // must not be counted as a delay of zero.
+        const proxyRow = [...pane.querySelectorAll('table.tbl tbody tr')]
+          .find((tr) => tr.children[1] && tr.children[1].textContent.trim() === 'proxy-03');
+        const proxyBtn = proxyRow && [...proxyRow.querySelectorAll('button')].find((b) => b.textContent === 'Watch');
+        if (proxyBtn) {
+          proxyBtn.click();
+          await settleFor(900);
+          const live2 = [...pane.querySelectorAll('section.card')]
+            .find((sec) => /proxy-03/.test((sec.querySelector('header h2') || {}).textContent || ''));
+          ok(!!live2, 'logs: no close-up for proxy-03');
+          if (live2) {
+            ok(/unreadable/.test(live2.textContent),
+              'the close-up should say a document could not be read, not hide it');
+            const rows2 = [...live2.querySelectorAll('table.tbl tbody tr')].filter((tr) => tr.children.length === 5);
+            ok(rows2.length === 15, `close-up: ${rows2.length} rows — the unreadable document was dropped`);
+            // Guarded: a regression that empties the table should be reported as a
+            // problem, not thrown as a stack trace that stops every later case running.
+            const last = rows2.length ? rows2[rows2.length - 1].children[2].textContent.trim() : '(no rows)';
+            ok(last === 'unknown', `an unreadable document must read "unknown", read "${last}"`);
+          }
+          const close = [...pane.querySelectorAll('button')].find((b) => b.textContent === 'Close');
+          ok(!!close, 'close-up: no way to close it');
+          if (close) {
+            close.click();
+            await settleFor(200);
+            ok(![...pane.querySelectorAll('section.card')]
+              .some((sec) => /proxy-03 —/.test((sec.querySelector('header h2') || {}).textContent || '')),
+              'close-up: closing left the card on screen');
+          }
+        }
+      }
+    }
+  }
+
+  const refusing = { fieldCaps: async () => {
+    const e = new Error('HTTP 503 Service Unavailable');
+    e.res = { status: 503, json: { error: { reason: 'all shards failed' } } };
+    throw e;
+  } };
+  const thrown = await ld.preflight(refusing, target);
+  ok(thrown.unknown === true, 'a cluster that refuses the call is unknown, not "no fields"');
+  ok(thrown.ok === false, 'unknown is never analysable');
+  ok(/all shards failed/.test(thrown.error || ''),
+    `the cluster's own reason should survive, got "${thrown.error}"`);
+  ok(thrown.missing.length === 0,
+    'an unasked cluster must not claim fields are missing — it does not know');
 }
 
 /* ------------- an alert hands over the cluster, not just the page ------------- */
@@ -771,6 +1548,34 @@ if (config.clusters.length >= 2) {
   ok(!keys().some((k) => k.startsWith('c1:master-changed')),
     'an election from last week should have aged out');
 
+  // Disk capacity: the size of the disk, not how full it is.
+  const cap = (nodes, capacity) => {
+    base(nodes);
+    st.state.data.get('c1').capacity = capacity;
+  };
+  const GB = 1024 ** 3;
+
+  cap([{ name: 'n1', master: '*' }],
+    { total: 200 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 60000 });
+  let grew = st.alerts().find((a) => a.key.startsWith('c1:capacity'));
+  ok(!!grew, `a capacity change should alert: ${keys().join(', ')}`);
+  ok(grew && grew.level === 'warning', 'growing is informational, not critical');
+  ok(grew && /grew to/.test(grew.title), `grew title: ${grew && grew.title}`);
+
+  cap([{ name: 'n1', master: '*' }],
+    { total: 50 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 60000 });
+  const fell = st.alerts().find((a) => a.key.startsWith('c1:capacity'));
+  ok(fell && fell.level === 'critical', 'a disk shrinking is critical — a path went away');
+  ok(fell && /FELL/.test(fell.title), `fell title: ${fell && fell.title}`);
+  ok(fell && /not a node leaving/.test(fell.detail), 'the detail should rule out the innocent explanation');
+
+  // Unchanged capacity says nothing, and an ancient change has aged out.
+  cap([{ name: 'n1', master: '*' }], { total: 100 * GB, nodeCount: 1, changedFrom: null, changedAt: null });
+  ok(!keys().some((k) => k.startsWith('c1:capacity')), 'steady capacity must be silent');
+  cap([{ name: 'n1', master: '*' }],
+    { total: 50 * GB, nodeCount: 1, changedFrom: 100 * GB, changedAt: Date.now() - 5 * 86400000 });
+  ok(!keys().some((k) => k.startsWith('c1:capacity')), 'a change from last week has aged out');
+
   // Disk Elasticsearch holds against disk the indices explain.
   base([{ name: 'n1', master: '*' }], { disk: { indicesBytes: 100 * 1024 ** 3, nodes: [] } });
   st.state.indices.set('c1', [{ index: 'a', size: 30 * 1024 ** 3 }]);
@@ -796,6 +1601,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ✗ ' + p);
   process.exit(1);
 }
-console.log('ok: strip, console target, shards, volume sheets, alert hand-off, scoped refresh, snapshot window, tasks, toasts and the accounts split');
+console.log('ok: strip, console, shards, volume, hand-off, refresh, snapshots, tasks, toasts, accounts split and the log-delay preflight');
 // The pages leave auto-refresh timers and a live tail running; nothing here waits on them.
 process.exit(0);

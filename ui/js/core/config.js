@@ -49,6 +49,19 @@ export const DEFAULTS = {
   // "which host", "which tag" — and spelling it as Lucene every time is a way to mistype
   // a field name and get zero hits that look like zero data.
   logSearchFields: ['tag1', 'fwd_tag', 'fwdtag', 'src_ip', 'src_hostname', 'message'],
+
+  // Log delay: which field names the analysis needs on a cluster.
+  //
+  // `device` is what delay is grouped by, `eventTime` are the candidates for "when the
+  // event actually happened" tried in order, and `metadata` are carried through for
+  // context. They are per-cluster because two clusters can parse the same logs into
+  // different shapes — one estate ships Filebeat ECS, another a custom parser — and a
+  // single hard-coded set would silently analyse neither.
+  delayFields: {
+    device: 'src_hostname',
+    eventTime: ['ingested_time', 'event_created', 'event.created'],
+    metadata: ['parser_tag', 'fwdtag', 'src_ip', 'tag1', 'ClientID', 'branch', 'log_type'],
+  },
   snapshotStaleHours: 26,
   maxLogRows: 200,
   // Certificate policy: auto (OS store, else trust-on-first-use with a prompt), system (strict), insecure.
@@ -160,6 +173,8 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
       // repository. "30d", "90 days", "3M", "6 months", "1y" or a bare number of days.
       volumeFields: normFields(c.volumeFields || c.volume_fields || defaults.volumeFields),
       logSearchFields: normFields(c.logSearchFields || c.log_search_fields || defaults.logSearchFields),
+      delayFields: normDelayFields(c.delayFields || c.delay_fields, defaults.delayFields),
+      s3: normS3(c.s3),
       liveRetention: c.liveRetention || c.live_retention || defaults.liveRetention || '',
       snapshotRetention: c.snapshotRetention || c.snapshot_retention || defaults.snapshotRetention || '',
       backupCapacity: c.backupCapacity || c.backup_capacity || defaults.backupCapacity || '',
@@ -171,6 +186,49 @@ export function normalize(raw, sourceName = 'clusters.yaml') {
 }
 
 /** `tag1, src_hostname` or a YAML list — either way, a clean array of field names. */
+/**
+ * The archive bucket for one client, or null.
+ *
+ * Per cluster because the buckets are per client — one account per customer is the usual
+ * shape, and a single set of keys for the fleet would be the wrong grant even where it
+ * worked. Absent means this client has no archive, which is a normal state and not a
+ * misconfiguration: ULM simply has nothing to say about them.
+ *
+ * `useRole` and explicit keys are not exclusive. Keys win when both are present, because
+ * somebody wrote them down for this bucket on purpose; the role is the fallback.
+ */
+function normS3(v) {
+  if (!v || typeof v !== 'object') return null;
+  const bucket = String(v.bucket || '').trim();
+  if (!bucket) return null;
+  const auth = (v.auth && typeof v.auth === 'object') ? v.auth : v;
+  return {
+    bucket,
+    region: String(v.region || 'us-east-1').trim(),
+    endpoint: String(v.endpoint || '').trim() || null,
+    // Where the two log copies live. Defaults match the layout ULM was specified
+    // against; a bucket that arranges them differently says so here rather than in code.
+    rawPrefix: String(v.rawPrefix || v.raw_prefix || 'rawlog').replace(/^\/+|\/+$/g, ''),
+    enrichedPrefix: String(v.enrichedPrefix || v.enriched_prefix || 'enrichedlog').replace(/^\/+|\/+$/g, ''),
+    auth: {
+      accessKeyId: String(auth.accessKeyId || auth.access_key_id || '').trim() || null,
+      secretAccessKey: String(auth.secretAccessKey || auth.secret_access_key || '').trim() || null,
+      sessionToken: String(auth.sessionToken || auth.session_token || '').trim() || null,
+      useRole: auth.useRole ?? auth.use_role ?? !(auth.accessKeyId || auth.access_key_id),
+    },
+  };
+}
+
+/** A partial delayFields block overrides only the parts it names. */
+function normDelayFields(v, defaults) {
+  const d = v && typeof v === 'object' ? v : {};
+  return {
+    device: String(d.device || defaults.device),
+    eventTime: normFields(d.eventTime || d.event_time || defaults.eventTime),
+    metadata: normFields(d.metadata || defaults.metadata),
+  };
+}
+
 function normFields(v) {
   if (!v) return [];
   const list = Array.isArray(v) ? v : String(v).split(',');

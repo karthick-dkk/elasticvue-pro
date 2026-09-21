@@ -57,7 +57,7 @@ function draw() {
 
     h('div.toolbar',
       h('button.btn.sm.primary', { disabled: isRunning(), onclick: check },
-        isRunning() ? 'Checking…' : '↻ Run checks'),
+        isRunning() ? 'Loading…' : '↻ Run checks'),
       h('button.btn.sm', { onclick: () => edit(null) }, '+ New automation'),
       h('label.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } },
         h('input#auto-blocked', { type: 'checkbox', checked: ui.showBlocked,

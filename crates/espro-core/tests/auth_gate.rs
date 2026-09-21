@@ -567,3 +567,32 @@ async fn saving_a_config_keeps_the_one_it_replaced() {
         json!("forbidden")
     );
 }
+
+#[tokio::test]
+async fn portable_says_it_has_no_accounts_rather_than_none() {
+    // "No users" and "no such thing as users here" are different answers, and only one
+    // of them is true on a build with no accounts. An empty list would read as a fact
+    // about the deployment — nobody has access — when it is a fact about the build.
+    let dir = TempDir::new("auth-portable-users");
+    let c = core(&dir, Edition::Portable);
+    for t in ["USER_LIST", "USER_ADD", "USER_REMOVE", "USER_SET_ROLE", "USER_SET_PASSWORD"] {
+        let res = c.handle(json!({ "type": t, "name": "someone", "role": "admin" })).await;
+        assert_eq!(res["ok"], json!(false), "{t}: {res}");
+        assert_eq!(res["supported"], json!(false), "{t}: {res}");
+        assert!(res["users"].is_null(), "{t} must not hand back a list of accounts: {res}");
+    }
+    // And it is still not asking anyone to log in — the refusal is about the edition,
+    // not about who is asking.
+    let res = c.handle(json!({ "type": "USER_LIST" })).await;
+    assert_ne!(res["kind"], json!("unauthenticated"), "{res}");
+}
+
+#[tokio::test]
+async fn an_edition_with_accounts_still_lists_them() {
+    let dir = TempDir::new("auth-installed-users");
+    let c = core(&dir, Edition::Installed);
+    let s = admin_session(&c).await;
+    let res = c.handle(json!({ "type": "USER_LIST", "session": s })).await;
+    assert_eq!(res["ok"], json!(true), "{res}");
+    assert!(res["users"].as_array().is_some_and(|u| !u.is_empty()), "{res}");
+}

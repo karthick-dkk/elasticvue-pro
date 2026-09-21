@@ -9,6 +9,7 @@ import { fieldVolumeSpikes, clearFieldVolume } from './field-volume.js';
 import { diskBalance, balanceHeadline, primaryAction } from './disk-balance.js';
 import { DEFAULTS, authHeaderFor } from './config.js';
 import { automationAlerts } from './automation.js';
+import { loadAlertSettings, applySettings, effectiveDefaults } from './alert-rules.js';
 
 class Emitter {
   constructor() { this.map = new Map(); }
@@ -139,7 +140,11 @@ export async function clearSessionCredential() {
 export async function setConfig(config, handle) {
   state.config = config;
   state.handle = handle !== undefined ? handle : state.handle;   // the remembered path, or null for load-once
-  state.defaults = { ...DEFAULTS, ...config.defaults };
+  // Shipped defaults, then the file's, then whatever an admin retuned on the Config page.
+  // Applied here so every reader of state.defaults — alerts, pages, charts — sees one
+  // answer, rather than each of them remembering to consult the settings.
+  state.defaults = effectiveDefaults({ ...DEFAULTS, ...config.defaults },
+    loadAlertSettings(config.raw));
   applySessionCredential();
   state.clients.clear();
   for (const c of config.clusters) {
@@ -207,6 +212,21 @@ export function buildClusterData(id, prev, raw) {
     };
   }
   out.nodes = nodes.ok ? nodes.value : [];
+
+  // Total disk CAPACITY, and whether it changed since the last look.
+  //
+  // Not usage — the size of the disk itself. It should be a constant, so a change means
+  // somebody added storage or a data path went away, and the second one is a fault that
+  // looks like nothing else on this page.
+  //
+  // Guarded against the way it would otherwise cry wolf: disk.total is summed over the
+  // nodes present in _cat/allocation RIGHT NOW, so a node restarting drops out of the
+  // table and capacity appears to fall. A change is only believed when the node count is
+  // the same at both readings; when nodes came or went, the new figure is adopted
+  // silently as the baseline. A rolling restart should not page anybody.
+  out.capacity = alloc.ok && out.disk
+    ? capacityChange(prev.capacity, out.disk.total, (out.disk.nodes || []).length)
+    : prev.capacity || null;
 
   // Who is master, and whether that changed since the last look.
   //
@@ -536,6 +556,24 @@ export function stopAutoRefresh() {
  * `<cluster>:disk`, not "disk 87.3%". An acknowledgement is stored against that key, so
  * it survives the number moving and only disappears when the problem itself clears.
  */
+/**
+ * What ULM found the last time somebody pulled, per cluster.
+ *
+ * Published by the page rather than computed here, because the archive is only ever
+ * listed by hand: alerts() runs on every refresh, and a rule that listed a bucket would
+ * turn a monitoring dashboard into a recurring S3 bill. What alerts() does is surface
+ * what the last manual pull already established.
+ */
+const archiveFindings = new Map();
+
+export function setArchiveFindings(clusterId, findings) {
+  if (findings && findings.length) archiveFindings.set(clusterId, findings);
+  else archiveFindings.delete(clusterId);
+  bus.emit('data');
+}
+
+export function archiveFindingsFor(clusterId) { return archiveFindings.get(clusterId) || []; }
+
 export function alerts() {
   const out = [];
   const add = (...a) => out.push(...a.filter(Boolean));
@@ -546,6 +584,12 @@ export function alerts() {
       add({ key: `${c.id}:unreachable`, level: 'critical', cluster: c, title: `${c.name} unreachable`,
         detail: (cl && cl.lastError && cl.lastError.message) || 'No response', kind: cl && cl.state });
       continue;
+    }
+    // The archive gap. One alert per day found, because "three days are missing" and
+    // "which three" are different facts and the second is the one somebody acts on.
+    for (const f of archiveFindings.get(c.id) || []) {
+      add({ key: `${c.id}:archive-missing:${f.tag}:${f.day}`, level: 'critical', cluster: c,
+            title: `${c.name}: ${f.day} is not archived for ${f.tag}`, detail: f.reason });
     }
     if (d.health && d.health.status === 'red') add({ key: `${c.id}:health`, level: 'critical', cluster: c, title: `${c.name} health is RED`, detail: `${d.health.unassigned_shards} unassigned shards` });
     else if (d.health && d.health.status === 'yellow') add({ key: `${c.id}:health`, level: 'warning', cluster: c, title: `${c.name} health is YELLOW`, detail: `${d.health.unassigned_shards} unassigned shards` });
@@ -586,6 +630,26 @@ export function alerts() {
         title: `${c.name}: master moved from ${d.masterChangedFrom} to ${d.master}`,
         detail: `Elected ${ago(d.masterChangedAt)}. The previous master left, was cut off or was `
               + 'restarted; anything else that went wrong around then probably started there.' });
+    }
+
+    // The disk itself getting bigger or smaller.
+    if (d.capacity && d.capacity.changedAt
+        && Date.now() - d.capacity.changedAt < CAPACITY_ALERT_HOURS * 3600 * 1000) {
+      const from = d.capacity.changedFrom, to = d.capacity.total;
+      const grew = to > from;
+      add({
+        key: `${c.id}:capacity:${from}->${to}`,
+        level: grew ? 'warning' : 'critical',
+        cluster: c,
+        title: grew
+          ? `${c.name}: disk capacity grew to ${bytesish(to)}`
+          : `${c.name}: disk capacity FELL to ${bytesish(to)}`,
+        detail: grew
+          ? `Was ${bytesish(from)}, now ${bytesish(to)} — ${bytesish(to - from)} added ${ago(d.capacity.changedAt)}. `
+            + 'Expected if you just extended the storage; worth confirming nobody else did it.'
+          : `Was ${bytesish(from)}, now ${bytesish(to)} — ${bytesish(from - to)} gone ${ago(d.capacity.changedAt)}. `
+            + 'A data path is missing or a mount was lost. The node count is unchanged, so this is not a node leaving.',
+      });
     }
 
     // Disk Elasticsearch holds that no index accounts for.
@@ -629,11 +693,38 @@ export function alerts() {
   // evaluating a rule can need a snapshot listing and this function is synchronous.
   for (const a of automationAlerts((id) => clusters().find((c) => c.id === id))) add(a);
 
-  return out;
+  // Rules an admin switched off are removed here rather than never raised, so the code
+  // above stays one description of what is true and the registry decides what is shown.
+  return applySettings(out, loadAlertSettings(state.config && state.config.raw));
+}
+
+/**
+ * Whether the size of the disk changed, and whether that change is believable.
+ *
+ * Separated out because the guard is the whole point and it is the part that has to be
+ * right. `disk.total` is summed over the nodes present in _cat/allocation at this
+ * instant, so a node restarting drops out of the table and capacity appears to collapse.
+ * A change is therefore only believed when the node count is identical at both readings;
+ * when nodes came or went, the new figure becomes the baseline silently. A rolling
+ * restart must not page anybody.
+ */
+export function capacityChange(prev, total, nodeCount) {
+  const prevTotal = prev && prev.total;
+  const sameFleet = prev && prev.nodeCount === nodeCount;
+  const changed = !!(sameFleet && prevTotal && total && prevTotal !== total);
+  return {
+    total,
+    nodeCount,
+    changedFrom: changed ? prevTotal : (prev && prev.changedFrom) || null,
+    changedAt: changed ? Date.now() : (prev && prev.changedAt) || null,
+  };
 }
 
 /** How long a master election stays worth an alert. */
 export const MASTER_ALERT_HOURS = 24;
+
+/** And how long a change in the size of the disk does. */
+export const CAPACITY_ALERT_HOURS = 48;
 
 /**
  * Disk that Elasticsearch holds but no open or closed index accounts for.
@@ -806,4 +897,37 @@ function publishPopupSummary() {
     });
     if (globalThis.chrome && chrome.storage && chrome.storage.session) chrome.storage.session.set({ summary: { at: Date.now(), rows, alerts: alerts().length } });
   } catch (_) { /* storage.session unavailable */ }
+}
+
+/**
+ * Which JVM a cluster's nodes are running on.
+ *
+ * One definition because two screens want it: the fleet summary needs one line per
+ * cluster, and a node listing needs the same words for the same thing. A cluster whose
+ * nodes disagree is the interesting case — that is a half-finished upgrade, and it must
+ * not be flattened to whichever node happened to answer first.
+ *
+ * Elasticsearch reports this only for nodes that answered. If none did, the answer is
+ * "unknown", never a blank that reads as "none".
+ *
+ * @returns {{text: string, mixed: boolean, versions: string[], detail: string}}
+ */
+export function jvmSummary(nodes) {
+  const seen = (nodes || [])
+    .map((n) => String((n && n.jdk) || '').trim())
+    .filter(Boolean);
+  if (!seen.length) {
+    return { text: 'unknown', mixed: false, versions: [], detail: 'no node reported a JVM version' };
+  }
+  const versions = [...new Set(seen)].sort();
+  if (versions.length === 1) {
+    return { text: versions[0], mixed: false, versions, detail: `every node runs JVM ${versions[0]}` };
+  }
+  const byVersion = versions.map((v) => `${v} (${seen.filter((x) => x === v).length})`);
+  return {
+    text: `mixed (${versions.length})`,
+    mixed: true,
+    versions,
+    detail: `nodes disagree: ${byVersion.join(', ')}`,
+  };
 }

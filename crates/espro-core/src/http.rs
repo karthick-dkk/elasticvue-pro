@@ -27,6 +27,11 @@ pub struct ClusterSpec {
     pub via: Option<String>,
     #[serde(default)]
     pub tls: Option<String>,
+    /// The bucket this client's logs are archived to, if any. Primed with the cluster
+    /// rather than sent on every request, so the keys cross the wire once — the same
+    /// treatment the cluster's own credential gets.
+    #[serde(default)]
+    pub s3: Option<crate::s3::S3Config>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

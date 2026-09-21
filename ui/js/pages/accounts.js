@@ -85,7 +85,7 @@ function clusterUsersCard() {
       h('span.mono.muted', { style: { fontSize: '10.5px' } }, c.url),
       h('div', { style: { marginLeft: 'auto' } },
         h('button.btn.sm.ghost', { onclick: () => loadClusterUsers(c.id) },
-          cu.loading.has(c.id) ? 'Reading…' : '↻')));
+          cu.loading.has(c.id) ? 'Loading…' : '↻')));
 
     if (!got) return h('div', head, h('div.muted', { style: { fontSize: '11.5px' } }, 'not read yet'));
     if (got.error) {
@@ -108,7 +108,12 @@ function clusterUsersCard() {
           onclick: () => removeClusterUser(c.id, u.name, { onDone: () => loadClusterUsers(c.id) }),
         }, '×'))));
     return h('div', head,
-      table(['Name', 'Roles', '', ''], trs, { emptyText: 'No native-realm accounts on this cluster.' }));
+      table(['Name', 'Roles', '', ''], trs, {
+        emptyText: empty('No accounts are defined on this cluster.', {
+          detail: 'Only native-realm accounts appear here. Accounts from an LDAP, SAML or '
+                + 'file realm are managed where that realm lives, not in Elasticsearch.',
+        }),
+      }));
   });
 
   return card('Cluster users', 'accounts on the Elasticsearch clusters themselves',

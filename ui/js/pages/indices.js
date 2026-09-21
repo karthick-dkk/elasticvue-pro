@@ -287,7 +287,7 @@ function sourceBar(c, sourceList, total) {
       s.value = ui.status; return s;
     })()),
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'flex-end' } },
-      ui.loading ? h('span.muted', h('span.spin'), ' loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
+      ui.loading ? h('span.muted', h('span.spin'), ' Loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
       writeToggle(draw),
       h('button.btn.sm', { onclick: () => { ui.sourceFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; draw(); } }, 'Clear'),
       h('button.btn.sm', { onclick: () => load(true) }, '↻ Reload')));
