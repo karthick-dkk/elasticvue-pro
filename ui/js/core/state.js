@@ -512,6 +512,56 @@ export function parseIndexName(name, reSrc, row = {}) {
  * that only updated the cluster in front of you would go quietly stale everywhere else —
  * the failure being watched for is usually on the cluster nobody is looking at.
  */
+/**
+ * The parts of a cluster that can be refreshed on their own.
+ *
+ * A full refresh is thirteen calls per cluster. Most of the time the thing you are
+ * watching is one of them — a snapshot you just started, an index you just deleted — and
+ * waiting for the other twelve is the difference between a control that feels instant
+ * and one you press twice because nothing appeared to happen.
+ *
+ * Exported as data so the menu is built from it: a module that exists here and not in
+ * the menu is unreachable, and one in the menu but not here is a button that does
+ * nothing, and both have happened in this codebase to other lists.
+ */
+export const REFRESH_MODULES = [
+  { id: 'all', label: 'Everything', hint: 'health, nodes, indices, snapshots — the full refresh' },
+  { id: 'health', label: 'Health only', hint: 'the fastest: two calls per cluster' },
+  { id: 'indices', label: 'Indices', hint: 'the index list and its sizes' },
+  { id: 'snapshots', label: 'Snapshots', hint: 'the repositories and what is in them' },
+];
+
+/**
+ * Refresh one part, for the selected clusters.
+ *
+ * Returns the number of clusters it actually reached, so a caller can say "2 clusters"
+ * rather than assuming it worked.
+ */
+export async function refreshModule(module, { selected = true } = {}) {
+  if (module === 'all') { await refreshAll({ force: true, selected }); return (selected ? activeClusters() : clusters()).length; }
+  if (state.refreshing || !state.config) return 0;
+  state.refreshing = true;
+  bus.emit('refreshing', true);
+  const targets = selected ? activeClusters() : clusters();
+  try {
+    await Promise.all(targets.map(async (c) => {
+      try {
+        if (module === 'snapshots') await fetchSnapshots(c.id);
+        else if (module === 'indices') await fetchIndices(c.id, '*');
+        // `health` re-reads the cluster's own state without the eleven calls that hang
+        // off it — withSnapshots:false is what makes it the quick one.
+        else if (module === 'health') await fetchOverview(c.id, { withSnapshots: false });
+      } catch (_) { /* one cluster failing must not stop the rest */ }
+    }));
+    state.lastRefresh = Date.now();
+  } finally {
+    state.refreshing = false;
+    bus.emit('refreshing', false);
+    bus.emit('refreshed');
+  }
+  return targets.length;
+}
+
 export async function refreshAll({ force = false, selected = false } = {}) {
   if (state.refreshing || !state.config) return;
   state.refreshing = true;

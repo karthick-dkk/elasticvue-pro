@@ -4,8 +4,10 @@ import { h, $, mount, clear } from './lib/dom.js';
 import { ago, dur } from './lib/fmt.js';
 import { idb } from './lib/idb.js';
 import * as cfg from './core/config.js';
-import { state, bus, setConfig, refreshAll, startAutoRefresh, clusters, alerts, worstHealth, requestLoad,
+import { state, bus, setConfig, refreshAll, refreshModule, REFRESH_MODULES, startAutoRefresh, clusters,
+         alerts, worstHealth, requestLoad,
          clustersNeedingCredential, clustersWithAuthError, hasSessionCredential, isReadOnly } from './core/state.js';
+import { rowMenu, toast } from './ui/menu.js';
 import { showCredentialDialog } from './ui/credential-dialog.js';
 import { loadSnapshotFile, isSnapshotMode } from './core/snapshot.js';
 import { EXAMPLE_YAML } from './core/example.js';
@@ -16,7 +18,7 @@ import { createNewConfig, editCluster, unlockSealed } from './ui/config-editor.j
 import { applyLoadedConfig } from './ui/load-config.js';
 import { authState, loginScreen, signOut } from './ui/login.js';
 import { aboutMini } from './ui/about.js';
-import { announceNewAlerts, resetAnnounced } from './core/notify.js';
+import { announceNewAlerts, announceSnapshotOutcomes, resetAnnounced } from './core/notify.js';
 import { onSessionLost } from './core/transport.js';
 
 let coreInfo = { version: '?' };
@@ -361,10 +363,23 @@ function renderTopbar() {
           h('input', { type: 'file', accept: '.json,application/json',
             style: { position: 'absolute', inset: '0', opacity: '0', cursor: 'pointer' },
             onchange: (e) => openSnapshot(e.target.files[0]) }))
-      : h('button.btn.sm', {
-          onclick: () => refreshAll({ force: true, selected: true }),
-          title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
-        }, '↻ Refresh'),
+      : h('span', { style: { display: 'inline-flex', gap: '2px' } },
+          h('button.btn.sm', {
+            onclick: () => refreshAll({ force: true, selected: true }),
+            title: 'Refresh the selected cluster now, or all of them on "All clusters" (r)',
+          }, '↻ Refresh'),
+          // A full refresh is thirteen calls per cluster. When what you are watching is
+          // one of them — a snapshot you just started, an index you just deleted —
+          // waiting for the other twelve is the difference between a control that feels
+          // instant and one you press twice.
+          rowMenu(REFRESH_MODULES.filter((m) => m.id !== 'all').map((m) => ({
+            label: m.label,
+            title: m.hint,
+            onClick: async () => {
+              const n = await refreshModule(m.id, { selected: true });
+              toast(`${m.label.replace(' only', '')} refreshed on ${n} cluster${n === 1 ? '' : 's'}`, 'ok', 3000);
+            },
+          })), { label: '▾', title: 'Refresh one part only' })),
     h('button.btn.sm.ghost', { onclick: cycleTheme, title: `Theme: ${theme} \u2014 click for the next one${theme === 'warm' ? ' (warm emits the least blue light)' : ''}` },
       themeLabel(theme)),
     // Only where accounts exist. The portable build has nobody to sign out.
@@ -605,6 +620,17 @@ bus.on('refreshed', () => {
   maybeOfferAuthRecovery(); renderTopbar(); renderSideFoot(); renderNav();
   // After the nav, so the tab badge and the toast agree about what is open.
   announceNewAlerts();
+  // Snapshots finish long after the dialog that started them closed, so the outcome is
+  // announced from the refresh that first sees it rather than by whoever happens to be
+  // on the Snapshots page.
+  announceSnapshotOutcomes(clusters().map((c) => {
+    const d = state.data.get(c.id) || {};
+    const snaps = [];
+    for (const [repo, list] of Object.entries(d.snapshots || {})) {
+      for (const s of list || []) snaps.push({ repo, id: s.id, status: s.status });
+    }
+    return { cluster: c, snapshots: snaps };
+  }));
   const p = PAGES.find((x) => x.id === currentPage); if (p && p.mod.onData) p.mod.onData();
 });
 bus.on('tick', tickStatus);

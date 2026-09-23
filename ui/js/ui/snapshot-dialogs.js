@@ -9,6 +9,7 @@
 import { h, mount, $ } from '../lib/dom.js';
 import { bytes, num, dt, dur, ago, toCsv, download } from '../lib/fmt.js';
 import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
+import { toast } from './menu.js';
 import { ensureWrites } from '../core/writes.js';
 import { client } from '../core/state.js';
 
@@ -124,6 +125,10 @@ export async function createSnapshotDialog(cluster, repos, preselectedRepo) {
           include_global_state: checked('sd-global'),
           partial: checked('sd-partial'),
         });
+        // Accepted, not complete. createSnapshot returns once the cluster has taken the
+        // request; the copy runs in the background and can still fail or come back
+        // PARTIAL. Saying "created" here would be a claim about an outcome nobody has.
+        toast(`Snapshot ${name} started in ${repo}`, 'ok', 5000);
         ctx.done({ repo, name });
       }) }, 'Create snapshot'),
       h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),
@@ -230,6 +235,7 @@ export async function restoreSnapshotDialog(cluster, repo, snapshotId, { onChang
         };
         if (pat) { b.rename_pattern = pat; b.rename_replacement = rep; }
         await cl.restoreSnapshot(repo, snapshotId, b);
+        toast(`Restore of ${snapshotId} started — the shards recover in the background`, 'ok', 6000);
         ctx.done(true);
       }) }, 'Restore'),
       h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),
@@ -251,10 +257,11 @@ export async function deleteSnapshot(cluster, repo, snapshotId, { onChanged } = 
   if (!ok) return false;
   try {
     await client(cluster.id).deleteSnapshot(repo, snapshotId);
+    toast(`Snapshot ${snapshotId} deleted from ${repo}`, 'ok', 4000);
     if (onChanged) await onChanged();
     return true;
   } catch (e) {
-    alert(`Could not delete the snapshot: ${e.message}`);
+    toast(`Could not delete ${snapshotId}: ${e.message}`, 'err', 9000);
     return false;
   }
 }
@@ -338,13 +345,15 @@ export async function deleteIndicesDialog(cluster, repo, snapshotId, { onChanged
         const go = await confirmDialog(`Delete ${list.length} index/indices from ${cluster.name}?`,
           h('div', h('div', `They remain in snapshot "${snapshotId}" and can be restored from ${repo}. ` +
                             'Removing them from the cluster cannot be undone.'), nameList(list)),
-          { yes: 'delete', danger: true, typeToConfirm: list.length > 1 ? String(list.length) : null });
+          { yes: `delete ${list.length === 1 ? 'it' : `all ${list.length}`}`, danger: true });
         if (!go) return;
         const failed = [];
         for (const n of list) {
           try { await cl.deleteIndex(n); } catch (err) { failed.push(`${n}: ${err.message}`); }
         }
         if (failed.length) throw new Error(`${failed.length} failed — ${failed[0]}`);
+        toast(`${list.length} ${list.length === 1 ? 'index' : 'indices'} deleted from ${cluster.name} — `
+              + `still restorable from ${snapshotId} in ${repo}`, 'ok', 6000);
         ctx.done(list.length);
       }) }, 'Delete selected indices'),
       h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),

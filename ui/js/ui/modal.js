@@ -76,8 +76,12 @@ export function checked(id) { const el = $(`#${id}`); return !!(el && el.checked
  *
  * The browser's own confirm() offers OK/Cancel, which says nothing about what is
  * about to occur — this names the action in the button, so the answer is deliberate.
- * `typeToConfirm` demands the exact text back for the worst cases (deleting many
- * indices, removing a repository).
+ * `typeToConfirm` demands the exact text back. It is for naming the one thing being
+ * destroyed — a repository, by its name — and not for counting. Asking somebody to type
+ * "40" before deleting forty indices sounds careful and is not: the number is on the
+ * screen above the box, so copying it is a reflex rather than a decision, and every
+ * deletion trained the reflex. Those flows warn about what is actually at stake instead.
+ *
  */
 export function confirmDialog(title, body, opts = {}) {
   const {

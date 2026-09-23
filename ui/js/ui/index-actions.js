@@ -9,6 +9,7 @@
 import { h, mount, $ } from '../lib/dom.js';
 import { bytes, num } from '../lib/fmt.js';
 import { modal, confirmDialog, nameList, field, text, select, checkbox, val, checked } from './modal.js';
+import { toast } from './menu.js';
 import { ensureWrites } from '../core/writes.js';
 import { client, state } from '../core/state.js';
 import { verifyIndicesInSnapshots, coverageLabel } from '../core/snapshot-verify.js';
@@ -38,7 +39,7 @@ export async function openIndices(cluster, names, { onChanged } = {}) {
     { yes: 'open' });
   if (!ok) return false;
   const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).openIndex(n));
-  report('open', names.length, failed);
+  report('open', names.length, failed, { cluster });
   if (onChanged) await onChanged();
   return true;
 }
@@ -53,7 +54,7 @@ export async function closeIndices(cluster, names, { onChanged } = {}) {
     { yes: 'close' });
   if (!ok) return false;
   const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).closeIndex(n));
-  report('close', names.length, failed);
+  report('close', names.length, failed, { cluster });
   if (onChanged) await onChanged();
   return true;
 }
@@ -61,16 +62,18 @@ export async function closeIndices(cluster, names, { onChanged } = {}) {
 /* ---------------------------------- delete ---------------------------------- */
 
 /**
- * Deleting is the one action that cannot be undone, so it asks for the count to be
- * typed back when more than one index is going.
- */
-/**
- * Delete live indices — after checking each one is held in a SUCCESSFUL snapshot.
+ * Delete live indices, after checking each one is held in a SUCCESSFUL snapshot.
  *
- * The check runs before the confirmation, and the confirmation shows its result per index.
- * Indices with no good copy are left out by default and must be ticked back in on purpose,
- * because "delete it, it's in a snapshot" is the single most common way to lose log data
- * when the snapshot turns out to be partial.
+ * Two confirmations and no third thing to operate. It used to put a checkbox on every
+ * row and demand the count typed back, which sounds careful and is not: a list of forty
+ * tickboxes is a list nobody reads, and typing "40" is a reflex, not a decision. What
+ * makes this safe is that the second question is asked *only* when the answer matters —
+ * when some of what is going has no snapshot behind it — and it names exactly those.
+ *
+ * So: the first dialog is the deletion itself, with the snapshot status of every index
+ * shown but not editable. The second appears only if something would be lost for good,
+ * and it lists what. Everything selected is deleted, or nothing is — no partial outcome
+ * that depends on which boxes were left ticked.
  */
 export async function deleteIndices(cluster, names, { onChanged } = {}) {
   if (!names.length || !(await ensureWrites())) return false;
@@ -89,16 +92,11 @@ export async function deleteIndices(cluster, names, { onChanged } = {}) {
   const uncovered = names.filter((n) => !covered.includes(n));
   const unverified = coverage ? [...new Set(names.flatMap((n) => coverage.get(n).unverified))] : [];
 
-  // What actually gets deleted: covered by default; uncovered only if ticked on purpose.
-  const chosen = new Set(covered);
   const rowFor = (n) => {
     const v = coverage && coverage.get(n);
     const lbl = coverageLabel(v);
     const safe = v && v.covered;
-    const box = h('input', { type: 'checkbox', checked: safe, style: { cursor: 'pointer' },
-      onchange: (e) => { if (e.target.checked) chosen.add(n); else chosen.delete(n); } });
     return h('tr',
-      h('td', box),
       h('td.mono', { style: { fontSize: '11.5px', wordBreak: 'break-all' } }, n),
       h('td', pill(lbl.text, lbl.cls)),
       h('td.muted', { style: { fontSize: '11px' } },
@@ -120,26 +118,45 @@ export async function deleteIndices(cluster, names, { onChanged } = {}) {
             h('div.mono', { style: { fontSize: '11px' } }, unverified.join('; ')),
             h('div', 'An index may be held there without this check seeing it. Treat "NOT in any snapshot" as "unknown" for those.')))
       : null,
-    h('div', { style: { display: 'flex', gap: '10px', fontSize: '12.5px', alignItems: 'baseline' } },
+    h('div', { style: { display: 'flex', gap: '10px', fontSize: '12.5px', alignItems: 'baseline', flexWrap: 'wrap' } },
       h('b', `${num(names.length)} index/indices`), total ? h('span.muted', `${bytes(total)} on disk`) : null,
-      h('span', { style: { color: 'var(--good)' } }, `${covered.length} safely in a snapshot`),
-      uncovered.length ? h('span', { style: { color: 'var(--critical)', fontWeight: 640 } }, `${uncovered.length} NOT — unticked, delete only on purpose`) : null),
+      h('span', { style: { color: 'var(--good)' } }, `${covered.length} in a snapshot`),
+      uncovered.length ? h('span', { style: { color: 'var(--critical)', fontWeight: 640 } }, `${uncovered.length} with no snapshot`) : null),
     h('div.tbl-wrap', { style: { maxHeight: '240px', overflow: 'auto' } },
-      h('table.tbl', h('thead', h('tr', h('th', ''), h('th', 'Index'), h('th', 'Snapshot copy'), h('th', 'Newest good copy'))),
+      h('table.tbl', h('thead', h('tr', h('th', 'Index'), h('th', 'Snapshot copy'), h('th', 'Newest good copy'))),
         h('tbody', ...names.map(rowFor)))),
   ].filter(Boolean);
 
   const ok = await confirmDialog(
     `Delete ${names.length === 1 ? names[0] : `${names.length} indices`}?`,
     h('div', { style: { display: 'grid', gap: '8px' } }, ...body),
-    { yes: 'delete the ticked ones', danger: true, typeToConfirm: names.length > 1 ? String(names.length) : null });
+    { yes: `delete ${names.length === 1 ? 'it' : 'them'}`, danger: true });
   if (!ok) return false;
 
-  const list = names.filter((n) => chosen.has(n));
-  if (!list.length) { alert('Nothing was ticked, so nothing was deleted.'); return false; }
+  // The second question, asked only when it means something. An index with a good
+  // snapshot can be restored; one without cannot, and that is the whole difference
+  // between a routine cleanup and losing log data.
+  if (uncovered.length) {
+    const sure = await confirmDialog(
+      `${uncovered.length} of these ${uncovered.length === 1 ? 'has' : 'have'} no snapshot`,
+      h('div', { style: { display: 'grid', gap: '8px' } },
+        h('div.banner.err', { style: { margin: 0 } },
+          h('div', h('div.ttl', uncovered.length === 1
+              ? 'This index is held in no successful snapshot'
+              : `These ${uncovered.length} indices are held in no successful snapshot`),
+            h('div', 'Deleting them destroys the only copy. There is nothing to restore from '
+                   + 'afterwards, on this cluster or anywhere else.'))),
+        nameList(uncovered),
+        covered.length
+          ? h('div.muted', { style: { fontSize: '12px' } },
+              `The other ${covered.length} do have a snapshot and can be restored.`)
+          : null),
+      { yes: `delete all ${names.length}`, no: 'cancel', danger: true });
+    if (!sure) return false;
+  }
 
-  const failed = await forEachIndex(client(cluster.id), list, (n) => client(cluster.id).deleteIndex(n));
-  report('delete', list.length, failed);
+  const failed = await forEachIndex(client(cluster.id), names, (n) => client(cluster.id).deleteIndex(n));
+  report('delete', names.length, failed, { cluster, names, uncovered: uncovered.length });
   if (onChanged) await onChanged();
   return true;
 }
@@ -209,6 +226,9 @@ export async function moveShardDialog(cluster, indexName, { onChanged } = {}) {
           { yes: 'move' });
         if (!go) return;
         await cl.reroute([{ move: { index: indexName, shard: Number(shard), from_node: fromNode, to_node: toNode } }]);
+        // Accepted, not finished: the cluster copies the shard in the background, and a
+        // toast saying "moved" would be claiming something that has not happened yet.
+        toast(`${indexName} shard ${shard} is relocating from ${fromNode} to ${toNode}`, 'ok', 6000);
         ctx.done({ shard, fromNode, toNode });
       }) }, 'Move shard'),
       h('button.btn', { onclick: () => ctx.done(null) }, 'Cancel'),
@@ -300,15 +320,47 @@ export async function maintenance(cluster, names, kind, { onChanged } = {}) {
   if (!ok) return false;
   const cl = client(cluster.id);
   const failed = await forEachIndex(cl, names, (n) => spec.call(cl, n));
-  report(spec.verb, names.length, failed);
+  report(spec.verb, names.length, failed, { cluster });
   if (onChanged) await onChanged();
   return true;
 }
 
 export const MAINTENANCE_KINDS = Object.entries(MAINTENANCE).map(([k, v]) => [k, v.label]);
 
-function report(what, total, failed) {
-  if (!failed.length) return;
-  alert(`${failed.length} of ${total} could not ${what}:\n\n${failed.slice(0, 8).join('\n')}` +
-        (failed.length > 8 ? `\n…and ${failed.length - 8} more` : ''));
+/**
+ * Say what happened, every time.
+ *
+ * This used to be silent on success and a modal alert on failure, which is the wrong way
+ * round twice over: an action that changed a cluster and said nothing leaves you
+ * re-reading the table to work out whether it worked, and a modal for a partial failure
+ * blocks the page to tell you something you then have to remember.
+ *
+ * Success is a toast that names the count and the cluster. Failure is a toast too, held
+ * longer because it is the one worth reading, and it names what failed rather than only
+ * how many.
+ */
+function report(what, total, failed, opts = {}) {
+  // Maintenance verbs come through here too ("force merge", "clear the cache of"), so
+  // the fallback has to read as English rather than bolting "ed" onto a phrase.
+  const past = {
+    open: 'opened', close: 'closed', delete: 'deleted', move: 'moved',
+    refresh: 'refreshed', flush: 'flushed',
+    'clear the cache of': 'had their cache cleared', 'force merge': 'force-merged',
+  }[what] || `${what}ed`;
+  const where = opts.cluster ? ` on ${opts.cluster.name}` : '';
+  const ok = total - failed.length;
+
+  if (!failed.length) {
+    const extra = what === 'delete' && opts.uncovered
+      ? ` — ${opts.uncovered} had no snapshot`
+      : '';
+    toast(`${num(ok)} ${ok === 1 ? 'index' : 'indices'} ${past}${where}${extra}`, 'ok', 4000);
+    return;
+  }
+  if (!ok) {
+    toast(`Nothing ${past}${where}: ${failed[0]}`, 'err', 8000);
+    return;
+  }
+  toast(`${num(ok)} ${past}, ${failed.length} could not be — ${failed.slice(0, 3).join(', ')}`
+        + (failed.length > 3 ? ` and ${failed.length - 3} more` : ''), 'err', 9000);
 }

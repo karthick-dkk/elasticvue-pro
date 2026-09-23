@@ -66,3 +66,69 @@ export function announceNewAlerts({ notify = toast } = {}) {
 
 /** Forget what has been announced — after a config change, the fleet is a different one. */
 export function resetAnnounced() { seen = null; }
+
+/* --------------------------- snapshots finishing --------------------------- */
+
+/**
+ * A snapshot that was running and now is not.
+ *
+ * Creating a snapshot returns as soon as the cluster accepts it — the copy happens
+ * afterwards, and can take minutes on a large index and still come back PARTIAL or
+ * FAILED. Until now the only way to learn how it went was to be looking at the Snapshots
+ * page when it landed, which for anything slow means not learning at all.
+ *
+ * One rule does the work: only a transition *out of* a running state is announced. That
+ * gives the rest for free — the first pass says nothing, because nothing was seen
+ * running before it; a snapshot already SUCCESS when the app opened says nothing, for
+ * the same reason; and each outcome is announced once, because the state is recorded
+ * immediately after.
+ *
+ * There was an explicit first-pass guard here as well. A mutation test removed it and
+ * every test still passed, which was correct: the transition rule had already made it
+ * unreachable. A second mechanism that cannot be observed is not caution, it is
+ * something for a later reader to wonder about.
+ */
+
+/** What each snapshot's state was last time. Empty until the first pass. */
+let seenSnapshots = new Map();
+
+/** The states Elasticsearch uses for a snapshot that is still being written. */
+const RUNNING = new Set(['IN_PROGRESS', 'STARTED']);
+
+/**
+ * @param byCluster [{ cluster, snapshots: [{ repo, id, status }] }]
+ * @returns the transitions announced, for tests
+ */
+export function announceSnapshotOutcomes(byCluster, { notify = toast } = {}) {
+  const now = new Map();
+  for (const { cluster, snapshots } of byCluster || []) {
+    for (const s of snapshots || []) {
+      now.set(`${cluster.id}|${s.repo}|${s.id}`, { cluster, ...s });
+    }
+  }
+
+  const done = [];
+  for (const [key, cur] of now) {
+    const was = seenSnapshots.get(key);
+    if (!RUNNING.has(String(was || '').toUpperCase())) continue;
+    const status = String(cur.status || '').toUpperCase();
+    if (RUNNING.has(status)) continue;
+    done.push(cur);
+  }
+  seenSnapshots = new Map([...now].map(([k, v]) => [k, v.status]));
+
+  for (const s of done) {
+    const status = String(s.status || '').toUpperCase();
+    const where = `${s.id} in ${s.repo} on ${s.cluster.name}`;
+    if (status === 'SUCCESS') notify(`Snapshot finished — ${where}`, 'ok', 6000);
+    else if (status === 'PARTIAL') {
+      // PARTIAL is the one people misread as success. It is a snapshot with shards
+      // missing, which is not something to restore from without knowing which.
+      notify(`Snapshot finished PARTIAL — ${where}. Some shards are not in it.`, 'err', 10000);
+    } else notify(`Snapshot ${status || 'failed'} — ${where}`, 'err', 10000);
+  }
+  return done;
+}
+
+/** Tests only: forget what was seen, so the next pass is a first pass again. */
+export function resetSnapshotMemory() { seenSnapshots = new Map(); }
