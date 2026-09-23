@@ -22,9 +22,10 @@ import { fetchFieldVolume, storeFieldVolume, fieldVolumeFor, SPIKE_WINDOW_DAYS, 
   from '../core/field-volume.js';
 import { timeHistogram } from '../lib/charts.js';
 import { findIndexEverywhere } from '../core/snapshot-verify.js';
+import { pageSlice, pagerBar } from '../lib/pager.js';
 
 let host = null;
-const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, limit: 300, from: '', to: '', loading: false, error: null };
+const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, from: '', to: '', loading: false, error: null, page: 0 };
 /** Index names ticked in the table, for the bulk actions. Cleared when the data reloads. */
 const selected = new Set();
 /** Volume-analysis UI state: which field, how far back, and whether a run is in flight. */
@@ -109,7 +110,7 @@ function draw() {
         sourceList.length
           ? hbarList(sourceList.map((x) => ({ key: x.key, label: x.key === '__none' ? '(unparsed)' : x.key, value: x.size,
               sub: `${num(x.indices)} indices · ${compact(x.docs)} docs` })),
-              { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.sourceFilter = r.key; draw(); } })
+              { format: bytes, topN: 12, labelWidth: 150, onSelect: (r) => { ui.sourceFilter = r.key; ui.page = 0; draw(); } })
           : empty('No indices'), { key: 'idx-by-source', open: true }),
       collapsible('Indices per day', 'daily indices detected from the naming pattern',
         () => perDay(rows), { key: 'idx-per-day', open: true })),
@@ -267,7 +268,7 @@ function exportAnalysis(c, a) {
 }
 
 function sourceBar(c, sourceList, total) {
-  const sel = h('select', { onchange: (e) => { ui.sourceFilter = e.target.value; draw(); } },
+  const sel = h('select', { onchange: (e) => { ui.sourceFilter = e.target.value; ui.page = 0; draw(); } },
     h('option', { value: 'all' }, `All sources (${total} indices)`),
     ...sourceList.filter((x) => x.key !== '__none').map((x) => h('option', { value: x.key }, `${x.key} — ${x.indices} idx · ${bytes(x.size)}`)),
     sourceList.some((x) => x.key === '__none') ? h('option', { value: '__none' }, '(indices without a source)') : null);
@@ -276,11 +277,11 @@ function sourceBar(c, sourceList, total) {
   return h('div.toolbar',
     h('label.field', 'Source', sel),
     h('label.field', 'Search index', h('input#idx-search', { type: 'search', placeholder: 'substring…', value: ui.text, style: { minWidth: '200px' },
-      oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); redrawTable(); } })),
+      oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); redrawTable(); } })),
     h('label.field', 'From day', h('input', { type: 'date', value: ui.from, onchange: (e) => { ui.from = e.target.value; draw(); } })),
     h('label.field', 'To day', h('input', { type: 'date', value: ui.to, onchange: (e) => { ui.to = e.target.value; draw(); } })),
     h('label.field', 'Status', (() => {
-      const s = h('select', { onchange: (e) => { ui.status = e.target.value; draw(); } },
+      const s = h('select', { onchange: (e) => { ui.status = e.target.value; ui.page = 0; draw(); } },
         h('option', { value: 'all' }, 'Any'), h('option', { value: 'green' }, 'green'),
         h('option', { value: 'yellow' }, 'yellow'), h('option', { value: 'red' }, 'red'),
         h('option', { value: 'open' }, 'open'), h('option', { value: 'close' }, 'closed'));
@@ -289,7 +290,7 @@ function sourceBar(c, sourceList, total) {
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'flex-end' } },
       ui.loading ? h('span.muted', h('span.spin'), ' Loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
       writeToggle(draw),
-      h('button.btn.sm', { onclick: () => { ui.sourceFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; draw(); } }, 'Clear'),
+      h('button.btn.sm', { onclick: () => { ui.sourceFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; ui.page = 0; draw(); } }, 'Clear'),
       h('button.btn.sm', { onclick: () => load(true) }, '↻ Reload')));
 }
 
@@ -303,7 +304,7 @@ function perDay(rows) {
 }
 
 function th(label, key, numeric) {
-  const sort = () => { ui.dir = ui.sort === key ? -ui.dir : -1; ui.sort = key; redrawTable(); };
+  const sort = () => { ui.dir = ui.sort === key ? -ui.dir : -1; ui.sort = key; ui.page = 0; redrawTable(); };
   const active = ui.sort === key;
   return h('th', {
     // mount() restores focus across a rebuild by id, and sorting rebuilds the whole table.
@@ -321,9 +322,29 @@ function redrawTable() {
   const holder = $('#idx-table');
   if (!holder) return draw();
   const rows = rowsFor(c);
+  const slice = pageSlice(rows, ui.page, perPage(c));
+  // Write the clamped page back: a filter that shrank the list below the current page
+  // would otherwise leave ui.page pointing past the end, and the next Previous click
+  // would appear to do nothing while it walked back through pages that do not exist.
+  ui.page = slice.page;
   const meta = $('#idx-meta');
-  if (meta) meta.textContent = `${num(rows.length)} shown · limit ${ui.limit}`;
-  mount(holder, buildTable(c, rows));
+  if (meta) meta.textContent = `${num(slice.first)}–${num(slice.last)} of ${num(rows.length)} matching`;
+  mount(holder, buildTable(c, slice.rows, rows), pagerBar(slice, goToPage));
+}
+
+/** Rows per page for this cluster — config, with the shared default as the floor. */
+function perPage(c) {
+  const n = Math.floor(Number(c && c.tableRowsPerPage));
+  return isFinite(n) && n > 0 ? n : 50;
+}
+
+function goToPage(p) {
+  ui.page = p;
+  redrawTable();
+  // The table can be taller than the viewport, so a page change that leaves the scroll
+  // position where it was drops the operator into the middle of the new page.
+  const holder = $('#idx-table');
+  if (holder && holder.scrollIntoView) holder.scrollIntoView({ block: 'start' });
 }
 
 /** Reload after an action changed the cluster, keeping the operator's filters. */
@@ -366,8 +387,10 @@ function bulkBar(c, rows) {
     h('button.btn.sm.ghost', { onclick: () => { selected.clear(); redrawTable(); } }, 'Clear selection'));
 }
 
-function buildTable(c, rows) {
-  const shown = rows.slice(0, ui.limit);
+function buildTable(c, rows, allRows = rows) {
+  // `rows` is the current page; `allRows` is everything the filters matched. Counts and
+  // the bulk bar speak about the filtered set, the tbody only about the page.
+  const shown = rows;
   const refresh = { onChanged: () => afterChange(c) };
   const allShownTicked = shown.length > 0 && shown.every((r) => selected.has(r.index));
 
@@ -381,7 +404,7 @@ function buildTable(c, rows) {
     h('td', tick(r)),
     h('td', pill(r.health || '?', r.health)),
     h('td.mono', { style: { maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis' }, title: r.index }, r.index),
-    h('td', r.source ? h('button.btn.sm.ghost', { onclick: () => { ui.sourceFilter = r.source; draw(); } }, r.source) : h('span.muted', '–')),
+    h('td', r.source ? h('button.btn.sm.ghost', { onclick: () => { ui.sourceFilter = r.source; ui.page = 0; draw(); } }, r.source) : h('span.muted', '–')),
     h('td.mono', r.day || '–'),
     h('td', r.status === 'open' ? h('span.pill.green', h('i.dot'), 'open') : h('span.pill.grey', h('i.dot'), r.status || '?')),
     h('td.num', `${r.pri}/${r.rep}`),
@@ -435,7 +458,7 @@ function buildTable(c, rows) {
     h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '0 0 8px', flexWrap: 'wrap' } },
       h('input#idx-search2', { type: 'search', value: ui.text, placeholder: ev.on ? 'index name — live and snapshots…' : 'filter these indices…',
         style: { flex: '1', minWidth: '220px' },
-        oninput: (e) => { ui.text = e.target.value; syncSearchBoxes(e.target); if (!ev.on) redrawTable(); },
+        oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); if (!ev.on) redrawTable(); },
         onkeydown: (e) => { if (e.key === 'Enter' && ev.on) searchEverywhere(c); } }),
       h('label', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px', cursor: 'pointer', whiteSpace: 'nowrap' },
         title: 'Also look inside every snapshot repository, so an index that was deleted can still be found' },
@@ -444,19 +467,15 @@ function buildTable(c, rows) {
         'also search snapshots'),
       ev.on ? h('button.btn.sm', { disabled: ev.running, onclick: () => searchEverywhere(c) }, ev.running ? 'Searching…' : 'Search') : null,
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
-        `${num(rows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
+        `${num(allRows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
       ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
         ? h('button.btn.sm.ghost', { onclick: () => {
-            ui.text = ''; ui.sourceFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; draw();
+            ui.text = ''; ui.sourceFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; ui.page = 0; draw();
           } }, 'Clear filters')
         : null),
     ev.on && (ev.result || ev.error) ? h('div', { style: { padding: '0 0 9px' } }, everywherePanel(c)) : null,
-    h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, rows)),
-    t,
-    rows.length > ui.limit
-      ? h('div', { style: { padding: '10px', textAlign: 'center' } },
-          h('button.btn.sm', { onclick: () => { ui.limit += 500; redrawTable(); } }, `Show more (${num(rows.length - ui.limit)} hidden)`))
-      : null);
+    h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, allRows)),
+    t);
 }
 
 /** The toolbar and the over-table search are the same filter; keep them in step. */
@@ -472,9 +491,11 @@ function redrawBulk(c) {
 }
 
 function tableCard(c, rows, all) {
-  return card(`Indices on ${c.name}`, '',
-    h('div#idx-table', buildTable(c, rows)),
-    [h('span#idx-meta.muted', { style: { fontSize: '11.5px' } }, `${num(rows.length)} shown · limit ${ui.limit}`),
+  const slice = pageSlice(rows, ui.page, perPage(c));
+  return card(`Indices on ${c.name}`, `${num(rows.length)} matching of ${num(all.length)} on the cluster`,
+    h('div#idx-table', buildTable(c, slice.rows, rows), pagerBar(slice, goToPage)),
+    [h('span#idx-meta.muted', { style: { fontSize: '11.5px' } },
+       `${num(slice.first)}–${num(slice.last)} of ${num(rows.length)} matching`),
      h('button.btn.sm', { onclick: () => download(`indices-${c.id}-${new Date().toISOString().slice(0, 10)}.csv`,
         toCsv(rows.map((r) => ({ index: r.index, source: r.source || '', day: r.day || '', health: r.health, status: r.status,
           pri: r.pri, rep: r.rep, docs: r.docs, deleted: r.deleted, size_bytes: r.size, primary_bytes: r.priSize,

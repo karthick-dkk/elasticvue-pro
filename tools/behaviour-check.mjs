@@ -341,7 +341,7 @@ await go('volume');
     viewBtn('Client plan').click();
     await settleFor(220);
 
-    const WANT = ['ClientName', 'ES Host', 'Current Per Day Volume', 'Daily Volume +30%',
+    const WANT = ['ClientName', 'ES Host', 'Current Per Day Volume', 'Daily Volume + buffer',
       'Current Live Storage', 'Live Used', 'Current Live Storage Store Upto',
       'Required Live Storage for 30days', 'Required Live Storage for 90days',
       'Live Indices From', 'Live Indices To',

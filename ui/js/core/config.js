@@ -34,6 +34,26 @@ export const DEFAULTS = {
   // the volume report then says so rather than assuming a number.
   liveRetention: '',
   snapshotRetention: '',
+  // How the daily-ingest figure is derived from the dated indices — the number every
+  // capacity figure on the volume report is built on, so it is stated here rather than
+  // hard-coded in the arithmetic.
+  //
+  // Default: the mean of the 3 heaviest of the last 7 complete days. A plain mean
+  // under-provisions whenever the window catches a quiet weekend or a collector outage;
+  // taking the busiest few sizes against days that actually happen. Today is never
+  // counted — its index is still being written to.
+  //
+  // The two knobs cover the usual preferences without needing a mode setting:
+  //   volumeTopDays: 1                     -> size against the peak day
+  //   volumeTopDays: volumeWindowDays      -> a plain mean of the whole window
+  volumeWindowDays: 7,
+  volumeTopDays: 3,
+  // Planning headroom added on top of the daily figure before it is multiplied out into
+  // retention requirements. 30 means "provision for 30% more than measured".
+  volumeHeadroomPercent: 30,
+  // Rows per page in the Indices and Shards tables. A cluster with thousands of indices
+  // renders every row otherwise, which is slow to draw and impossible to read.
+  tableRowsPerPage: 50,
   // Total size of the snapshot repository. Elasticsearch has no API for it — a repository
   // is a bucket or a mount point, and only the operator knows how big it is. "2TB",
   // "500 GB" or a bare number of GB. Empty means the report says "not set" rather than

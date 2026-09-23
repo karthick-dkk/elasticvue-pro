@@ -3,10 +3,14 @@ import { plural } from '../lib/fmt.js';
  * Capacity arithmetic: how much a cluster ingests per day, and what that means for the
  * disk it has and the retention it promises.
  *
- * The daily figure is the mean of the THREE HEAVIEST of the last seven complete days.
- * A plain seven-day mean under-provisions whenever the window catches a quiet weekend
- * or a collector outage; taking the busiest three sizes against days that actually
- * happen. Today is never counted — its index is still being written to.
+ * The daily figure is the mean of the N heaviest of the last W complete days, where W
+ * and N come from config (volumeWindowDays / volumeTopDays, default 7 and 3). A plain
+ * mean under-provisions whenever the window catches a quiet weekend or a collector
+ * outage; taking the busiest few sizes against days that actually happen. Today is never
+ * counted — its index is still being written to.
+ *
+ * Those two knobs cover the usual preferences without a separate mode setting:
+ * topDays 1 sizes against the peak day, topDays = windowDays is a plain mean.
  */
 
 const GB = 1024 ** 3;
@@ -73,11 +77,39 @@ function sizeLabel(gbv) {
   return `${gbv % 1 ? gbv.toFixed(1) : gbv} GB`;
 }
 
+/** Defaults mirrored from config DEFAULTS, so calling dailyVolume() bare still works. */
+export const VOLUME_DEFAULTS = { windowDays: 7, topDays: 3, headroomPercent: 30 };
+
+/**
+ * Resolve the volume settings for a cluster, clamping them to values the arithmetic
+ * can actually use.
+ *
+ * Exported because the report renders the basis it used, and the settings page
+ * previews it — three callers that must agree on what "3 of 7" means. A window of 0
+ * or a topDays above the window are the two ways a hand-edited YAML makes this
+ * meaningless, so both are corrected here rather than at each call site.
+ */
+export function volumeSettings(cluster = {}) {
+  const int = (v, dflt) => {
+    const n = Math.floor(Number(v));
+    return isFinite(n) ? n : dflt;
+  };
+  const windowDays = Math.max(1, int(cluster.volumeWindowDays, VOLUME_DEFAULTS.windowDays));
+  // topDays above the window would silently mean "the whole window" — which is a
+  // legitimate choice, but it should be the one that was asked for, so it is clamped
+  // rather than left to behave that way by accident.
+  const topDays = Math.min(windowDays, Math.max(1, int(cluster.volumeTopDays, VOLUME_DEFAULTS.topDays)));
+  const headroomPercent = Math.max(0, int(cluster.volumeHeadroomPercent, VOLUME_DEFAULTS.headroomPercent));
+  return { windowDays, topDays, headroomPercent };
+}
+
 /**
  * Daily ingest, from the date-suffixed indices.
  * @param indices  rows from state.indices (each with `day` and `size`)
+ * @param cluster  config entry carrying volumeWindowDays / volumeTopDays
  */
-export function dailyVolume(indices) {
+export function dailyVolume(indices, cluster = {}) {
+  const cfg = volumeSettings(cluster);
   const t = today();
   const byDay = new Map();
   for (const r of indices || []) {
@@ -90,10 +122,10 @@ export function dailyVolume(indices) {
 
   const mean = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
 
-  // The window: the seven most recent complete days that have an index.
-  const window7 = days.slice(0, 7);
-  // Within that window, the three heaviest days are what the cluster must cope with.
-  const top3 = [...window7].sort((a, b) => b.bytes - a.bytes).slice(0, 3);
+  // The window: the most recent complete days that have an index.
+  const window7 = days.slice(0, cfg.windowDays);
+  // Within that window, the heaviest days are what the cluster must cope with.
+  const top3 = [...window7].sort((a, b) => b.bytes - a.bytes).slice(0, cfg.topDays);
 
   const perDay = mean(top3.map((d) => d.bytes));
   const avg7 = mean(window7.map((d) => d.bytes));   // kept for context, not for sizing
@@ -108,6 +140,7 @@ export function dailyVolume(indices) {
     windowDays: window7.length,
     top3Days: top3.map((d) => d.day),
     sampleDays: window7.length,
+    settings: cfg,
     basis: !days.length
       ? 'no dated indices'
       : `mean of the ${top3.length} heaviest of the last ${window7.length} day${window7.length === 1 ? '' : 's'}` +
@@ -116,6 +149,9 @@ export function dailyVolume(indices) {
 }
 
 const div = (a, b) => (b > 0 ? a / b : null);
+
+/** The headroom a report row was actually built with — see volumeSettings(). */
+const headroomPct = (r) => (r && r.vol && r.vol.settings ? r.vol.settings.headroomPercent : VOLUME_DEFAULTS.headroomPercent);
 
 /**
  * Everything the volume report shows for one cluster.
@@ -126,9 +162,13 @@ const div = (a, b) => (b > 0 ? a / b : null);
  * @param repoBytes  measured repository size, when the operator has asked for it
  */
 export function volumeReport(cluster, data = {}, indices = [], repoBytes = null) {
-  const vol = dailyVolume(indices);
+  const vol = dailyVolume(indices, cluster);
   const perDayGB = bytesToGB(vol.perDay);
-  const bufferedGB = perDayGB * 1.3;                 // planning figure: +30% headroom
+  // Planning headroom from config (volumeHeadroomPercent, default 30). Every "will it
+  // fit" figure below is built on this one, so a cluster that provisions differently
+  // changes one setting rather than being read against someone else's assumption.
+  const headroomPercent = vol.settings.headroomPercent;
+  const bufferedGB = perDayGB * (1 + headroomPercent / 100);
 
   const disk = data.disk || {};
   const liveTotalGB = bytesToGB(disk.total);
@@ -329,13 +369,15 @@ export const SHEET_COLUMNS = [
 
   { group: 'How much comes in', label: 'Indices size per day', unit: 'GB', kind: 'num',
     get: (r) => round1(r.perDayGB), note: (r) => r.vol.basis,
-    help: 'How much the indices grow in a day: the average of the three heaviest of the last seven complete days. '
-        + 'Top three rather than a plain average so a quiet weekend does not make the estimate too small. '
-        + 'Today is left out because it is still being written to.' },
-  { group: 'How much comes in', label: 'Per day + 30% buffer', unit: 'GB', kind: 'num',
-    get: (r) => round1(r.bufferedGB), note: () => 'the daily figure plus 30% headroom — what sizing is done against',
-    help: 'The daily figure plus 30% headroom. Every "needed" and "required" number on this row is this figure '
-        + 'multiplied by a number of days.' },
+    help: 'How much the indices grow in a day: the average of the heaviest days in the window, both set in the '
+        + 'config (volumeTopDays of volumeWindowDays, 3 of 7 by default). Heaviest-few rather than a plain average '
+        + 'so a quiet weekend does not make the estimate too small. Today is left out because it is still being '
+        + 'written to.' },
+  { group: 'How much comes in', label: 'Per day + buffer', unit: 'GB', kind: 'num',
+    get: (r) => round1(r.bufferedGB),
+    note: (r) => `the daily figure plus ${headroomPct(r)}% headroom — what sizing is done against`,
+    help: 'The daily figure plus the configured headroom (volumeHeadroomPercent, 30% by default). Every "needed" '
+        + 'and "required" number on this row is this figure multiplied by a number of days.' },
 
   { group: 'Disk on the cluster', label: 'Disk total', unit: 'GB', kind: 'num', get: (r) => round1(r.liveTotalGB),
     help: 'Total disk across the data nodes, as Elasticsearch reports it.' },
@@ -363,15 +405,15 @@ export const SHEET_COLUMNS = [
     help: 'NO means the config and ILM disagree about how long to keep indices — one of the two is wrong, and the '
         + 'cluster is doing whatever ILM says.' },
   { group: 'Indices kept on the cluster', label: 'Disk needed for the policy', unit: 'GB', kind: 'num', get: (r) => round1(r.requiredLiveGB),
-    note: (r) => (r.liveRetention ? `(per day + 30%) × ${r.liveRetention.days} days` : 'no retention policy set'),
-    help: '(indices size per day + 30%) × the retention policy in days.' },
+    note: (r) => (r.liveRetention ? `(per day + ${headroomPct(r)}%) × ${r.liveRetention.days} days` : 'no retention policy set'),
+    help: 'Indices size per day, plus the configured headroom, × the retention policy in days.' },
   { group: 'Indices kept on the cluster', label: 'Enough disk for the policy?', kind: 'bool', get: (r) => r.liveRetentionMet,
     note: (r) => (r.requiredLiveGB ? `needs ${gb(r.requiredLiveGB)}` : 'set liveRetention on the cluster'),
     help: 'Whether disk total covers what the retention policy needs. NO means the policy cannot be kept without more disk.' },
   { group: 'Indices kept on the cluster', label: 'Disk needed for 30 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required30GB),
-    note: () => '(per day + 30%) × 30 days', help: '(indices size per day + 30%) × 30.' },
+    note: (r) => `(per day + ${headroomPct(r)}%) × 30 days`, help: 'Indices size per day, plus the configured headroom, × 30.' },
   { group: 'Indices kept on the cluster', label: 'Disk needed for 90 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required90GB),
-    note: () => '(per day + 30%) × 90 days', help: '(indices size per day + 30%) × 90.' },
+    note: (r) => `(per day + ${headroomPct(r)}%) × 90 days`, help: 'Indices size per day, plus the configured headroom, × 90.' },
   { group: 'Indices kept on the cluster', label: 'Days of indices held now', unit: 'days', kind: 'num',
     get: (r) => r.vol.daysCovered || null,
     note: (r) => (r.liveLogsFrom ? `${r.liveLogsFrom} → ${r.liveLogsTo}` : 'no dated indices'),
@@ -400,12 +442,12 @@ export const SHEET_COLUMNS = [
     help: 'Backup space available − backup space used. Needs both the configured capacity and a measured size.' },
   { group: 'Backups (snapshots)', label: 'Backup space required for the policy', unit: 'GB', kind: 'num',
     get: (r) => round1(r.requiredSnapshotGB),
-    note: (r) => (r.snapshotRetention ? `(per day + 30%) × ${r.snapshotRetention.days} days` : 'no backup retention policy set'),
-    help: '(indices size per day + 30%) × the backup retention policy in days. An upper bound: snapshots are '
+    note: (r) => (r.snapshotRetention ? `(per day + ${headroomPct(r)}%) × ${r.snapshotRetention.days} days` : 'no backup retention policy set'),
+    help: 'Indices size per day, plus the configured headroom, × the backup retention policy in days. An upper bound: snapshots are '
         + 'incremental, so the repository normally needs less.' },
   { group: 'Backups (snapshots)', label: 'Backup space required for 365 days', unit: 'GB', kind: 'num', get: (r) => round1(r.required365GB),
-    note: () => '(per day + 30%) × 365 days',
-    help: '(indices size per day + 30%) × 365 — a year of backups. An upper bound, for the same reason.' },
+    note: (r) => `(per day + ${headroomPct(r)}%) × 365 days`,
+    help: 'Indices size per day, plus the configured headroom, × 365 — a year of backups. An upper bound, for the same reason.' },
   { group: 'Backups (snapshots)', label: 'Enough backup space?', kind: 'bool', get: (r) => r.backupSpaceMet,
     note: (r) => (r.backupCapacityGB === null ? 'set backupCapacity on the cluster'
                                               : `needs ${gb(r.backupNeedGB)} of ${gb(r.backupCapacityGB)}`),
@@ -477,7 +519,7 @@ const CLIENT_VIEW = [
   { from: 'Cluster name',                       group: 'Client',         label: 'ClientName' },
   { from: 'Elasticsearch URL',                  group: 'Client',         label: 'ES Host' },
   { from: 'Indices size per day',               group: 'Volume',         label: 'Current Per Day Volume' },
-  { from: 'Per day + 30% buffer',               group: 'Volume',         label: 'Daily Volume +30%' },
+  { from: 'Per day + buffer',                   group: 'Volume',         label: 'Daily Volume + buffer' },
   { from: 'Disk total',                         group: 'Live storage',   label: 'Current Live Storage' },
   { from: 'Disk used',                          group: 'Live storage',   label: 'Live Used' },
   { from: 'Current live storage store upto',    group: 'Live storage',   label: 'Current Live Storage Store Upto' },
