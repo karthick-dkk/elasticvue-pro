@@ -136,8 +136,8 @@ Users will be able to choose where each metric type is stored, with the destinat
 set per metric type (log delay, volume, ULM, capacity).
 
 The destination that exists today is the **Elasticsearch sink** `delay_sink.rs`
-already writes to. A second destination is not decided; SQLite was considered and
-ruled out, so nothing here depends on adding a database engine to the core.
+already writes to. A second destination is not decided, and nothing here depends
+on adding a database engine to the core.
 
 **This is offered on the Linux/hosted deployment only. Portable does not show it at
 all.** Not disabled, not greyed out with an explanation: absent. A control that
