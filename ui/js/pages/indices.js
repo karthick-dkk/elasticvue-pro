@@ -94,6 +94,15 @@ function draw() {
     sourceBar(c, sourceList, all.length),
     ui.error ? h('div.banner.err', h('div', h('div.ttl', 'Could not list indices'), h('div.mono', ui.error))) : null,
     viewTabs(),
+    // The picker is on Summary, so an active filter has to announce itself here — a
+    // filtered table with no visible control is a table that looks like it lost rows.
+    ui.view === 'indices' && ui.sourceFilter !== 'all'
+      ? h('div.muted', { style: { fontSize: '11.5px', marginBottom: '8px' } },
+          `Source: ${ui.sourceFilter === '__none' ? '(no source)' : ui.sourceFilter}`,
+          h('button.btn.sm.ghost', { style: { marginLeft: '6px' },
+            title: 'Show every source again',
+            onclick: () => { ui.sourceFilter = 'all'; ui.page = 0; draw(); } }, 'clear'))
+      : null,
 
     ui.view === 'summary' ? summaryView(c, rows, all, totals) : null,
     ui.view === 'summary' ? null :
@@ -122,6 +131,17 @@ function viewTabs() {
 
 function summaryView(c, rows, all, totals) {
   return h('div',
+    h('div.toolbar', { style: { marginBottom: '12px' } },
+      h('label.field', 'Source', sourcePicker(
+        [...new Map(all.map((r) => [r.source || '__none', null])).keys()].length
+          ? [...all.reduce((m, r) => {
+              const k = r.source || '__none';
+              const cur = m.get(k) || { key: k, indices: 0, docs: 0, size: 0 };
+              cur.indices++; cur.docs += r.docs; cur.size += r.size;
+              return m.set(k, cur);
+            }, new Map()).values()].sort((a, b) => b.size - a.size)
+          : [], all.length))),
+
     h('div.grid.c4', { style: { marginBottom: '14px' } },
       statTile('Indices shown', `${num(rows.length)}`, `of ${num(all.length)} on ${c.name}`),
       statTile('Documents', compact(totals.docs), `${num(totals.docs)} docs`),
@@ -150,15 +170,28 @@ function summaryView(c, rows, all, totals) {
  * device or tag was responsible", which is the question asked when the first number moves.
  * It costs one aggregation per field, so it runs on demand rather than on every render.
  */
-function sourceBar(c, sourceList, total) {
-  const sel = h('select', { onchange: (e) => { ui.sourceFilter = e.target.value; ui.page = 0; draw(); } },
+/**
+ * The source picker.
+ *
+ * Lives on the Summary view, not in the Indices toolbar. "Which source" is a question
+ * about where the volume came from — the thing Summary is for — while the Indices
+ * toolbar is for finding one index: a name, a date range, a status. Choosing a source
+ * still filters the table, and still drops you back on the Indices view so the filter
+ * you just applied is visible where it applies.
+ */
+function sourcePicker(sourceList, total) {
+  const sel = h('select', { onchange: (e) => {
+    ui.sourceFilter = e.target.value; ui.page = 0; ui.view = 'indices'; draw();
+  } },
     h('option', { value: 'all' }, `All sources (${total} indices)`),
     ...sourceList.filter((x) => x.key !== '__none').map((x) => h('option', { value: x.key }, `${x.key} — ${x.indices} idx · ${bytes(x.size)}`)),
     sourceList.some((x) => x.key === '__none') ? h('option', { value: '__none' }, '(indices without a source)') : null);
   sel.value = ui.sourceFilter;
+  return sel;
+}
 
+function sourceBar(c, sourceList, total) {
   return h('div.toolbar',
-    h('label.field', 'Source', sel),
     h('label.field', 'Search index', h('input#idx-search', { type: 'search', placeholder: 'substring…', value: ui.text, style: { minWidth: '200px' },
       oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); redrawTable(); } })),
     h('label.field', 'From day', h('input', { type: 'date', value: ui.from, onchange: (e) => { ui.from = e.target.value; draw(); } })),
