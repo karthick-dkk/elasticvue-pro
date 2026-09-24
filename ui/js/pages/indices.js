@@ -28,7 +28,17 @@ const selected = new Set();
 /** Volume-analysis UI state: which field, how far back, and whether a run is in flight. */
 const va = { field: null, days: 14, topN: 12, running: false, error: null, byTerm: null, selectedTerm: null };
 /** The everywhere-search: live indices AND every snapshot, for "does this still exist". */
-const ev = { term: '', running: false, result: null, error: null };
+/**
+ * Where to search. `live` filters the table and costs nothing; the other two reach into
+ * every snapshot repository, which is a request per repository, so they run on the
+ * button rather than as you type.
+ */
+const SCOPES = [
+  { id: 'live', label: 'Live', title: 'Only indices that exist on the cluster now' },
+  { id: 'snapshot', label: 'Snapshot', title: 'Only indices held in a snapshot repository' },
+  { id: 'both', label: 'Live + Snapshot', title: 'Both at once — where does this index exist, anywhere' },
+];
+const ev = { scope: 'live', term: '', running: false, result: null, error: null };
 
 export function render(el) {
   host = el;
@@ -366,19 +376,23 @@ function buildTable(c, rows, allRows = rows) {
       h('input#idx-search2', { type: 'search', value: ui.text, placeholder: 'filter the table, or search live + snapshots…',
         style: { flex: '1', minWidth: '220px' },
         oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); redrawTable(); },
-        onkeydown: (e) => { if (e.key === 'Enter' && ui.text.trim()) searchEverywhere(c); } }),
-      // One search, both places. findIndexEverywhere already answers "live, in a
-      // snapshot, or both" in a single result, so making the operator pick a side first
-      // asked them to know the answer before searching — and an index that was deleted
-      // is exactly the case where they do not.
-      h('button.btn.sm', {
+        onkeydown: (e) => { if (e.key === 'Enter' && ev.scope !== 'live' && ui.text.trim()) searchEverywhere(c); } }),
+      // One result set, three ways of reading it. findIndexEverywhere always answers
+      // "live, in a snapshot, or both"; the scope decides which part of that answer is
+      // shown, rather than which question gets asked — asking a narrower question would
+      // mean re-running it when the operator widens the scope.
+      h('div.seg', { style: { flexShrink: '0' }, role: 'group', 'aria-label': 'Where to search' },
+        ...SCOPES.map((sc) => h('button.btn.sm', {
+          'aria-pressed': ev.scope === sc.id ? 'true' : 'false',
+          title: sc.title,
+          onclick: () => { if (ev.scope !== sc.id) { ev.scope = sc.id; draw(); } },
+        }, sc.label))),
+      ev.scope === 'live' ? null : h('button.btn.sm', {
         class: 'btn sm primary',
         disabled: ev.running || !ui.text.trim(),
-        title: ui.text.trim()
-          ? 'Search the live indices and every snapshot repository'
-          : 'Type an index name first',
+        title: ui.text.trim() ? 'Look inside every snapshot repository' : 'Type an index name first',
         onclick: () => searchEverywhere(c),
-      }, ev.running ? 'Searching…' : 'Search live + snapshots'),
+      }, ev.running ? 'Searching…' : 'Search'),
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
         `${num(allRows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
       ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
@@ -446,13 +460,19 @@ function everywherePanel(c) {
     h('td.mono.muted', { style: { fontSize: '11px' } },
       s.snapshots[0] ? `${s.snapshots[0].repo} / ${s.snapshots[0].snapshot} (${s.snapshots[0].state})` : '–'));
 
-  return card(`"${ev.term}" — live and in snapshots`,
+  // Snapshot scope hides the live-only list: the operator asked what is in the
+  // repositories, and answering with cluster indices as well is answering a question
+  // they did not ask. The counts stay complete so the scope narrows what is shown,
+  // never what was measured.
+  const showLive = ev.scope !== 'snapshot';
+  return card(
+    `"${ev.term}" — ${ev.scope === 'snapshot' ? 'in snapshots' : ev.scope === 'live' ? 'live' : 'live and in snapshots'}`,
     `${r.live.length} live · ${r.snapshotted.length} in snapshots · ${gone.length} only in snapshots`,
     h('div', { style: { display: 'grid', gap: '8px' } },
       r.unverified.length
         ? h('div.banner.warn', { style: { margin: 0 } }, h('div', `Could not read: ${r.unverified.join('; ')}`))
         : null,
-      liveOnly.length
+      liveOnly.length && showLive
         ? h('div', { style: { fontSize: '12px' } },
             h('b', `${liveOnly.length} live only`), h('span.muted', ' — on the cluster, in no snapshot: '),
             h('span.mono', liveOnly.slice(0, 8).map((x) => x.index).join(', ')), liveOnly.length > 8 ? ` …+${liveOnly.length - 8}` : '')

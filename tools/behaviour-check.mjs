@@ -303,7 +303,8 @@ await go('indices');
   const txt = doc.body.textContent;
   const btn = (label) => [...doc.querySelectorAll('button')].some((b) => b.textContent.trim() === label);
   ok(/Indices on /.test(txt), 'indices: the index table card is missing');
-  ok(btn('Search live + snapshots'), 'indices: one search covering live AND snapshots is missing');
+  ok(btn('Live') && btn('Snapshot') && btn('Live + Snapshot'),
+    'indices: the three search scopes (Live, Snapshot, Live + Snapshot) are not all present');
   ok(btn('‹ Previous') && btn('Next ›'), 'indices: the table is not paged');
   // The breakdown lives behind the Summary tab, not stacked above the table.
   ok(btn('Indices') && btn('Summary'), 'indices: the Indices/Summary tabs are missing');
