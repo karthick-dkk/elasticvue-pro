@@ -111,11 +111,11 @@ function draw() {
  */
 function viewTabs() {
   const tab = (id, label, title) => h('button.btn.sm', {
-    class: ui.view === id ? 'btn sm primary' : 'btn sm',
+    'aria-pressed': ui.view === id ? 'true' : 'false',
     title,
     onclick: () => { if (ui.view !== id) { ui.view = id; draw(); } },
   }, label);
-  return h('div.seg', { role: 'group', style: { display: 'inline-flex', marginBottom: '10px' } },
+  return h('div.seg', { role: 'group', 'aria-label': 'Indices view', style: { marginBottom: '10px' } },
     tab('indices', 'Indices', 'The index list, and the actions that manage it'),
     tab('summary', 'Summary', 'Store size, sources, indices per day, and daily volume by field'));
 }
@@ -338,14 +338,14 @@ function buildTable(c, rows, allRows = rows) {
       // is a mode, and a mode shown as a tickbox reads as an extra rather than a place.
       // Snapshot mode needs a term — a repository listing is per-index, so there is
       // nothing to show until you name one.
-      h('div.seg', { style: { display: 'inline-flex', flexShrink: '0' }, role: 'group' },
+      h('div.seg', { style: { flexShrink: '0' }, role: 'group', 'aria-label': 'Where to look' },
         h('button.btn.sm', {
-          class: ev.on ? 'btn sm' : 'btn sm primary',
+          'aria-pressed': ev.on ? 'false' : 'true',
           title: 'Indices that exist on the cluster now',
           onclick: () => { if (ev.on) { ev.on = false; ev.result = null; draw(); } },
         }, 'Live'),
         h('button.btn.sm', {
-          class: ev.on ? 'btn sm primary' : 'btn sm',
+          'aria-pressed': ev.on ? 'true' : 'false',
           title: 'Look inside every snapshot repository as well, so an index that was deleted can still be found',
           onclick: () => { if (!ev.on) { ev.on = true; ev.result = null; draw(); } },
         }, 'Snapshot')),

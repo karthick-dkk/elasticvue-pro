@@ -724,3 +724,25 @@ body.popup { width: 330px; background: var(--surface-1); }
     scroll-behavior: auto !important;
   }
 }
+
+/* Segmented control — Indices/Summary, Live/Snapshot.
+   Selection is stated with aria-pressed rather than a "primary" class: it is a toggle
+   group, not two independent buttons, and the screen-reader answer and the visual one
+   then come from the same attribute instead of being kept in step by hand. The explicit
+   colours are why this rule exists at all — relying on .btn.primary left the selected
+   tab with an accent border and unchanged text, which read as unselected-but-focused. */
+.seg { display: inline-flex; gap: 0; }
+.seg .btn { border-radius: 0; margin-left: -1px; }
+.seg .btn:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; margin-left: 0; }
+.seg .btn:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+.seg .btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  position: relative;   /* keep the selected edge above its neighbour's border */
+  z-index: 1;
+}
+.seg .btn[aria-pressed="true"]:hover { filter: brightness(1.08); }
+.seg .btn[aria-pressed="false"] { color: var(--text-secondary); }
+.seg .btn[aria-pressed="false"]:hover { background: var(--surface-2); color: var(--text); }

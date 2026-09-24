@@ -313,6 +313,11 @@ await go('indices');
   // indistinguishable from "gone".
   [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Summary').click();
   await settleFor(250);
+  // The bug this guards: the selected tab looked unselected — an accent border and
+  // unchanged text, which reads as "focused", not "you are here".
+  const pressed = [...doc.querySelectorAll('.seg .btn')].filter((b) => b.getAttribute('aria-pressed') === 'true');
+  ok(pressed.length && pressed.some((b) => b.textContent.trim() === 'Summary'),
+    'indices: the Summary tab is not marked selected after being pressed');
   const sum = doc.body.textContent;
   ok(/Store size by source/.test(sum), 'indices: Summary does not show the source breakdown');
   ok(/Indices per day/.test(sum), 'indices: Summary does not show indices per day');
