@@ -32,6 +32,15 @@ export const state = {
   selected: 'all',
   autoRefresh: false,   // opt-in; see DEFAULTS.autoRefresh and the top-bar toggle
   lastRefresh: 0,
+  /**
+   * When each dataset was last fetched, keyed `${clusterId}:${dataset}`.
+   *
+   * Separate from lastRefresh, which says when ANY refresh ran. One timestamp made
+   * indices fetched ten minutes ago and disk stats fetched ten seconds ago read as
+   * equally current — and once a page serves cached data, its age stops being a detail
+   * and becomes part of whether the number is true.
+   */
+  fetchedAt: {},
   refreshing: false,
   timer: null,
   tick: null,
@@ -40,6 +49,26 @@ export const state = {
 
 export function clusters() { return state.config ? state.config.clusters.filter((c) => c.enabled) : []; }
 export function client(id) { return state.clients.get(id); }
+/** Record that `dataset` for `clusterId` was just fetched. */
+export function stampFetch(clusterId, dataset) {
+  state.fetchedAt[`${clusterId}:${dataset}`] = Date.now();
+}
+
+/** When it was fetched, or 0 if this dataset has never been read. */
+export function fetchedAt(clusterId, dataset) {
+  return state.fetchedAt[`${clusterId}:${dataset}`] || 0;
+}
+
+/**
+ * The oldest fetch across several clusters — what a fleet-wide page must show.
+ * Reporting the newest would describe the freshest cluster and quietly imply the
+ * stalest one was just as current.
+ */
+export function oldestFetch(clusterIds, dataset) {
+  const ts = clusterIds.map((id) => fetchedAt(id, dataset)).filter(Boolean);
+  return ts.length === clusterIds.length && ts.length ? Math.min(...ts) : 0;
+}
+
 export function activeClusters() {
   const all = clusters();
   return state.selected === 'all' ? all : all.filter((c) => c.id === state.selected);
@@ -380,6 +409,7 @@ export async function fetchOverview(id, { withSnapshots = true } = {}) {
     ilmOfIndices, clusterSettings,
   });
   state.data.set(id, out);
+  stampFetch(id, 'data');
   bus.emit('data', id);
 
   if (withSnapshots && out.repos.length) await fetchSnapshots(id);
@@ -438,6 +468,7 @@ export async function fetchSnapshots(id) {
     }
   }
   state.data.set(id, d);
+  stampFetch(id, 'data');
   bus.emit('data', id);
 }
 
@@ -469,6 +500,7 @@ export async function fetchIndices(id, pattern = '*') {
   const rows = await cl.indices(pattern);
   const parsed = rows.map((r) => parseIndexName(r.index, cl.c.indexNameRegex, r));
   state.indices.set(id, parsed);
+  stampFetch(id, 'indices');
   bus.emit('indices', id);
   return parsed;
 }

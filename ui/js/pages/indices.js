@@ -8,7 +8,7 @@
 
 import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { bytes, num, compact, dt, ago, toCsv, download } from '../lib/fmt.js';
-import { state, client, fetchIndices, activeClusters } from '../core/state.js';
+import { state, client, fetchIndices, activeClusters, fetchedAt } from '../core/state.js';
 import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { syncWrites, writeToggle } from '../core/writes.js';
@@ -19,6 +19,7 @@ import {
 import { rowMenu, ICON, closeMenus } from '../ui/menu.js';
 import { findIndexEverywhere } from '../core/snapshot-verify.js';
 import { pageSlice, pagerBar } from '../lib/pager.js';
+import { freshnessBar } from '../lib/freshness.js';
 import { sourceSizeChart, perDayChart, volumeAnalysisCard } from '../ui/index-metrics.js';
 
 let host = null;
@@ -214,7 +215,9 @@ function sourceBar(c, sourceList, total) {
       s.value = ui.status; return s;
     })()),
     h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'flex-end' } },
-      ui.loading ? h('span.muted', h('span.spin'), ' Loading…') : h('span.muted', { style: { fontSize: '11.5px' } }, `updated ${ago(state.lastRefresh)}`),
+      // This list's own age, not the last global refresh — the page serves what was
+      // already fetched, so how old that is decides whether it is still true.
+      freshnessBar(fetchedAt(c.id, 'indices'), () => load(true), { label: 'Indices', busy: ui.loading }),
       writeToggle(draw),
       h('button.btn.sm', { onclick: () => { ui.sourceFilter = 'all'; ui.text = ''; ui.status = 'all'; ui.from = ''; ui.to = ''; ui.page = 0; draw(); } }, 'Clear'),
       h('button.btn.sm', { onclick: () => load(true) }, '↻ Reload')));
