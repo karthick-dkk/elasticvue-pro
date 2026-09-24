@@ -194,3 +194,74 @@ export async function removeClusterUser(clusterId, name, { onDone } = {}) {
     toast(`Could not remove ${name}: ${e.message}`, 'err', 5000);
   }
 }
+
+/**
+ * Edit one account on one cluster: roles, full name, email.
+ *
+ * Roles are the field that matters — they decide which indices the account can read —
+ * so they are offered as the cluster's actual role list rather than a free-text box
+ * where a typo creates a role reference that does not exist and silently grants nothing.
+ * If the role list cannot be read (a cluster that allows reading users but not roles),
+ * the form falls back to text so the edit is still possible, and says so.
+ *
+ * A built-in account is refused here rather than at the cluster: Elasticsearch answers a
+ * reserved-user edit with a 400 whose message is about the metadata field, which explains
+ * nothing to the person who clicked Edit.
+ */
+export async function editDialog(clusterId, user, { onDone } = {}) {
+  const c = clusters().find((x) => x.id === clusterId);
+  const where = c ? c.name : clusterId;
+  if (user.reserved) {
+    toast(`${user.name} is a built-in account and cannot be edited`, 'warn', 4000);
+    return;
+  }
+
+  let roleNames = null;
+  try {
+    const res = await client(clusterId).securityRoles();
+    roleNames = Object.keys(res || {}).sort();
+  } catch {
+    roleNames = null;   // fall back to free text below
+  }
+
+  const current = new Set(user.roles || []);
+  const roleBox = roleNames && roleNames.length
+    ? h('div', { style: { display: 'grid', gap: '3px', maxHeight: '190px', overflowY: 'auto' } },
+        ...roleNames.map((r) => h('label',
+          { style: { display: 'flex', gap: '7px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } },
+          h('input', { type: 'checkbox', checked: current.has(r),
+            onchange: (e) => { if (e.target.checked) current.add(r); else current.delete(r); } }),
+          h('span.mono', { style: { fontSize: '11.5px' } }, r))))
+    : text('cu-roles', (user.roles || []).join(', '), { placeholder: 'role names, comma separated' });
+
+  const fullName = text('cu-full', user.fullName || '', { placeholder: 'optional' });
+  const email = text('cu-email', user.email || '', { placeholder: 'optional' });
+
+  await modal(`Edit ${user.name}`, `on ${where}`, [
+    field('Roles', roleBox,
+      roleNames && roleNames.length
+        ? 'What this account may do on this cluster.'
+        : 'The cluster would not list its roles, so these are typed. A name that does not exist grants nothing.'),
+    field('Full name', fullName),
+    field('Email', email),
+  ], (ctx) => [
+    h('button.btn.primary', { onclick: (e) => ctx.run(e.target, async () => {
+      const roles = roleNames && roleNames.length
+        ? [...current]
+        : String(val(roleBox) || '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (!roles.length) throw new Error('An account with no roles can sign in and do nothing — give it at least one.');
+      if (!(await ensureWrites())) return;
+      // full_name/email are sent even when blank: PUT replaces the document, so omitting
+      // a field the operator cleared would silently put the old value back.
+      const r = await client(clusterId).updateSecurityUser(user.name, {
+        roles,
+        full_name: String(val(fullName) || ''),
+        email: String(val(email) || ''),
+      });
+      if (!r.ok) throw new Error(r.message || r.kind || `HTTP ${r.status}`);
+      toast(`Updated ${user.name} on ${where}`);
+      ctx.close(true);
+      if (onDone) onDone();
+    }) }, 'Save'),
+  ], { width: '520px' });
+}

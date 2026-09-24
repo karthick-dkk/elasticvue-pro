@@ -14,8 +14,9 @@ import { h, mount } from '../lib/dom.js';
 import { bridge } from '../core/transport.js';
 import { card, pill, statTile, empty, table } from './common.js';
 import { modal, field, text, select, val, confirmDialog } from '../ui/modal.js';
-import { clusters } from '../core/state.js';
-import { fetchClusterUsers, createDialog, removeClusterUser } from '../ui/cluster-users.js';
+import { clusters, activeClusters, state } from '../core/state.js';
+import { fetchClusterUsers, createDialog, removeClusterUser, editDialog } from '../ui/cluster-users.js';
+import { ICON } from '../ui/menu.js';
 
 const MIN_PASSWORD = 10;   // must match auth::MIN_PASSWORD
 
@@ -77,50 +78,117 @@ function roleCell(role) {
 function clusterUsersCard() {
   const all = clusters();
   if (!all.length) return card('Cluster users', 'no clusters configured', empty('Add a cluster first.'));
+  // One cluster selected: its accounts, in full, with the controls to manage them.
+  // "All": which accounts exist where, which is the question you ask across a fleet.
+  if (state.selected === 'all' && all.length > 1) return clusterUserMatrix(all);
+  const c = activeClusters()[0] || all[0];
+  return clusterUserDetail(c);
+}
 
-  const blocks = all.map((c) => {
-    const got = cu.byCluster[c.id];
-    const head = h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '6px' } },
-      h('b', { style: { fontSize: '12.5px' } }, c.name),
-      h('span.mono.muted', { style: { fontSize: '10.5px' } }, c.url),
-      h('div', { style: { marginLeft: 'auto' } },
-        h('button.btn.sm.ghost', { onclick: () => loadClusterUsers(c.id) },
-          cu.loading.has(c.id) ? 'Loading…' : '↻')));
+/** Every account on the selected cluster, with edit and remove. */
+function clusterUserDetail(c) {
+  const got = cu.byCluster[c.id];
+  const reload = () => loadClusterUsers(c.id);
+  const refreshBtn = h('button.btn.sm.ghost',
+    { onclick: reload, title: `Re-read the accounts on ${c.name}` },
+    cu.loading.has(c.id) ? 'Loading…' : ICON.refresh);
 
-    if (!got) return h('div', head, h('div.muted', { style: { fontSize: '11.5px' } }, 'not read yet'));
-    if (got.error) {
-      return h('div', head,
-        h('div', { style: { fontSize: '11.5px', color: 'var(--warning)' } }, got.error),
-        got.fix ? h('div.muted', { style: { fontSize: '11px' } }, got.fix) : null);
-    }
+  let body;
+  if (!got) {
+    body = empty(cu.loading.has(c.id) ? 'Reading accounts…' : 'Not read yet.');
+  } else if (got.error) {
+    body = h('div',
+      h('div', { style: { fontSize: '12px', color: 'var(--warning)' } }, got.error),
+      got.fix ? h('div.muted', { style: { fontSize: '11.5px', marginTop: '4px' } }, got.fix) : null);
+  } else {
     const trs = got.users.map((u) => h('tr',
       h('td', h('b', u.name),
         u.reserved ? h('span.muted', { style: { marginLeft: '6px', fontSize: '10.5px' } }, '(built-in)') : null,
         !u.enabled ? h('span.muted', { style: { marginLeft: '6px', fontSize: '10.5px' } }, '(disabled)') : null),
       h('td', h('span.mono', { style: { fontSize: '11px' } }, (u.roles || []).join(', ') || '–')),
       h('td.muted', { style: { fontSize: '11.5px' } }, u.fullName || u.email || ''),
-      h('td', { style: { textAlign: 'right' } },
+      h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
         h('button.btn.sm.ghost', {
-          // A built-in account cannot be deleted and Elasticsearch says so with a 400;
-          // refusing here is a clearer answer than relaying that.
+          // Built-ins are refused here rather than at the cluster: Elasticsearch answers a
+          // reserved-account write with a 400 about a metadata field, which explains
+          // nothing to the person who clicked.
           disabled: u.reserved,
+          title: u.reserved ? 'Built-in accounts cannot be edited' : `Edit ${u.name} on ${c.name}`,
+          onclick: () => editDialog(c.id, u, { onDone: reload }),
+        }, ICON.edit),
+        h('button.btn.sm.ghost', {
+          disabled: u.reserved,
+          style: { marginLeft: '4px' },
           title: u.reserved ? 'Built-in accounts cannot be removed' : `Remove ${u.name} from ${c.name}`,
-          onclick: () => removeClusterUser(c.id, u.name, { onDone: () => loadClusterUsers(c.id) }),
-        }, '×'))));
-    return h('div', head,
-      table(['Name', 'Roles', '', ''], trs, {
-        emptyText: empty('No accounts are defined on this cluster.', {
-          detail: 'Only native-realm accounts appear here. Accounts from an LDAP, SAML or '
-                + 'file realm are managed where that realm lives, not in Elasticsearch.',
-        }),
-      }));
-  });
+          onclick: () => removeClusterUser(c.id, u.name, { onDone: reload }),
+        }, ICON.delete))));
+    body = table(['Name', 'Roles', '', ''], trs, {
+      emptyText: empty('No accounts are defined on this cluster.', {
+        detail: 'Only native-realm accounts appear here. Accounts from an LDAP, SAML or '
+              + 'file realm are managed where that realm lives, not in Elasticsearch.',
+      }),
+    });
+  }
 
-  return card('Cluster users', 'accounts on the Elasticsearch clusters themselves',
-    h('div', { style: { display: 'grid', gap: '10px' } }, ...blocks),
-    [h('button.btn.sm.primary', {
-      onclick: () => createDialog({ onDone: () => all.forEach((c) => loadClusterUsers(c.id)) }),
-    }, '+ Create')]);
+  const count = got && !got.error ? `${got.users.length} account${got.users.length === 1 ? '' : 's'}` : c.url;
+  // Title stays "Cluster users" — which cluster belongs in the subtitle, and the title is
+  // what the page contract (and behaviour-check) identifies this card by.
+  return card('Cluster users', `${c.name} · ${count}`, body,
+    [refreshBtn,
+     h('button.btn.sm.primary', {
+       onclick: () => createDialog({ preselect: [c.id], onDone: reload }),
+     }, '+ Create')]);
+}
+
+/**
+ * Which account exists on which cluster.
+ *
+ * A cell is YES, NO, or neither: a cluster that refused the read, or has not answered
+ * yet, cannot contribute a NO. NO here means "asked, and it is not there" — rendering an
+ * unread cluster as NO would invent an absence, and absence is exactly what this table is
+ * used to act on.
+ */
+function clusterUserMatrix(all) {
+  const names = new Set();
+  for (const c of all) {
+    const got = cu.byCluster[c.id];
+    if (got && !got.error) got.users.forEach((u) => names.add(u.name));
+  }
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+
+  const known = (c) => {
+    const got = cu.byCluster[c.id];
+    return got && !got.error ? new Set(got.users.map((u) => u.name)) : null;
+  };
+  const sets = all.map((c) => ({ c, set: known(c) }));
+  const unreadable = sets.filter((x) => !x.set).map((x) => x.c.name);
+
+  const trs = sorted.map((name) => h('tr',
+    h('td', h('b', name)),
+    ...sets.map(({ set }) => h('td', { style: { textAlign: 'center' } },
+      set === null
+        ? h('span.muted', { title: 'This cluster could not be read — not the same as absent' }, '—')
+        : set.has(name)
+          ? h('span', { style: { color: 'var(--ok, #2e7d32)', fontWeight: '600' }, title: 'Present on this cluster' }, 'YES')
+          : h('span', { style: { color: 'var(--warning)', fontWeight: '600' }, title: 'Not present on this cluster' }, 'NO')))));
+
+  return card('Cluster users',
+    `all clusters · ${sorted.length} account${sorted.length === 1 ? '' : 's'} across ${all.length} clusters`,
+    h('div',
+      unreadable.length
+        ? h('div.muted', { style: { fontSize: '11.5px', marginBottom: '8px' } },
+            `Could not read: ${unreadable.join(', ')} — those columns show “—”, not NO.`)
+        : null,
+      table(['User', ...all.map((c) => c.name)], trs, {
+        emptyText: empty('No accounts read yet.', {
+          detail: 'Select a single cluster to read and manage its accounts, or refresh below.',
+        }),
+      })),
+    [h('button.btn.sm.ghost', { onclick: () => all.forEach((c) => loadClusterUsers(c.id)), title: 'Re-read every cluster' },
+       cu.loading.size ? 'Loading…' : ICON.refresh),
+     h('button.btn.sm.primary', {
+       onclick: () => createDialog({ onDone: () => all.forEach((c) => loadClusterUsers(c.id)) }),
+     }, '+ Create')]);
 }
 
 async function loadClusterUsers(id) {

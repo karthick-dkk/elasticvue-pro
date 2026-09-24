@@ -242,6 +242,20 @@ export class EsClient {
       { allowWrites: true, timeoutMs: 30000 });
   }
 
+  /**
+   * Update an existing account: roles, full name, email.
+   *
+   * PUT _security/user replaces the whole document, so the caller must send every field
+   * it wants kept. `password` is deliberately never sent from here — omitting it leaves
+   * the existing one in place, and an edit form that quietly reset passwords to blank
+   * would lock people out of a cluster while looking like it worked. Changing a password
+   * is its own action.
+   */
+  updateSecurityUser(name, body) {
+    return this.json('PUT', `/_security/user/${encodeURIComponent(name)}`, body,
+      { allowWrites: true, timeoutMs: 30000 });
+  }
+
   setSecurityUserEnabled(name, on) {
     return this.json('PUT', `/_security/user/${encodeURIComponent(name)}/_${on ? 'enable' : 'disable'}`,
       null, { allowWrites: true, timeoutMs: 30000 });

@@ -80,6 +80,7 @@ function show(trigger, items) {
 /** The icons used for row actions, so they mean the same thing on every page. */
 export const ICON = {
   delete: '🗑',
+  edit: '✎',
   open: '⊕',
   close: '⊘',
   move: '⇄',
