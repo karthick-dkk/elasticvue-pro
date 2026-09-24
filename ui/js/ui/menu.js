@@ -174,13 +174,53 @@ let toastWrap = null;
  * A short confirmation that fades itself out. For actions that close the panel they were
  * performed in, where an alert() would be an interruption and silence would be a doubt.
  */
-export function toast(message, kind = 'ok', ms = 2600) {
+/** At most this many on screen. Beyond it they stop being notices and become a wall. */
+const MAX_TOASTS = 4;
+
+/**
+ * A short-lived notice.
+ *
+ * `opts.key` is what stops a repeated action stacking. Pressing Run four times used to
+ * leave four notices piled over the page, because each message ended with a different
+ * duration and so counted as a different message — the one thing they had in common was
+ * the only thing not being compared. A keyed toast replaces the one already showing and
+ * restarts its clock, so repeating an action updates one line instead of growing a
+ * column.
+ *
+ * Unkeyed toasts still stack, because two different things happening are two things
+ * worth seeing. They are capped: past four, the oldest goes, since a notice nobody can
+ * read before the next arrives is not a notice.
+ */
+export function toast(message, kind = 'ok', ms = 2600, opts = {}) {
   if (!toastWrap) { toastWrap = h('div.toast-wrap'); document.body.append(toastWrap); }
-  const el = h(`div.toast${kind === 'ok' ? '' : `.${kind}`}`, message);
-  toastWrap.append(el);
-  setTimeout(() => {
+
+  const cls = `div.toast${kind === 'ok' ? '' : `.${kind}`}`;
+  const key = opts.key || null;
+
+  // Replacing in place rather than removing and appending: a toast that vanishes and
+  // reappears at the bottom reads as two events, which is exactly what this avoids.
+  let el = key ? toastWrap.querySelector(`[data-toast-key="${CSS_ESCAPE(key)}"]`) : null;
+  if (el) {
+    clearTimeout(Number(el.dataset.timer));
+    el.className = cls.slice(4).split('.').filter(Boolean).join(' ');
+    el.textContent = message;
+    el.classList.remove('out');
+  } else {
+    el = h(cls, message);
+    if (key) el.dataset.toastKey = key;
+    toastWrap.append(el);
+    while (toastWrap.children.length > MAX_TOASTS) toastWrap.firstElementChild.remove();
+  }
+
+  const timer = setTimeout(() => {
     el.classList.add('out');
     setTimeout(() => el.remove(), 300);
   }, ms);
+  el.dataset.timer = String(timer);
   return el;
+}
+
+/** Attribute selectors need quoting; CSS.escape is not everywhere (jsdom has none). */
+function CSS_ESCAPE(v) {
+  return String(v).replace(/["\\]/g, '\\$&');
 }

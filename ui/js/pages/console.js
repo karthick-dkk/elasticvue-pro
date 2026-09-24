@@ -399,10 +399,10 @@ async function run() {
   // stay up twice as long, because they are the ones worth reading.
   const took = res.tookMs ? ` · ${res.tookMs} ms` : '';
   if (res.ok) {
-    toast(`${ui.method} ${clip(ui.path)} → ${res.status}${took}`);
+    toast(`${ui.method} ${clip(ui.path)} → ${res.status}${took}`, 'ok', 2600, { key: 'console-run' });
   } else {
     toast(`${ui.method} ${clip(ui.path)} → ${res.status || res.kind || 'failed'}`
-        + `${res.message ? ` · ${clip(res.message, 60)}` : ''}`, 'err', 5200);
+        + `${res.message ? ` · ${clip(res.message, 60)}` : ''}`, 'err', 5200, { key: 'console-run' });
   }
 }
 
