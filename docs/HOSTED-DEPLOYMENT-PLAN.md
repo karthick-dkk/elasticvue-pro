@@ -127,3 +127,52 @@ assuming.
   desktop already does, is the same reach with one front door.
 - **Multi-tenancy.** One instance, one fleet, one set of users. Separate fleets get separate
   instances.
+
+---
+
+## Decided: metrics storage is hosted-only
+
+Users will be able to choose where each metric type is stored — the Elasticsearch
+sink that `delay_sink.rs` already writes to, or a local SQLite database — with the
+destination set per metric type (log delay, volume, ULM, capacity).
+
+**This is offered on the Linux/hosted deployment only. Portable does not show it at
+all.** Not disabled, not greyed out with an explanation: absent. A control that
+cannot work is worse than a missing one, because it invites the operator to
+configure something and then quietly does nothing with it.
+
+### Why hosted only
+
+It follows what already holds for the closest existing feature. `delay_sink.rs` is
+hosted-only because a timer in a page ticks only while somebody has a tab open,
+which on a server is nobody — so "every two hours" would be a promise the
+implementation could not keep. Stored metrics have the same shape: a store that is
+only written while a window happens to be open is a store nobody can trust to be
+complete, and an incomplete metrics history is worse than none, because it looks
+like an answer.
+
+Hosted is also the edition that already has somewhere to put it, a scheduler to
+fill it, and accounts to say who asked.
+
+### How it is hidden
+
+The same way API tokens already are (`accounts.js`): the core answers `WHOAMI`
+with a capability flag, and the page renders the section only when the flag is
+set. The UI does not infer the edition for itself — inferring it means two places
+deciding what edition this is, and they drift.
+
+`Edition::Portable` and `Edition::Installed` therefore report the capability as
+false, and the core refuses the configure/write messages regardless of what any
+client sends. The hidden UI is the courtesy; the refusal in the core is the
+control.
+
+### Still open
+
+- Whether a SQLite write needs the double write-gate in `guard.rs`. That gate
+  exists because writes leave the process and land on someone's cluster; a local
+  file does not. Applying it would mean a read-only config cannot record its own
+  measurements, which is probably wrong — but not applying it has to be a decision
+  someone made, not an omission.
+- Retention. SQLite grows forever by default, and this shares the problem with the
+  Tier 2 result cache. One cap-and-prune policy should serve both rather than each
+  inventing one.
