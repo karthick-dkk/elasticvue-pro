@@ -28,7 +28,7 @@ const selected = new Set();
 /** Volume-analysis UI state: which field, how far back, and whether a run is in flight. */
 const va = { field: null, days: 14, topN: 12, running: false, error: null, byTerm: null, selectedTerm: null };
 /** The everywhere-search: live indices AND every snapshot, for "does this still exist". */
-const ev = { on: false, term: '', running: false, result: null, error: null };
+const ev = { term: '', running: false, result: null, error: null };
 
 export function render(el) {
   host = el;
@@ -363,32 +363,22 @@ function buildTable(c, rows, allRows = rows) {
     // The toolbar search sits above the charts; with them folded away it is still a
     // scroll from the table, so the filter is repeated where the rows actually are.
     h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '0 0 8px', flexWrap: 'wrap' } },
-      h('input#idx-search2', { type: 'search', value: ui.text, placeholder: ev.on ? 'index name — live and snapshots…' : 'filter these indices…',
+      h('input#idx-search2', { type: 'search', value: ui.text, placeholder: 'filter the table, or search live + snapshots…',
         style: { flex: '1', minWidth: '220px' },
-        oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); if (!ev.on) redrawTable(); },
-        onkeydown: (e) => { if (e.key === 'Enter' && ev.on) searchEverywhere(c); } }),
-      // Live / Snapshot as two buttons rather than a checkbox: "where do I want to look"
-      // is a mode, and a mode shown as a tickbox reads as an extra rather than a place.
-      // Snapshot mode needs a term — a repository listing is per-index, so there is
-      // nothing to show until you name one.
-      h('div.seg', { style: { flexShrink: '0' }, role: 'group', 'aria-label': 'Where to look' },
-        h('button.btn.sm', {
-          'aria-pressed': ev.on ? 'false' : 'true',
-          title: 'Indices that exist on the cluster now',
-          onclick: () => { if (ev.on) { ev.on = false; ev.result = null; draw(); } },
-        }, 'Live'),
-        h('button.btn.sm', {
-          'aria-pressed': ev.on ? 'true' : 'false',
-          title: 'Look inside every snapshot repository as well, so an index that was deleted can still be found',
-          onclick: () => { if (!ev.on) { ev.on = true; ev.result = null; draw(); } },
-        }, 'Snapshot')),
-      ev.on
-        ? h('button.btn.sm', {
-            disabled: ev.running || !ui.text.trim(),
-            title: ui.text.trim() ? 'Search live indices and every snapshot' : 'Type an index name first',
-            onclick: () => searchEverywhere(c),
-          }, ev.running ? 'Searching…' : 'Search')
-        : null,
+        oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); redrawTable(); },
+        onkeydown: (e) => { if (e.key === 'Enter' && ui.text.trim()) searchEverywhere(c); } }),
+      // One search, both places. findIndexEverywhere already answers "live, in a
+      // snapshot, or both" in a single result, so making the operator pick a side first
+      // asked them to know the answer before searching — and an index that was deleted
+      // is exactly the case where they do not.
+      h('button.btn.sm', {
+        class: 'btn sm primary',
+        disabled: ev.running || !ui.text.trim(),
+        title: ui.text.trim()
+          ? 'Search the live indices and every snapshot repository'
+          : 'Type an index name first',
+        onclick: () => searchEverywhere(c),
+      }, ev.running ? 'Searching…' : 'Search live + snapshots'),
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
         `${num(allRows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
       ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
@@ -396,7 +386,7 @@ function buildTable(c, rows, allRows = rows) {
             ui.text = ''; ui.sourceFilter = 'all'; ui.status = 'all'; ui.from = ''; ui.to = ''; ui.page = 0; draw();
           } }, 'Clear filters')
         : null),
-    ev.on && (ev.result || ev.error) ? h('div', { style: { padding: '0 0 9px' } }, everywherePanel(c)) : null,
+    (ev.result || ev.error) ? h('div', { style: { padding: '0 0 9px' } }, everywherePanel(c)) : null,
     h('div#idx-bulk', { style: { padding: '0 0 9px' } }, bulkBar(c, allRows)),
     t);
 }
