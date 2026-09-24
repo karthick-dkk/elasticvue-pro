@@ -9,7 +9,7 @@
 import { h, mount, $, clear, activatable } from '../lib/dom.js';
 import { bytes, num, compact, dt, ago, toCsv, download } from '../lib/fmt.js';
 import { state, client, fetchIndices, activeClusters } from '../core/state.js';
-import { card, pill, table, empty, connectionBanner } from './common.js';
+import { card, collapsible, pill, statTile, table, empty, connectionBanner } from './common.js';
 import { navigateTo } from '../core/intent.js';
 import { syncWrites, writeToggle } from '../core/writes.js';
 import {
@@ -19,9 +19,10 @@ import {
 import { rowMenu, ICON, closeMenus } from '../ui/menu.js';
 import { findIndexEverywhere } from '../core/snapshot-verify.js';
 import { pageSlice, pagerBar } from '../lib/pager.js';
+import { sourceSizeChart, perDayChart, volumeAnalysisCard } from '../ui/index-metrics.js';
 
 let host = null;
-const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, from: '', to: '', loading: false, error: null, page: 0 };
+const ui = { sourceFilter: 'all', text: '', status: 'all', sort: 'size', dir: -1, from: '', to: '', loading: false, error: null, page: 0, view: 'indices' };
 /** Index names ticked in the table, for the bulk actions. Cleared when the data reloads. */
 const selected = new Set();
 /** Volume-analysis UI state: which field, how far back, and whether a run is in flight. */
@@ -92,19 +93,52 @@ function draw() {
   mount(host,
     sourceBar(c, sourceList, all.length),
     ui.error ? h('div.banner.err', h('div', h('div.ttl', 'Could not list indices'), h('div.mono', ui.error))) : null,
+    viewTabs(),
 
-    // One line of context, not a dashboard. Store size and document counts, the
-    // per-source breakdown and the volume-by-field analysis moved to the Volume report,
-    // which is the page that is about how much there is; this one is about managing the
-    // indices, and a table you scroll past four charts to reach is a table nobody uses.
-    h('div.idx-summary.muted', { style: { fontSize: '11.5px', marginBottom: '10px' } },
-      `${num(rows.length)} of ${num(all.length)} indices on ${c.name} · `,
-      `${bytes(totals.size)} · ${compact(totals.docs)} docs · ${num(totals.shards)} shards`,
-      h('a.link', { style: { marginLeft: '8px' }, href: '#/volume',
-        title: 'Store size by source, indices per day, and daily volume by field' },
-        'Volume report →')),
-
+    ui.view === 'summary' ? summaryView(c, rows, all, totals) : null,
+    ui.view === 'summary' ? null :
     tableCard(c, rows, all));
+}
+
+/**
+ * Indices / Summary.
+ *
+ * Two jobs, one page. "Indices" is the working view — find an index, open it, close it,
+ * delete it — and it is what the page opens on, because that is what people come here to
+ * do. "Summary" is how much there is and where it came from: the same numbers, read
+ * rather than acted on. They were stacked on top of each other, so the table everyone
+ * wanted started four charts down the page.
+ */
+function viewTabs() {
+  const tab = (id, label, title) => h('button.btn.sm', {
+    class: ui.view === id ? 'btn sm primary' : 'btn sm',
+    title,
+    onclick: () => { if (ui.view !== id) { ui.view = id; draw(); } },
+  }, label);
+  return h('div.seg', { role: 'group', style: { display: 'inline-flex', marginBottom: '10px' } },
+    tab('indices', 'Indices', 'The index list, and the actions that manage it'),
+    tab('summary', 'Summary', 'Store size, sources, indices per day, and daily volume by field'));
+}
+
+function summaryView(c, rows, all, totals) {
+  return h('div',
+    h('div.grid.c4', { style: { marginBottom: '14px' } },
+      statTile('Indices shown', `${num(rows.length)}`, `of ${num(all.length)} on ${c.name}`),
+      statTile('Documents', compact(totals.docs), `${num(totals.docs)} docs`),
+      statTile('Store size', bytes(totals.size), `${num(totals.shards)} shards`),
+      statTile('Sources detected',
+        String(new Set(all.map((r) => r.source).filter(Boolean)).size), 'parsed from index names')),
+
+    h('div.grid.c2', { style: { marginBottom: '10px' } },
+      collapsible('Store size by source', 'click a bar to filter the table', () =>
+        // Selecting a bar filters the table, so it also returns to the view that has one.
+        sourceSizeChart(all, { onSelect: (r) => { ui.sourceFilter = r.key; ui.page = 0; ui.view = 'indices'; draw(); } }),
+        { key: 'idx-by-source', open: true }),
+      collapsible('Indices per day', 'daily indices detected from the naming pattern', () =>
+        perDayChart(rows, { onSelect: (r) => { ui.from = r.key; ui.to = r.key; ui.page = 0; ui.view = 'indices'; draw(); } }),
+        { key: 'idx-per-day', open: true })),
+
+    volumeAnalysisCard(c, draw));
 }
 
 /* ----------------------------- volume analysis ------------------------------ */

@@ -305,8 +305,18 @@ await go('indices');
   ok(/Indices on /.test(txt), 'indices: the index table card is missing');
   ok(btn('Live') && btn('Snapshot'), 'indices: the Live/Snapshot mode buttons are missing');
   ok(btn('‹ Previous') && btn('Next ›'), 'indices: the table is not paged');
-  ok(!/Volume analysis/.test(txt), 'indices: the volume analysis should have moved to the Volume report');
-  ok(!/Store size by source/.test(txt), 'indices: the source breakdown should have moved to the Volume report');
+  // The breakdown lives behind the Summary tab, not stacked above the table.
+  ok(btn('Indices') && btn('Summary'), 'indices: the Indices/Summary tabs are missing');
+  ok(!/Volume analysis/.test(txt), 'indices: the volume analysis should sit behind the Summary tab');
+  ok(!/Store size by source/.test(txt), 'indices: the source breakdown should sit behind the Summary tab');
+  // ...and pressing Summary must actually produce it, or "not on the default view" is
+  // indistinguishable from "gone".
+  [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Summary').click();
+  await settleFor(250);
+  const sum = doc.body.textContent;
+  ok(/Store size by source/.test(sum), 'indices: Summary does not show the source breakdown');
+  ok(/Indices per day/.test(sum), 'indices: Summary does not show indices per day');
+  ok(/Volume analysis/.test(sum), 'indices: Summary does not show the volume analysis');
 }
 
 await go('snapshots');
@@ -321,11 +331,6 @@ await go('volume');
 // that drops them cannot pass by simply not rendering them anywhere.
 {
   const txt = doc.body.textContent;
-  // The charts sit inside a per-cluster collapsible whose body is built on open, so the
-  // section title is what is always in the DOM — asserting the chart titles would only
-  // pass on a one-cluster fixture, which is the fixture that hides the bug.
-  ok(/Where it comes from/.test(txt), 'volume: the per-cluster source section did not arrive from the Indices page');
-  ok(/Volume analysis/.test(txt), 'volume: the by-field volume analysis did not arrive from the Indices page');
 }
 {
   const viewBtn = (label) => [...doc.querySelectorAll('button')].find((b) => b.textContent === label);
