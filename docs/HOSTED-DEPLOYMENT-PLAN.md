@@ -132,9 +132,12 @@ assuming.
 
 ## Decided: metrics storage is hosted-only
 
-Users will be able to choose where each metric type is stored — the Elasticsearch
-sink that `delay_sink.rs` already writes to, or a local SQLite database — with the
-destination set per metric type (log delay, volume, ULM, capacity).
+Users will be able to choose where each metric type is stored, with the destination
+set per metric type (log delay, volume, ULM, capacity).
+
+The destination that exists today is the **Elasticsearch sink** `delay_sink.rs`
+already writes to. A second destination is not decided; SQLite was considered and
+ruled out, so nothing here depends on adding a database engine to the core.
 
 **This is offered on the Linux/hosted deployment only. Portable does not show it at
 all.** Not disabled, not greyed out with an explanation: absent. A control that
@@ -168,11 +171,15 @@ control.
 
 ### Still open
 
-- Whether a SQLite write needs the double write-gate in `guard.rs`. That gate
-  exists because writes leave the process and land on someone's cluster; a local
-  file does not. Applying it would mean a read-only config cannot record its own
-  measurements, which is probably wrong — but not applying it has to be a decision
-  someone made, not an omission.
-- Retention. SQLite grows forever by default, and this shares the problem with the
-  Tier 2 result cache. One cap-and-prune policy should serve both rather than each
+- What the second destination is, if there is one. The hosted deployment already
+  runs postgres for `users`/`acks`/`notes`/`audit`, so it is the candidate that
+  costs no new dependency — but that is an option, not a decision.
+- Whether a write to a destination inside this process needs the double write-gate
+  in `guard.rs`. That gate exists because writes leave the process and land on
+  someone's cluster. Writing to the Elasticsearch sink plainly does; a local store
+  would not, and applying the cluster gate to it would mean a read-only config
+  cannot record its own measurements. Only relevant once a non-cluster destination
+  exists.
+- Retention, for whatever holds the data. It shares the problem with the Tier 2
+  result cache, and one cap-and-prune policy should serve both rather than each
   inventing one.
