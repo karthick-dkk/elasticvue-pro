@@ -297,8 +297,17 @@ await go('alerts');
 }
 
 await go('indices');
-ok(shown('Store size by source'), 'indices: "Store size by source" starts folded');
-ok(shown('Indices per day'), 'indices: "Indices per day" starts folded');
+// The Indices page is for managing indices. The volume breakdown moved to the Volume
+// report; what must be on THIS page is the table and the controls that act on it.
+{
+  const txt = doc.body.textContent;
+  const btn = (label) => [...doc.querySelectorAll('button')].some((b) => b.textContent.trim() === label);
+  ok(/Indices on /.test(txt), 'indices: the index table card is missing');
+  ok(btn('Live') && btn('Snapshot'), 'indices: the Live/Snapshot mode buttons are missing');
+  ok(btn('‹ Previous') && btn('Next ›'), 'indices: the table is not paged');
+  ok(!/Volume analysis/.test(txt), 'indices: the volume analysis should have moved to the Volume report');
+  ok(!/Store size by source/.test(txt), 'indices: the source breakdown should have moved to the Volume report');
+}
 
 await go('snapshots');
 ok(shown('Snapshot availability'), 'snapshots: "Snapshot availability" starts folded');
@@ -308,6 +317,16 @@ ok(panel('Repositories') && panel('Repositories').querySelector('.body').hidden,
 /* --------------------- the volume report and its two sheets --------------------- */
 
 await go('volume');
+// Moved here from the Indices page — the assertion moves with them, so a future change
+// that drops them cannot pass by simply not rendering them anywhere.
+{
+  const txt = doc.body.textContent;
+  // The charts sit inside a per-cluster collapsible whose body is built on open, so the
+  // section title is what is always in the DOM — asserting the chart titles would only
+  // pass on a one-cluster fixture, which is the fixture that hides the bug.
+  ok(/Where it comes from/.test(txt), 'volume: the per-cluster source section did not arrive from the Indices page');
+  ok(/Volume analysis/.test(txt), 'volume: the by-field volume analysis did not arrive from the Indices page');
+}
 {
   const viewBtn = (label) => [...doc.querySelectorAll('button')].find((b) => b.textContent === label);
   // Three buttons, not a dropdown, and the summary is what the page opens on.

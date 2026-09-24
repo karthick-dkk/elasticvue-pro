@@ -9,6 +9,7 @@ import { hbarList, capacityChart, usageMeter } from '../lib/charts.js';
 import { volumeReport, reportRows, SHEET_COLUMNS, CLIENT_COLUMNS, sheetCell, gb, days as fmtDays, yesNo } from '../core/volume.js';
 import { navigateTo } from '../core/intent.js';
 import { popover } from '../ui/menu.js';
+import { sourceSizeChart, perDayChart, volumeAnalysisCard } from '../ui/index-metrics.js';
 
 let host = null;
 const ui = { measuring: new Set(), view: 'summary', sort: 'name', dir: 1 };
@@ -98,7 +99,23 @@ function draw() {
 
     ...reports.map((r) => h('div', { style: { marginTop: '10px' } },
       collapsible(`Volume resource report — ${r.cluster.name}`, r.cluster.url,
-        () => clusterCardBody(r), { key: `vol-detail-${r.cluster.id}`, open: reports.length === 1 }))));
+        () => clusterCardBody(r), { key: `vol-detail-${r.cluster.id}`, open: reports.length === 1 }))),
+
+    // Moved off the Indices page: where the volume came from, and which field is
+    // responsible when the daily figure moves. They answer the same question as
+    // everything above — how much, and from where — rather than "which indices exist",
+    // which is what the Indices page is for.
+    ...reports.map((r) => h('div', { style: { marginTop: '10px' } },
+      collapsible(`Where it comes from — ${r.cluster.name}`, 'store size by source, and indices per day',
+        () => h('div.grid.c2',
+          card('Store size by source', 'parsed from the index naming pattern',
+            sourceSizeChart(state.indices.get(r.cluster.id) || [])),
+          card('Indices per day', 'daily indices detected from the naming pattern',
+            perDayChart(state.indices.get(r.cluster.id) || []))),
+        { key: `vol-sources-${r.cluster.id}`, open: reports.length === 1 }))),
+
+    ...reports.map((r) => h('div', { style: { marginTop: '10px' } },
+      volumeAnalysisCard(r.cluster, draw))));
 }
 
 /* ------------------------------- fleet overview ------------------------------- */
