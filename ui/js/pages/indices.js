@@ -96,15 +96,23 @@ function draw() {
   mount(host,
     sourceBar(c, sourceList, all.length),
     ui.error ? h('div.banner.err', h('div', h('div.ttl', 'Could not list indices'), h('div.mono', ui.error))) : null,
-    h('div.grid.c4', { style: { marginBottom: '14px' } },
-      statTile('Indices shown', `${num(rows.length)}`, `of ${num(all.length)} on ${c.name}`),
-      statTile('Documents', compact(totals.docs), num(totals.docs) + ' docs'),
-      statTile('Store size', bytes(totals.size), `${num(totals.shards)} shards`),
-      statTile('Sources detected', String(sourceList.filter((x) => x.key !== '__none').length), 'parsed from index names')),
 
-    // Open by default: a chart is read at a glance, and one that has to be unfolded first
-    // is one nobody looks at. The table below is still reachable by folding them away, and
-    // that choice is remembered.
+    // One line of context, not a dashboard. Store size and document counts, the
+    // per-source breakdown and the volume-by-field analysis moved to the Volume report,
+    // which is the page that is about how much there is; this one is about managing the
+    // indices, and a table you scroll past four charts to reach is a table nobody uses.
+    h('div.idx-summary.muted', { style: { fontSize: '11.5px', marginBottom: '10px' } },
+      `${num(rows.length)} of ${num(all.length)} indices on ${c.name} · `,
+      `${bytes(totals.size)} · ${compact(totals.docs)} docs · ${num(totals.shards)} shards`,
+      h('a.link', { style: { marginLeft: '8px' }, href: '#/volume',
+        title: 'Store size by source, indices per day, and daily volume by field' },
+        'Volume report →')),
+
+    // Charts and the by-field volume analysis still live here. They BELONG on the Volume
+    // report — this page is about managing indices — but moving the analysis card means
+    // moving the field-volume fetch, its spike detection and its export with it, and a
+    // half-moved feature is worse than one that has not moved yet. Folded away by
+    // default now, so the table is the first thing on the page; the fold is remembered.
     h('div.grid.c2', { style: { marginBottom: '10px' } },
       collapsible('Store size by source', 'click a bar to filter the table', () =>
         sourceList.length
@@ -460,12 +468,28 @@ function buildTable(c, rows, allRows = rows) {
         style: { flex: '1', minWidth: '220px' },
         oninput: (e) => { ui.text = e.target.value; ui.page = 0; syncSearchBoxes(e.target); if (!ev.on) redrawTable(); },
         onkeydown: (e) => { if (e.key === 'Enter' && ev.on) searchEverywhere(c); } }),
-      h('label', { style: { display: 'inline-flex', gap: '5px', alignItems: 'center', fontSize: '11.5px', cursor: 'pointer', whiteSpace: 'nowrap' },
-        title: 'Also look inside every snapshot repository, so an index that was deleted can still be found' },
-        h('input', { type: 'checkbox', checked: ev.on, style: { cursor: 'pointer' },
-          onchange: (e) => { ev.on = e.target.checked; ev.result = null; draw(); } }),
-        'also search snapshots'),
-      ev.on ? h('button.btn.sm', { disabled: ev.running, onclick: () => searchEverywhere(c) }, ev.running ? 'Searching…' : 'Search') : null,
+      // Live / Snapshot as two buttons rather than a checkbox: "where do I want to look"
+      // is a mode, and a mode shown as a tickbox reads as an extra rather than a place.
+      // Snapshot mode needs a term — a repository listing is per-index, so there is
+      // nothing to show until you name one.
+      h('div.seg', { style: { display: 'inline-flex', flexShrink: '0' }, role: 'group' },
+        h('button.btn.sm', {
+          class: ev.on ? 'btn sm' : 'btn sm primary',
+          title: 'Indices that exist on the cluster now',
+          onclick: () => { if (ev.on) { ev.on = false; ev.result = null; draw(); } },
+        }, 'Live'),
+        h('button.btn.sm', {
+          class: ev.on ? 'btn sm primary' : 'btn sm',
+          title: 'Look inside every snapshot repository as well, so an index that was deleted can still be found',
+          onclick: () => { if (!ev.on) { ev.on = true; ev.result = null; draw(); } },
+        }, 'Snapshot')),
+      ev.on
+        ? h('button.btn.sm', {
+            disabled: ev.running || !ui.text.trim(),
+            title: ui.text.trim() ? 'Search live indices and every snapshot' : 'Type an index name first',
+            onclick: () => searchEverywhere(c),
+          }, ev.running ? 'Searching…' : 'Search')
+        : null,
       h('span.muted', { style: { fontSize: '11.5px', whiteSpace: 'nowrap' } },
         `${num(allRows.length)} of ${num((state.indices.get(c.id) || []).length)} indices`),
       ui.text || ui.sourceFilter !== 'all' || ui.status !== 'all' || ui.from || ui.to
