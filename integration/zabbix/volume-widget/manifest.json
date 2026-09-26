@@ -1,0 +1,39 @@
+{
+	"manifest_version": 2.0,
+	"id": "evp_volume",
+	"type": "widget",
+	"name": "ElasticVue Pro volume report",
+	"namespace": "EvpVolume",
+	"version": "2.0",
+	"author": "ElasticVue Pro",
+	"description": "The Volume report's client plan, one row per cluster host, laid out as in ElasticVue Pro: volume per day, live storage and backup storage. Columns come from the ElasticVue Pro client plan template. CSV and Excel export.",
+	"widget": {
+		"js_class": "WidgetEvpVolume",
+		"size": {
+			"width": 72,
+			"height": 8
+		},
+		"refresh_rate": 300
+	},
+	"actions": {
+		"widget.evp_volume.view": {
+			"class": "WidgetView"
+		},
+		"widget.evp_volume.columns": {
+			"class": "ColumnsSave",
+			"layout": "layout.json"
+		}
+	},
+	"assets": {
+		"js": [
+			"evp-xlsx.js",
+			"evp-export.js",
+			"evp-columns.js",
+			"class.widget.js"
+		],
+		"css": [
+			"evp-widget.css",
+			"widget.css"
+		]
+	}
+}

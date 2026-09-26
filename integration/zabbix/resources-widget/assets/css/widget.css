@@ -1,0 +1,31 @@
+/* Client resources widget: sections over their columns (as the Volume report), values centred,
+   the client fixed on the left. */
+.evp-res-toolbar { display: flex; align-items: center; gap: 8px; justify-content: flex-end; padding: 0 0 6px; }
+.evp-res-count { margin-right: auto; opacity: .75; }
+.evp-res-scroll { overflow-x: auto; }
+.evp-res-table { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The frozen first column must hide what scrolls under it in every Zabbix theme: rows and row
+   groups pass the table's own (theme) background down to it, instead of staying transparent. */
+.evp-res-table thead, .evp-res-table tbody, .evp-res-table tr { background: inherit; }
+.evp-res-table th, .evp-res-table td { text-align: center; }
+.evp-res-table .evp-res-first { position: sticky; left: 0; z-index: 1; text-align: left; background: inherit; font-weight: bold; }
+.evp-res-table thead .evp-res-first { z-index: 2; }
+.evp-res-table th.evp-res-group { font-weight: bold; }
+.evp-res-table .evp-res-start { border-left: 2px solid rgba(128, 128, 128, .45); }
+.evp-res-table td .evp-res-sub { opacity: .8; font-size: 11px; }
+/* Used: yellow at {$EVP.USAGE.WARN} (80), red at {$EVP.USAGE.HIGH} (90). */
+.evp-res-table td.evp-warn { background: #ffd54f; color: #1f1f1f; }
+.evp-res-table td.evp-high { background: #e53935; color: #fff; }
+/* Allocated below requested (or below purchased): outlined, marked, the request in the tooltip. */
+.evp-res-table td.evp-short { outline: 2px dashed #e53935; outline-offset: -3px; font-weight: bold; }
+.evp-res-table td.evp-short::after { content: ' \25BC'; color: #e53935; }
+.evp-res-table td.evp-high.evp-short::after { color: #fff; }
+/* A request nobody entered. */
+.evp-res-table td.evp-unset { opacity: .55; font-style: italic; }
+/* The empty state, in view at the left rather than centred across a very wide table. */
+.evp-empty { text-align: left; padding: 14px 4px; }
+/* The expand column, and the type pills. */
+.evp-res-table .evp-res-toggle { width: 22px; padding: 0 2px; }
+.evp-pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+.evp-res-table td.evp-di { color: #0d47a1; } .evp-res-table td.evp-op { color: #4527a0; }
+.evp-res-toolbar select { font: inherit; padding: 3px 4px; }

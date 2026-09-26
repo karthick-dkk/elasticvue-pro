@@ -1,0 +1,25 @@
+{
+	"manifest_version": 2.0,
+	"id": "evp_clients",
+	"name": "ElasticVue Pro clients",
+	"namespace": "EvpClients",
+	"version": "2.0",
+	"author": "ElasticVue Pro",
+	"description": "ElasticVue Pro → Clients: add, edit, import (CSV) and remove clients and their hosts, named <client>-<Role>-<n>; families and roles (ES, Parser, Forwarder, Engine …); a backup before every change, newest three kept. Hosts made by hand are reused as they are; only hosts this page made are ever deleted.",
+	"actions": {
+		"evp.clients.list": { "class": "ClientList", "view": "evp.clients.list", "layout": "layout.htmlpage" },
+		"evp.clients.edit": { "class": "ClientEdit", "view": "evp.clients.edit", "layout": "layout.htmlpage" },
+		"evp.clients.save": { "class": "ClientSave", "view": "evp.clients.edit", "layout": "layout.htmlpage" },
+		"evp.clients.remove": { "class": "ClientRemove" },
+		"evp.clients.csv.template": { "class": "CsvTemplate", "layout": "layout.export" },
+		"evp.clients.csv.export": { "class": "CsvExport", "layout": "layout.export" },
+		"evp.clients.import": { "class": "ImportUpload", "view": "evp.clients.import", "layout": "layout.htmlpage" },
+		"evp.clients.import.apply": { "class": "ImportApply" },
+		"evp.clients.backups": { "class": "BackupList", "view": "evp.clients.backups", "layout": "layout.htmlpage" },
+		"evp.clients.backup.restore": { "class": "BackupRestore" },
+		"evp.clients.backup.download": { "class": "BackupDownload", "layout": "layout.export" },
+		"evp.clients.roles": { "class": "RoleList", "view": "evp.clients.roles", "layout": "layout.htmlpage" },
+		"evp.clients.role.save": { "class": "RoleSave" },
+		"evp.clients.template.install": { "class": "TemplateInstall" }
+	}
+}

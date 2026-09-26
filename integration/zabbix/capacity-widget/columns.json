@@ -1,0 +1,190 @@
+{
+  "template": "ElasticVue Pro client master",
+  "warn": 80,
+  "high": 90,
+  "columns": [
+    {
+      "label": "Cluster Name",
+      "source": "host",
+      "units": ""
+    },
+    {
+      "label": "ES URL",
+      "source": "macro",
+      "macro": "{$ES.URL}",
+      "units": ""
+    },
+    {
+      "label": "Cust.Purchased Storage",
+      "key": "evp.es.storage.purchased",
+      "units": "B",
+      "kind": "requested"
+    },
+    {
+      "label": "Logdelay Devices Count",
+      "key": "evp.delay.late",
+      "units": "",
+      "kind": "delay"
+    },
+    {
+      "label": "ES Allocated Storage",
+      "key": "evp.es.storage.allocated",
+      "vs": "evp.es.storage.purchased",
+      "units": "B",
+      "kind": "allocated"
+    },
+    {
+      "label": "ES Used Storage",
+      "key": "evp.es.storage.used",
+      "units": "B",
+      "kind": "used"
+    },
+    {
+      "label": "ES Used %",
+      "key": "evp.es.storage.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "ES CPU Requested",
+      "key": "evp.es.cpu.requested",
+      "units": "",
+      "kind": "requested"
+    },
+    {
+      "label": "ES CPU Allocated",
+      "key": "evp.es.cpu.allocated",
+      "vs": "evp.es.cpu.requested",
+      "units": "",
+      "kind": "allocated"
+    },
+    {
+      "label": "ES CPU Usage",
+      "key": "evp.es.cpu.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "ES Mem Requested",
+      "key": "evp.es.mem.requested",
+      "units": "B",
+      "kind": "requested"
+    },
+    {
+      "label": "ES Mem Allocated",
+      "key": "evp.es.mem.allocated",
+      "vs": "evp.es.mem.requested",
+      "units": "B",
+      "kind": "allocated"
+    },
+    {
+      "label": "ES Mem Usage",
+      "key": "evp.es.mem.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "Parser CPU Requested",
+      "key": "evp.parser.cpu.requested",
+      "units": "",
+      "kind": "requested"
+    },
+    {
+      "label": "Parser CPU Allocated",
+      "key": "evp.parser.cpu.allocated",
+      "vs": "evp.parser.cpu.requested",
+      "units": "",
+      "kind": "allocated"
+    },
+    {
+      "label": "Parser CPU Usage",
+      "key": "evp.parser.cpu.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "Parser Mem Requested",
+      "key": "evp.parser.mem.requested",
+      "units": "B",
+      "kind": "requested"
+    },
+    {
+      "label": "Parser Mem Allocated",
+      "key": "evp.parser.mem.allocated",
+      "vs": "evp.parser.mem.requested",
+      "units": "B",
+      "kind": "allocated"
+    },
+    {
+      "label": "Parser Mem Usage",
+      "key": "evp.parser.mem.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "Forwarder Mem Requested",
+      "key": "evp.fwd.mem.requested",
+      "units": "B",
+      "kind": "requested"
+    },
+    {
+      "label": "Forwarder Mem Allocated",
+      "key": "evp.fwd.mem.allocated",
+      "vs": "evp.fwd.mem.requested",
+      "units": "B",
+      "kind": "allocated"
+    },
+    {
+      "label": "Forwarder Mem Usage",
+      "key": "evp.fwd.mem.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "Forwarder CPU Requested",
+      "key": "evp.fwd.cpu.requested",
+      "units": "",
+      "kind": "requested"
+    },
+    {
+      "label": "Forwarder CPU Allocated",
+      "key": "evp.fwd.cpu.allocated",
+      "vs": "evp.fwd.cpu.requested",
+      "units": "",
+      "kind": "allocated"
+    },
+    {
+      "label": "Forwarder CPU Usage",
+      "key": "evp.fwd.cpu.usage",
+      "usage": true,
+      "units": "%",
+      "kind": "usage"
+    },
+    {
+      "label": "Forwarder Requested / Storage",
+      "key": "evp.fwd.disk.requested",
+      "units": "B",
+      "kind": "requested"
+    },
+    {
+      "label": "Forwarder Allocated / Storage",
+      "key": "evp.fwd.disk.allocated",
+      "vs": "evp.fwd.disk.requested",
+      "units": "B",
+      "kind": "allocated"
+    },
+    {
+      "label": "Forwarder Curr.Used / Storage",
+      "key": "evp.fwd.disk.used",
+      "usageKey": "evp.fwd.disk.usage",
+      "units": "B",
+      "kind": "used"
+    }
+  ]
+}

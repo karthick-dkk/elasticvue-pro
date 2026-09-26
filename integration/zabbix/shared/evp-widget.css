@@ -1,0 +1,19 @@
+/* Shared by the ElasticVue Pro report widgets: the Columns dialog and the expand rows. */
+.evp-modal-shade { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.evp-modal { background: #fff; color: #1f2c33; border-radius: 3px; width: min(640px, 100%); max-height: 88vh; display: flex; flex-direction: column; padding: 14px 16px; gap: 10px; box-shadow: 0 8px 28px rgba(0, 0, 0, .3); font: 12px Arial, Tahoma, sans-serif; }
+[theme="dark-theme"] .evp-modal, [theme="hc-dark"] .evp-modal { background: #2b2b2b; color: #f2f2f2; }
+.evp-modal h3 { margin: 0; font-size: 15px; }
+.evp-modal-list { overflow: auto; border: 1px solid rgba(128, 128, 128, .3); }
+.evp-modal-list table { width: 100%; border-collapse: collapse; }
+.evp-modal-list th, .evp-modal-list td { padding: 4px 6px; border-bottom: 1px solid rgba(128, 128, 128, .2); text-align: left; }
+.evp-modal-list input[type="text"] { width: 100%; box-sizing: border-box; }
+.evp-modal-families { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.evp-modal-note { flex-basis: 100%; opacity: .7; }
+.evp-modal-bar { display: flex; gap: 8px; align-items: center; }
+.evp-modal-msg { margin-right: auto; color: #c62828; }
+.evp-sub > td { background: rgba(128, 128, 128, .06); }
+.evp-expand { cursor: pointer; background: none; border: 0; font-size: 13px; padding: 0 4px; color: inherit; }
+.evp-servers { width: 100%; border-collapse: collapse; margin: 2px 0 8px; }
+.evp-servers th, .evp-servers td { padding: 3px 8px; text-align: center; border-bottom: 1px solid rgba(128, 128, 128, .2); white-space: nowrap; }
+.evp-servers th:nth-child(-n+3), .evp-servers td:nth-child(-n+3) { text-align: left; }
+.evp-st-up { color: #2e7d32; font-weight: bold; } .evp-st-down { color: #c62828; font-weight: bold; } .evp-st-unknown { opacity: .7; }
